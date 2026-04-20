@@ -1,0 +1,68 @@
+version: "3.11"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Используется для локальной разработки и self-hosted деплоя.
+# БД — Supabase (внешняя), локального postgres нет.
+#
+# Запуск:
+#   cp .env.example .env   # заполнить переменные
+#   docker compose up --build
+#
+# Только бот (без API):
+#   docker compose up bot
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Telegram-бот (polling) ─────────────────────────────────────────────────
+  bot:
+    build:
+      context: .
+      target: runtime
+    container_name: autoservice_bot
+    restart: unless-stopped
+    env_file: .env
+    # bot.py не слушает порт — healthcheck через процесс
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # Бот не нуждается в открытом порту
+    command: ["python", "bot.py"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── REST API для Telegram WebApp ──────────────────────────────────────────
+  api:
+    build:
+      context: .
+      target: runtime
+    container_name: autoservice_api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    command:
+      - uvicorn
+      - api:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --workers
+      - "2"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,12 @@
+# Telegram bot framework
+aiogram==3.27.0
+
+# PostgreSQL async driver (Supabase)
+asyncpg==0.31.0
+
+# REST API for WebApp
+fastapi==0.136.0
+uvicorn[standard]==0.44.0
+
+# Env vars
+python-dotenv==1.1.0

@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Запись в автосервис</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* ── Reset & tokens ─────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0d0f14;
+    --surface:   #161a23;
+    --border:    rgba(255,255,255,0.07);
+    --accent:    #f0c040;
+    --accent2:   #ff7a3c;
+    --text:      #f0f0f0;
+    --muted:     #8a8fa8;
+    --radius:    16px;
+    --radius-sm: 10px;
+    --font-head: 'Unbounded', sans-serif;
+    --font-body: 'Inter', sans-serif;
+  }
+
+  html { font-size: 16px; }
+  body {
+    font-family: var(--font-body);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100dvh;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+    overflow-x: hidden;
+  }
+
+  /* ── Layout ─────────────────────────────────────────────── */
+  .app {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 20px 16px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    animation: rise .4s cubic-bezier(.22,1,.36,1);
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── Header ─────────────────────────────────────────────── */
+  .header { text-align: center; padding: 8px 0 4px; }
+  .header .logo {
+    font-family: var(--font-head);
+    font-size: 22px;
+    font-weight: 900;
+    letter-spacing: -0.5px;
+    background: linear-gradient(100deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .header .sub {
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 4px;
+    font-weight: 500;
+  }
+
+  /* ── Card ───────────────────────────────────────────────── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .card-title {
+    font-family: var(--font-head);
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: .5px;
+    text-transform: uppercase;
+  }
+
+  /* ── Form fields ────────────────────────────────────────── */
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .7px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .field input,
+  .field select,
+  .field textarea {
+    width: 100%;
+    background: rgba(255,255,255,0.05);
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 15px;
+    padding: 12px 14px;
+    transition: border-color .2s, background .2s, box-shadow .2s;
+    -webkit-appearance: none;
+  }
+  .field select { cursor: pointer; }
+  .field input::placeholder,
+  .field textarea::placeholder { color: var(--muted); }
+  .field input:focus,
+  .field select:focus,
+  .field textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: rgba(240,192,64,.06);
+    box-shadow: 0 0 0 3px rgba(240,192,64,.12);
+  }
+  .field textarea { resize: none; min-height: 80px; }
+  .field .char { font-size: 11px; color: var(--muted); text-align: right; margin-top: 2px; }
+
+  /* Row layout */
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  /* ── Service card in list ───────────────────────────────── */
+  .svc-list { display: flex; flex-direction: column; gap: 10px; }
+  .svc-item {
+    background: rgba(255,255,255,0.04);
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 14px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+  }
+  .svc-item:hover, .svc-item:active {
+    border-color: var(--accent);
+    background: rgba(240,192,64,.06);
+  }
+  .svc-item .svc-name { font-weight: 600; font-size: 15px; }
+  .svc-item .svc-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .svc-arrow { color: var(--accent); font-size: 18px; flex-shrink: 0; }
+
+  /* ── Buttons ────────────────────────────────────────────── */
+  .btn {
+    width: 100%;
+    padding: 15px;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-head);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: .5px;
+    cursor: pointer;
+    transition: transform .15s, box-shadow .2s, opacity .2s;
+  }
+  .btn:active { transform: scale(.97); }
+  .btn-primary {
+    background: linear-gradient(110deg, var(--accent), var(--accent2));
+    color: #111;
+  }
+  .btn-primary:hover { box-shadow: 0 8px 24px rgba(240,192,64,.35); }
+  .btn-secondary {
+    background: rgba(255,255,255,0.07);
+    color: var(--text);
+    border: 1.5px solid var(--border);
+  }
+  .btn:disabled { opacity: .5; cursor: not-allowed; transform: none !important; }
+
+  /* ── Empty / error state ─────────────────────────────────── */
+  .empty {
+    text-align: center;
+    padding: 28px 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .empty .icon { font-size: 36px; margin-bottom: 10px; }
+
+  /* ── Spinner ────────────────────────────────────────────── */
+  .spinner-wrap { display: flex; justify-content: center; padding: 28px 0; }
+  .spinner {
+    width: 32px; height: 32px;
+    border: 3px solid rgba(255,255,255,.1);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Step indicator ─────────────────────────────────────── */
+  .steps {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+    margin-bottom: 4px;
+  }
+  .step-dot {
+    width: 28px; height: 4px;
+    border-radius: 2px;
+    background: var(--border);
+    transition: background .3s;
+  }
+  .step-dot.active { background: var(--accent); }
+
+  /* ── Success ─────────────────────────────────────────────── */
+  .success {
+    text-align: center;
+    padding: 32px 20px;
+  }
+  .success .checkmark {
+    font-size: 56px;
+    margin-bottom: 16px;
+    display: block;
+    animation: pop .4s cubic-bezier(.22,1,.36,1);
+  }
+  @keyframes pop {
+    from { transform: scale(.5); opacity: 0; }
+    to   { transform: scale(1);  opacity: 1; }
+  }
+  .success h2 {
+    font-family: var(--font-head);
+    font-size: 20px;
+    font-weight: 900;
+    margin-bottom: 10px;
+  }
+  .success p { font-size: 14px; color: var(--muted); line-height: 1.6; }
+  .success .req-id {
+    margin-top: 16px;
+    font-size: 12px;
+    color: var(--muted);
+    background: rgba(255,255,255,.05);
+    padding: 8px 14px;
+    border-radius: 8px;
+    display: inline-block;
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app"></div>
+
+<script>
+// ── Telegram WebApp init ──────────────────────────────────────────────────────
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.ready(); try { tg.expand(); } catch(e){} }
+
+// ── Config ───────────────────────────────────────────────────────────────────
+// ЗАМЕНИТЕ на URL вашего API (Render backend)
+const API_BASE = (window.API_BASE || "").replace(/\/$/, "");
+
+const SERVICE_TYPES = [
+  { value: "diagnostic",   label: "Диагностика" },
+  { value: "oil-change",   label: "Замена масла" },
+  { value: "tires",        label: "Шины и диски" },
+  { value: "brake",        label: "Тормозная система" },
+  { value: "engine",       label: "Ремонт двигателя" },
+  { value: "transmission", label: "Коробка передач" },
+  { value: "suspension",   label: "Подвеска" },
+  { value: "body",         label: "Кузовные работы" },
+  { value: "other",        label: "Другое" },
+];
+const URGENCY = [
+  { value: "low",    label: "Обычный — 7+ дней" },
+  { value: "medium", label: "Средний — 3-5 дней" },
+  { value: "high",   label: "Срочный — 1-2 дня" },
+  { value: "urgent", label: "Очень срочный — сегодня" },
+];
+
+// ── State ─────────────────────────────────────────────────────────────────────
+const params  = new URLSearchParams(location.search);
+const state = {
+  serviceId:       params.get("service_id") || null,
+  selectedService: null,
+  city:            "",
+};
+
+// ── Router ────────────────────────────────────────────────────────────────────
+const app = document.getElementById("app");
+function render(html) { app.innerHTML = html; }
+
+async function init() {
+  if (state.serviceId) {
+    renderSpinner();
+    try {
+      const r = await fetch(`${API_BASE}/api/service/${state.serviceId}`);
+      if (r.ok) state.selectedService = await r.json();
+    } catch(e) {}
+    renderForm();
+  } else {
+    renderCityPicker();
+  }
+}
+
+// ── Step 1: выбор города ──────────────────────────────────────────────────────
+function renderCityPicker() {
+  render(`
+    <div class="header">
+      <div class="logo">⚙ АВТОСЕРВИС</div>
+      <div class="sub">Онлайн-запись на обслуживание</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Найти сервис</div>
+      <div class="field">
+        <label>Ваш город</label>
+        <input id="cityInput" placeholder="Например: Москва" autocomplete="off">
+      </div>
+      <button class="btn btn-primary" id="searchBtn">Найти сервисы →</button>
+    </div>
+    <div id="results"></div>
+  `);
+
+  const inp = document.getElementById("cityInput");
+  const btn = document.getElementById("searchBtn");
+
+  btn.addEventListener("click", doSearch);
+  inp.addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
+
+  async function doSearch() {
+    const city = inp.value.trim();
+    if (!city) { alert("Введите название города"); return; }
+    state.city = city;
+    btn.disabled = true;
+    btn.textContent = "Поиск...";
+
+    const res = document.getElementById("results");
+    res.innerHTML = `<div class="spinner-wrap"><div class="spinner"></div></div>`;
+
+    try {
+      const r = await fetch(`${API_BASE}/api/services?city=${encodeURIComponent(city)}`);
+      if (!r.ok) throw new Error("server error");
+      const list = await r.json();
+      renderServicesList(list, res);
+    } catch(e) {
+      res.innerHTML = `<div class="card"><div class="empty"><div class="icon">⚠️</div>Не удалось загрузить сервисы.<br>Проверьте подключение и попробуйте снова.</div></div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Найти сервисы →";
+    }
+  }
+}
+
+function renderServicesList(list, container) {
+  if (!list || list.length === 0) {
+    container.innerHTML = `<div class="card"><div class="empty"><div class="icon">🔍</div>В городе <b>${esc(state.city)}</b> сервисов не найдено.<br>Попробуйте другой город.</div></div>`;
+    return;
+  }
+
+  const items = list.map(s => `
+    <div class="svc-item" data-id="${s.idservice}" data-json='${JSON.stringify(s).replace(/'/g,"&#39;")}'>
+      <div>
+        <div class="svc-name">${esc(s.service_name)}</div>
+        <div class="svc-meta">${esc(s.service_number || "")}${s.location_service ? " · " + esc(s.location_service) : ""}</div>
+      </div>
+      <span class="svc-arrow">›</span>
+    </div>
+  `).join("");
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="card-title">Найдено сервисов: ${list.length}</div>
+      <div class="svc-list">${items}</div>
+    </div>
+  `;
+
+  container.querySelectorAll(".svc-item").forEach(el => {
+    el.addEventListener("click", () => {
+      state.serviceId       = el.dataset.id;
+      state.selectedService = JSON.parse(el.dataset.json);
+      renderForm();
+    });
+  });
+}
+
+// ── Step 2: форма записи ─────────────────────────────────────────────────────
+function renderForm() {
+  const svcName = state.selectedService?.service_name || "";
+  const svcPhone = state.selectedService?.service_number || "";
+
+  const svcOpts  = SERVICE_TYPES.map(s => `<option value="${s.value}">${s.label}</option>`).join("");
+  const urgOpts  = URGENCY.map(u => `<option value="${u.value}">${u.label}</option>`).join("");
+
+  render(`
+    <div class="header">
+      <div class="logo">${svcName ? esc(svcName.toUpperCase()) : "⚙ АВТОСЕРВИС"}</div>
+      <div class="sub">${svcPhone ? "📞 " + esc(svcPhone) : "Заполните форму записи"}</div>
+    </div>
+
+    <div class="steps">
+      <div class="step-dot active"></div>
+      <div class="step-dot active"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Ваши данные</div>
+      <div class="field">
+        <label>Имя *</label>
+        <input id="f_name" placeholder="Иван Иванов" autocomplete="name">
+      </div>
+      <div class="field">
+        <label>Телефон *</label>
+        <input id="f_phone" type="tel" placeholder="+7 999 123-45-67" autocomplete="tel">
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Автомобиль</div>
+      <div class="row">
+        <div class="field">
+          <label>Марка *</label>
+          <input id="f_brand" placeholder="Toyota">
+        </div>
+        <div class="field">
+          <label>Модель *</label>
+          <input id="f_model" placeholder="Camry">
+        </div>
+      </div>
+      <div class="field">
+        <label>Гос. номер *</label>
+        <input id="f_plate" placeholder="А777АА777" style="text-transform:uppercase">
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Услуга</div>
+      <div class="field">
+        <label>Тип работы *</label>
+        <select id="f_service">${svcOpts}</select>
+      </div>
+      <div class="field">
+        <label>Срочность *</label>
+        <select id="f_urgency">${urgOpts}</select>
+      </div>
+      <div class="field">
+        <label>Комментарий</label>
+        <textarea id="f_comment" maxlength="500" placeholder="Опишите проблему подробнее..."></textarea>
+        <div class="char"><span id="charNum">0</span> / 500</div>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" id="submitBtn">Отправить заявку</button>
+    ${state.city ? `<button class="btn btn-secondary" id="backBtn">← Выбрать другой сервис</button>` : ""}
+  `);
+
+  // char counter
+  document.getElementById("f_comment").addEventListener("input", function() {
+    document.getElementById("charNum").textContent = this.value.length;
+  });
+
+  // back
+  document.getElementById("backBtn")?.addEventListener("click", () => {
+    state.serviceId = null; state.selectedService = null;
+    renderCityPicker();
+  });
+
+  // submit
+  document.getElementById("submitBtn").addEventListener("click", doSubmit);
+}
+
+function doSubmit() {
+  const get = id => document.getElementById(id)?.value?.trim() || "";
+
+  const name    = get("f_name");
+  const phone   = get("f_phone");
+  const brand   = get("f_brand");
+  const model   = get("f_model");
+  const plate   = get("f_plate");
+  const service = get("f_service");
+  const urgency = get("f_urgency");
+  const comment = get("f_comment");
+
+  if (!name || !phone || !brand || !model || !plate) {
+    tg?.showAlert?.("Заполните все обязательные поля (*)") || alert("Заполните все обязательные поля");
+    return;
+  }
+  if (phone.replace(/\D/g,"").length < 10) {
+    tg?.showAlert?.("Введите корректный номер телефона") || alert("Введите корректный номер телефона");
+    return;
+  }
+
+  const payload = {
+    service_id:  state.serviceId || "",
+    client_name: name,
+    phone,
+    brand,
+    model,
+    plate:       plate.toUpperCase(),
+    service,
+    urgency,
+    comment,
+  };
+
+  const btn = document.getElementById("submitBtn");
+  btn.disabled = true;
+  btn.textContent = "Отправка...";
+
+  try {
+    tg.sendData(JSON.stringify(payload));
+  } catch(e) {
+    console.error("sendData error:", e);
+  }
+
+  // Показываем экран успеха через 350мс
+  setTimeout(renderSuccess, 350);
+}
+
+// ── Step 3: успех ─────────────────────────────────────────────────────────────
+function renderSuccess() {
+  render(`
+    <div class="header">
+      <div class="logo">⚙ АВТОСЕРВИС</div>
+    </div>
+    <div class="card">
+      <div class="success">
+        <span class="checkmark">✅</span>
+        <h2>Заявка отправлена!</h2>
+        <p>Администратор сервиса свяжется с вами<br>в ближайшее время.</p>
+      </div>
+    </div>
+  `);
+}
+
+// ── Utils ─────────────────────────────────────────────────────────────────────
+function esc(str) {
+  return String(str || "").replace(/[&<>"']/g, c =>
+    ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" })[c]
+  );
+}
+
+function renderSpinner() {
+  render(`<div class="spinner-wrap"><div class="spinner"></div></div>`);
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>

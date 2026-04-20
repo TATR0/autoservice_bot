@@ -1,0 +1,40 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+.eggs
+dist
+build
+
+# Virtual envs
+venv
+.venv
+env
+
+# Env files (передаются через --env-file или переменные платформы)
+.env
+
+# Инструменты разработки
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.coverage
+htmlcov
+
+# Редакторы
+.vscode
+.idea
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Документация (не нужна в образе)
+README.md

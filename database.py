@@ -49,8 +49,7 @@ class Database:
         self._pool = await asyncpg.create_pool(
             dsn=DATABASE_URL,
             min_size=1,
-            max_size=10,
-            ssl=_ssl_ctx(),
+            max_size=10            
         )
         logger.info("✅ Подключено к Supabase PostgreSQL")
 

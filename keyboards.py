@@ -18,14 +18,18 @@ from config import WEBAPP_URL
 def kb_client_main() -> ReplyKeyboardMarkup:
     """Главное меню клиента."""
     return ReplyKeyboardMarkup(
-        keyboard=[[
-            KeyboardButton(
-                text="🚗 Записаться в автосервис",
-                web_app=WebAppInfo(url=WEBAPP_URL) if WEBAPP_URL else None,
-            )
-        ], [
-            KeyboardButton(text="📋 Мои заявки"),
-        ]],
+        keyboard=[
+            [
+                KeyboardButton(
+                    text="🚗 Записаться в автосервис",
+                    web_app=WebAppInfo(url=WEBAPP_URL) if WEBAPP_URL else None,
+                )
+            ],
+            [
+                KeyboardButton(text="📋 Мои заявки"),
+                KeyboardButton(text="📝 Зарегистрировать сервис"),
+            ],
+        ],
         resize_keyboard=True,
     )
 
@@ -62,13 +66,6 @@ def kb_owner_main() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="👥 Администраторы"), KeyboardButton(text="ℹ️ О сервисе")],
             [KeyboardButton(text="➕ Добавить админа"), KeyboardButton(text="➖ Удалить админа")],
         ],
-        resize_keyboard=True,
-    )
-
-
-def kb_register_prompt() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📝 Зарегистрировать сервис")]],
         resize_keyboard=True,
     )
 

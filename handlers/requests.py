@@ -10,6 +10,8 @@ import logging
 from datetime import datetime
 
 from aiogram import F, Router
+from aiogram.filters import StateFilter
+from aiogram.fsm.state import default_state
 from aiogram.types import Message
 
 from config import (
@@ -128,7 +130,7 @@ async def handle_webapp_data(message: Message) -> None:
 # «Мои заявки» — для клиента
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.message(F.text == "📋 Мои заявки")
+@router.message(F.text == "📋 Мои заявки", StateFilter(default_state))
 async def my_requests(message: Message) -> None:
     # Сначала проверим: может быть, это администратор
     admin_services = await db.get_admin_services(message.from_user.id)

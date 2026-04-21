@@ -10,6 +10,8 @@ handlers/admin_actions.py
 import logging
 
 from aiogram import F, Router
+from aiogram.filters import StateFilter
+from aiogram.fsm.state import default_state
 from aiogram.types import CallbackQuery, Message
 
 from config import CLIENT_NOTIFICATIONS, REQUEST_STATUS_LABELS
@@ -70,7 +72,7 @@ async def request_status_cb(callback: CallbackQuery) -> None:
 # «📋 Заявки сервиса» — для администратора/управляющего
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.message(F.text == "📋 Заявки сервиса")
+@router.message(F.text == "📋 Заявки сервиса", StateFilter(default_state))
 async def service_requests(message: Message) -> None:
     services = await db.get_admin_services(message.from_user.id)
     if not services:
@@ -98,9 +100,7 @@ async def service_requests(message: Message) -> None:
                 f"  🕒 {date} | 🆔 <code>{r['idrequests']}</code>\n"
             )
 
-        # Telegram limit: 4096 chars
-        chunks = _split_text(text, 4000)
-        for chunk in chunks:
+        for chunk in _split_text(text, 4000):
             await message.answer(chunk, parse_mode="HTML")
 
 
@@ -108,11 +108,11 @@ async def service_requests(message: Message) -> None:
 # «ℹ️ О сервисе»
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.message(F.text == "ℹ️ О сервисе")
+@router.message(F.text == "ℹ️ О сервисе", StateFilter(default_state))
 async def about_service(message: Message) -> None:
     services = await db.get_admin_services(message.from_user.id)
     owned = await db.get_owned_services(message.from_user.id)
-    all_svc = {s["idservice"]: s for s in [*services, *owned]}.values()
+    all_svc = list({s["idservice"]: s for s in [*services, *owned]}.values())
 
     if not all_svc:
         await message.answer("❌ Нет доступных сервисов.")
@@ -123,7 +123,7 @@ async def about_service(message: Message) -> None:
         admins = await db.get_active_admins(svc["idservice"])
         admins_str = ", ".join(f"<code>{a['idusertg']}</code>" for a in admins) or "<i>нет</i>"
         is_owner = svc["owner_id"] == message.from_user.id
-        role = "Управляющий" if is_owner else "Администратор"
+        role = "👑 Управляющий" if is_owner else "🔧 Администратор"
 
         await message.answer(
             f"<b>ℹ️ {svc['service_name']}</b>\n\n"
@@ -132,7 +132,7 @@ async def about_service(message: Message) -> None:
             f"📍 Адрес: {svc['location_service']}\n"
             f"👥 Администраторы: {admins_str}\n"
             f"🔑 Ваша роль: {role}\n\n"
-            f"🔗 Ссылка для клиентов:\n<code>{link}</code>",
+            f"🔗 <b>Ссылка для клиентов:</b>\n<code>{link}</code>",
             parse_mode="HTML",
         )
 
@@ -141,7 +141,7 @@ async def about_service(message: Message) -> None:
 # «👥 Администраторы»
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.message(F.text == "👥 Администраторы")
+@router.message(F.text == "👥 Администраторы", StateFilter(default_state))
 async def list_admins(message: Message) -> None:
     services = await db.get_admin_services(message.from_user.id)
     owned = await db.get_owned_services(message.from_user.id)
@@ -164,10 +164,10 @@ async def list_admins(message: Message) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fallback
+# Fallback — ТОЛЬКО когда нет активного FSM-состояния
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.message()
+@router.message(StateFilter(default_state))
 async def fallback(message: Message) -> None:
     from keyboards import kb_client_main
     await message.answer(

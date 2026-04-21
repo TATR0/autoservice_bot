@@ -2,15 +2,16 @@
 handlers/admin_mgmt.py
 
 Управление администраторами — только для управляющих (owner).
-Команды: ➕ Добавить админа, ➖ Удалить админа
+Кнопки: ➕ Добавить админа, ➖ Удалить админа
 """
 
 import logging
 import re
 
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.state import State, StatesGroup, default_state
 from aiogram.types import CallbackQuery, Message
 
 from database import db
@@ -29,7 +30,7 @@ class AddAdmin(StatesGroup):
     enter_user     = State()
 
 
-@router.message(F.text == "➕ Добавить админа")
+@router.message(F.text == "➕ Добавить админа", StateFilter(default_state))
 async def add_admin_start(message: Message, state: FSMContext) -> None:
     owned = await db.get_owned_services(message.from_user.id)
     if not owned:
@@ -49,7 +50,7 @@ async def add_admin_start(message: Message, state: FSMContext) -> None:
     await state.set_state(AddAdmin.select_service)
 
 
-@router.callback_query(F.data.startswith("addadmin_svc:"), AddAdmin.select_service)
+@router.callback_query(F.data.startswith("addadmin_svc:"), StateFilter(AddAdmin.select_service))
 async def add_admin_service_chosen(callback: CallbackQuery, state: FSMContext) -> None:
     idservice = callback.data.split(":", 1)[1]
     await state.update_data(idservice=idservice)
@@ -68,7 +69,7 @@ async def _ask_new_admin(message: Message, state: FSMContext) -> None:
     await state.set_state(AddAdmin.enter_user)
 
 
-@router.message(AddAdmin.enter_user)
+@router.message(StateFilter(AddAdmin.enter_user))
 async def add_admin_user_entered(message: Message, state: FSMContext) -> None:
     if message.text == "❌ Отмена":
         await state.clear()
@@ -83,7 +84,6 @@ async def add_admin_user_entered(message: Message, state: FSMContext) -> None:
     idservice = data["idservice"]
     await state.clear()
 
-    # Уже есть?
     if await db.is_admin(idservice, tg_id):
         await message.answer(
             f"⚠️ Пользователь <code>{tg_id}</code> уже является администратором этого сервиса.",
@@ -121,7 +121,7 @@ class RemoveAdmin(StatesGroup):
     select_admin   = State()
 
 
-@router.message(F.text == "➖ Удалить админа")
+@router.message(F.text == "➖ Удалить админа", StateFilter(default_state))
 async def remove_admin_start(message: Message, state: FSMContext) -> None:
     owned = await db.get_owned_services(message.from_user.id)
     if not owned:
@@ -141,7 +141,7 @@ async def remove_admin_start(message: Message, state: FSMContext) -> None:
     await state.set_state(RemoveAdmin.select_service)
 
 
-@router.callback_query(F.data.startswith("rmadmin_svc:"), RemoveAdmin.select_service)
+@router.callback_query(F.data.startswith("rmadmin_svc:"), StateFilter(RemoveAdmin.select_service))
 async def remove_admin_service_chosen(callback: CallbackQuery, state: FSMContext) -> None:
     idservice = callback.data.split(":", 1)[1]
     await state.update_data(idservice=idservice)
@@ -165,7 +165,7 @@ async def _show_admins_to_remove(message: Message, state: FSMContext) -> None:
     await state.set_state(RemoveAdmin.select_admin)
 
 
-@router.callback_query(F.data.startswith("rmadmin:"), RemoveAdmin.select_admin)
+@router.callback_query(F.data.startswith("rmadmin:"), StateFilter(RemoveAdmin.select_admin))
 async def remove_admin_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     admin_tg_id = int(callback.data.split(":", 1)[1])
     data = await state.get_data()

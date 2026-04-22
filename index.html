@@ -11,7 +11,7 @@
   ║  Например: content="https://autoservice-api.onrender.com"       ║
   ╚══════════════════════════════════════════════════════════════════╝
 -->
-<meta name="api-base" content="https://autoservice-bot-2w6j.onrender.com">
+<meta name="apibase" content="https://autoservice-bot-2w6j.onrender.com">
 
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -247,7 +247,7 @@ if (tg) { tg.ready(); try { tg.expand(); } catch(e){} }
 // Чтобы поменять URL, отредактируйте тег <meta name="api-base" content="...">
 // в начале этого файла. Не нужно искать строку в коде.
 const API_BASE = (
-  document.querySelector('meta[name="api-base"]')?.content || ""
+  document.querySelector('meta[name="apibase"]')?.content || ""
 ).replace(/\/$/, "");
 
 // ── Справочники ───────────────────────────────────────────────────────────────

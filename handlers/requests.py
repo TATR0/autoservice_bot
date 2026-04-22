@@ -132,12 +132,14 @@ async def handle_webapp_data(message: Message) -> None:
 
 @router.message(F.text == "📋 Мои заявки", StateFilter(default_state))
 async def my_requests(message: Message) -> None:
-    # Сначала проверим: может быть, это администратор
+    # Сначала проверим: может быть, это администратор или управляющий
     admin_services = await db.get_admin_services(message.from_user.id)
-    if admin_services:
-        # Показываем заявки по первому сервису (или по всем)
+    owned_services = await db.get_owned_services(message.from_user.id)
+    all_services = list({s["idservice"]: s for s in [*admin_services, *owned_services]}.values())
+
+    if all_services:
         text = "<b>📋 Заявки по вашим сервисам:</b>\n\n"
-        for svc in admin_services:
+        for svc in all_services:
             reqs = await db.get_service_requests(svc["idservice"], limit=10)
             text += f"<b>— {svc['service_name']} —</b>\n"
             if reqs:

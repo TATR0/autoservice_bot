@@ -4,11 +4,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Запись в автосервис</title>
+
+<!--
+  ╔══════════════════════════════════════════════════════════════════╗
+  ║  ВАЖНО: замените URL ниже на адрес вашего API-сервиса на Render ║
+  ║  Например: content="https://autoservice-api.onrender.com"       ║
+  ╚══════════════════════════════════════════════════════════════════╝
+-->
+<meta name="api-base" content="https://YOUR-API.onrender.com">
+
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  /* ── Reset & tokens ─────────────────────────────────────── */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
@@ -35,7 +43,6 @@
     overflow-x: hidden;
   }
 
-  /* ── Layout ─────────────────────────────────────────────── */
   .app {
     max-width: 480px;
     margin: 0 auto;
@@ -50,17 +57,17 @@
     to   { opacity: 1; transform: translateY(0); }
   }
 
-  /* ── Header ─────────────────────────────────────────────── */
   .header { text-align: center; padding: 8px 0 4px; }
   .header .logo {
     font-family: var(--font-head);
-    font-size: 22px;
+    font-size: 20px;
     font-weight: 900;
     letter-spacing: -0.5px;
     background: linear-gradient(100deg, var(--accent), var(--accent2));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+    word-break: break-word;
   }
   .header .sub {
     font-size: 13px;
@@ -69,7 +76,6 @@
     font-weight: 500;
   }
 
-  /* ── Card ───────────────────────────────────────────────── */
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -81,14 +87,13 @@
   }
   .card-title {
     font-family: var(--font-head);
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
     color: var(--accent);
     letter-spacing: .5px;
     text-transform: uppercase;
   }
 
-  /* ── Form fields ────────────────────────────────────────── */
   .field { display: flex; flex-direction: column; gap: 6px; }
   .field label {
     font-size: 11px;
@@ -125,10 +130,8 @@
   .field textarea { resize: none; min-height: 80px; }
   .field .char { font-size: 11px; color: var(--muted); text-align: right; margin-top: 2px; }
 
-  /* Row layout */
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
-  /* ── Service card in list ───────────────────────────────── */
   .svc-list { display: flex; flex-direction: column; gap: 10px; }
   .svc-item {
     background: rgba(255,255,255,0.04);
@@ -150,7 +153,6 @@
   .svc-item .svc-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
   .svc-arrow { color: var(--accent); font-size: 18px; flex-shrink: 0; }
 
-  /* ── Buttons ────────────────────────────────────────────── */
   .btn {
     width: 100%;
     padding: 15px;
@@ -176,7 +178,6 @@
   }
   .btn:disabled { opacity: .5; cursor: not-allowed; transform: none !important; }
 
-  /* ── Empty / error state ─────────────────────────────────── */
   .empty {
     text-align: center;
     padding: 28px 0;
@@ -185,7 +186,6 @@
   }
   .empty .icon { font-size: 36px; margin-bottom: 10px; }
 
-  /* ── Spinner ────────────────────────────────────────────── */
   .spinner-wrap { display: flex; justify-content: center; padding: 28px 0; }
   .spinner {
     width: 32px; height: 32px;
@@ -196,13 +196,7 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* ── Step indicator ─────────────────────────────────────── */
-  .steps {
-    display: flex;
-    gap: 6px;
-    justify-content: center;
-    margin-bottom: 4px;
-  }
+  .steps { display: flex; gap: 6px; justify-content: center; margin-bottom: 4px; }
   .step-dot {
     width: 28px; height: 4px;
     border-radius: 2px;
@@ -211,11 +205,7 @@
   }
   .step-dot.active { background: var(--accent); }
 
-  /* ── Success ─────────────────────────────────────────────── */
-  .success {
-    text-align: center;
-    padding: 32px 20px;
-  }
+  .success { text-align: center; padding: 32px 20px; }
   .success .checkmark {
     font-size: 56px;
     margin-bottom: 16px;
@@ -233,14 +223,15 @@
     margin-bottom: 10px;
   }
   .success p { font-size: 14px; color: var(--muted); line-height: 1.6; }
-  .success .req-id {
-    margin-top: 16px;
-    font-size: 12px;
-    color: var(--muted);
-    background: rgba(255,255,255,.05);
-    padding: 8px 14px;
-    border-radius: 8px;
-    display: inline-block;
+
+  .error-banner {
+    background: rgba(255, 80, 80, 0.12);
+    border: 1.5px solid rgba(255, 80, 80, 0.3);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    font-size: 13px;
+    color: #ff9090;
+    text-align: center;
   }
 </style>
 </head>
@@ -248,14 +239,18 @@
 <div class="app" id="app"></div>
 
 <script>
-// ── Telegram WebApp init ──────────────────────────────────────────────────────
+// ── Telegram WebApp ───────────────────────────────────────────────────────────
 const tg = window.Telegram?.WebApp;
 if (tg) { tg.ready(); try { tg.expand(); } catch(e){} }
 
-// ── Config ───────────────────────────────────────────────────────────────────
-// ЗАМЕНИТЕ на URL вашего API (Render backend)
-const API_BASE = ('https://tatr0.github.io/autoservice_bot' || "").replace(/\/$/, "");
+// ── API base URL — берётся из <meta name="api-base"> ─────────────────────────
+// Чтобы поменять URL, отредактируйте тег <meta name="api-base" content="...">
+// в начале этого файла. Не нужно искать строку в коде.
+const API_BASE = (
+  document.querySelector('meta[name="api-base"]')?.content || ""
+).replace(/\/$/, "");
 
+// ── Справочники ───────────────────────────────────────────────────────────────
 const SERVICE_TYPES = [
   { value: "diagnostic",   label: "Диагностика" },
   { value: "oil-change",   label: "Замена масла" },
@@ -269,13 +264,13 @@ const SERVICE_TYPES = [
 ];
 const URGENCY = [
   { value: "low",    label: "Обычный — 7+ дней" },
-  { value: "medium", label: "Средний — 3-5 дней" },
-  { value: "high",   label: "Срочный — 1-2 дня" },
+  { value: "medium", label: "Средний — 3–5 дней" },
+  { value: "high",   label: "Срочный — 1–2 дня" },
   { value: "urgent", label: "Очень срочный — сегодня" },
 ];
 
 // ── State ─────────────────────────────────────────────────────────────────────
-const params  = new URLSearchParams(location.search);
+const params = new URLSearchParams(location.search);
 const state = {
   serviceId:       params.get("service_id") || null,
   selectedService: null,
@@ -287,19 +282,40 @@ const app = document.getElementById("app");
 function render(html) { app.innerHTML = html; }
 
 async function init() {
+  // Если API_BASE не задан — показываем понятную ошибку
+  if (!API_BASE || API_BASE === "https://YOUR-API.onrender.com") {
+    render(`
+      <div class="header"><div class="logo">⚙ АВТОСЕРВИС</div></div>
+      <div class="card">
+        <div class="error-banner">
+          ⚠️ API не настроен.<br>
+          Укажите URL сервиса в теге &lt;meta name="api-base"&gt;
+        </div>
+      </div>
+    `);
+    return;
+  }
+
   if (state.serviceId) {
+    // Пришли по deep-link — грузим данные сервиса из БД
     renderSpinner();
     try {
       const r = await fetch(`${API_BASE}/api/service/${state.serviceId}`);
-      if (r.ok) state.selectedService = await r.json();
-    } catch(e) {}
+      if (r.ok) {
+        state.selectedService = await r.json();
+        // Обновляем заголовок страницы
+        document.title = state.selectedService.service_name + " — запись";
+      }
+    } catch(e) {
+      console.warn("Не удалось загрузить данные сервиса:", e);
+    }
     renderForm();
   } else {
     renderCityPicker();
   }
 }
 
-// ── Step 1: выбор города ──────────────────────────────────────────────────────
+// ── Шаг 1: поиск по городу ───────────────────────────────────────────────────
 function renderCityPicker() {
   render(`
     <div class="header">
@@ -319,13 +335,15 @@ function renderCityPicker() {
 
   const inp = document.getElementById("cityInput");
   const btn = document.getElementById("searchBtn");
-
   btn.addEventListener("click", doSearch);
   inp.addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
 
   async function doSearch() {
     const city = inp.value.trim();
-    if (!city) { alert("Введите название города"); return; }
+    if (!city) {
+      tg?.showAlert?.("Введите название города") || alert("Введите название города");
+      return;
+    }
     state.city = city;
     btn.disabled = true;
     btn.textContent = "Поиск...";
@@ -335,11 +353,17 @@ function renderCityPicker() {
 
     try {
       const r = await fetch(`${API_BASE}/api/services?city=${encodeURIComponent(city)}`);
-      if (!r.ok) throw new Error("server error");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const list = await r.json();
       renderServicesList(list, res);
     } catch(e) {
-      res.innerHTML = `<div class="card"><div class="empty"><div class="icon">⚠️</div>Не удалось загрузить сервисы.<br>Проверьте подключение и попробуйте снова.</div></div>`;
+      res.innerHTML = `
+        <div class="card">
+          <div class="error-banner">
+            ⚠️ Не удалось загрузить список сервисов.<br>
+            Проверьте подключение и попробуйте снова.
+          </div>
+        </div>`;
     } finally {
       btn.disabled = false;
       btn.textContent = "Найти сервисы →";
@@ -349,15 +373,26 @@ function renderCityPicker() {
 
 function renderServicesList(list, container) {
   if (!list || list.length === 0) {
-    container.innerHTML = `<div class="card"><div class="empty"><div class="icon">🔍</div>В городе <b>${esc(state.city)}</b> сервисов не найдено.<br>Попробуйте другой город.</div></div>`;
+    container.innerHTML = `
+      <div class="card">
+        <div class="empty">
+          <div class="icon">🔍</div>
+          Сервисов в городе <b>${esc(state.city)}</b> не найдено.<br>
+          Попробуйте другой город.
+        </div>
+      </div>`;
     return;
   }
 
   const items = list.map(s => `
-    <div class="svc-item" data-id="${s.idservice}" data-json='${JSON.stringify(s).replace(/'/g,"&#39;")}'>
+    <div class="svc-item" data-id="${s.idservice}"
+         data-json='${JSON.stringify(s).replace(/'/g,"&#39;")}'>
       <div>
         <div class="svc-name">${esc(s.service_name)}</div>
-        <div class="svc-meta">${esc(s.service_number || "")}${s.location_service ? " · " + esc(s.location_service) : ""}</div>
+        <div class="svc-meta">
+          ${esc(s.service_number || "")}
+          ${s.location_service ? " · " + esc(s.location_service) : ""}
+        </div>
       </div>
       <span class="svc-arrow">›</span>
     </div>
@@ -365,32 +400,41 @@ function renderServicesList(list, container) {
 
   container.innerHTML = `
     <div class="card">
-      <div class="card-title">Найдено сервисов: ${list.length}</div>
+      <div class="card-title">Найдено: ${list.length}</div>
       <div class="svc-list">${items}</div>
-    </div>
-  `;
+    </div>`;
 
   container.querySelectorAll(".svc-item").forEach(el => {
     el.addEventListener("click", () => {
       state.serviceId       = el.dataset.id;
       state.selectedService = JSON.parse(el.dataset.json);
+      document.title        = state.selectedService.service_name + " — запись";
       renderForm();
     });
   });
 }
 
-// ── Step 2: форма записи ─────────────────────────────────────────────────────
+// ── Шаг 2: форма записи ──────────────────────────────────────────────────────
 function renderForm() {
-  const svcName = state.selectedService?.service_name || "";
+  // Берём данные сервиса из state — загружены из БД или выбраны из списка
+  const svcName  = state.selectedService?.service_name  || "";
   const svcPhone = state.selectedService?.service_number || "";
+  const svcCity  = state.selectedService?.city           || "";
+  const svcAddr  = state.selectedService?.location_service || "";
 
-  const svcOpts  = SERVICE_TYPES.map(s => `<option value="${s.value}">${s.label}</option>`).join("");
-  const urgOpts  = URGENCY.map(u => `<option value="${u.value}">${u.label}</option>`).join("");
+  const svcOpts = SERVICE_TYPES.map(s =>
+    `<option value="${s.value}">${s.label}</option>`).join("");
+  const urgOpts = URGENCY.map(u =>
+    `<option value="${u.value}">${u.label}</option>`).join("");
 
   render(`
     <div class="header">
-      <div class="logo">${svcName ? esc(svcName.toUpperCase()) : "⚙ АВТОСЕРВИС"}</div>
-      <div class="sub">${svcPhone ? "📞 " + esc(svcPhone) : "Заполните форму записи"}</div>
+      <div class="logo">${svcName ? esc(svcName) : "⚙ АВТОСЕРВИС"}</div>
+      <div class="sub">
+        ${svcPhone ? "📞 " + esc(svcPhone) : ""}
+        ${svcAddr  ? " · 📍 " + esc(svcAddr) : ""}
+        ${(!svcPhone && !svcAddr) ? "Заполните форму записи" : ""}
+      </div>
     </div>
 
     <div class="steps">
@@ -440,30 +484,30 @@ function renderForm() {
       </div>
       <div class="field">
         <label>Комментарий</label>
-        <textarea id="f_comment" maxlength="500" placeholder="Опишите проблему подробнее..."></textarea>
+        <textarea id="f_comment" maxlength="500"
+          placeholder="Опишите проблему подробнее..."></textarea>
         <div class="char"><span id="charNum">0</span> / 500</div>
       </div>
     </div>
 
     <button class="btn btn-primary" id="submitBtn">Отправить заявку</button>
-    ${state.city ? `<button class="btn btn-secondary" id="backBtn">← Выбрать другой сервис</button>` : ""}
+    ${state.city
+      ? `<button class="btn btn-secondary" id="backBtn">← Выбрать другой сервис</button>`
+      : ""}
   `);
 
-  // char counter
   document.getElementById("f_comment").addEventListener("input", function() {
     document.getElementById("charNum").textContent = this.value.length;
   });
-
-  // back
   document.getElementById("backBtn")?.addEventListener("click", () => {
-    state.serviceId = null; state.selectedService = null;
+    state.serviceId = null;
+    state.selectedService = null;
     renderCityPicker();
   });
-
-  // submit
   document.getElementById("submitBtn").addEventListener("click", doSubmit);
 }
 
+// ── Отправка ──────────────────────────────────────────────────────────────────
 function doSubmit() {
   const get = id => document.getElementById(id)?.value?.trim() || "";
 
@@ -477,11 +521,13 @@ function doSubmit() {
   const comment = get("f_comment");
 
   if (!name || !phone || !brand || !model || !plate) {
-    tg?.showAlert?.("Заполните все обязательные поля (*)") || alert("Заполните все обязательные поля");
+    tg?.showAlert?.("Заполните все обязательные поля (*)") ||
+      alert("Заполните все обязательные поля");
     return;
   }
-  if (phone.replace(/\D/g,"").length < 10) {
-    tg?.showAlert?.("Введите корректный номер телефона") || alert("Введите корректный номер телефона");
+  if (phone.replace(/\D/g, "").length < 10) {
+    tg?.showAlert?.("Введите корректный номер телефона") ||
+      alert("Введите корректный номер телефона");
     return;
   }
 
@@ -491,7 +537,7 @@ function doSubmit() {
     phone,
     brand,
     model,
-    plate:       plate.toUpperCase(),
+    plate: plate.toUpperCase(),
     service,
     urgency,
     comment,
@@ -507,38 +553,37 @@ function doSubmit() {
     console.error("sendData error:", e);
   }
 
-  // Показываем экран успеха через 350мс
   setTimeout(renderSuccess, 350);
 }
 
-// ── Step 3: успех ─────────────────────────────────────────────────────────────
+// ── Шаг 3: успех ─────────────────────────────────────────────────────────────
 function renderSuccess() {
+  const svcName = state.selectedService?.service_name || "Автосервис";
   render(`
     <div class="header">
-      <div class="logo">⚙ АВТОСЕРВИС</div>
+      <div class="logo">${esc(svcName)}</div>
     </div>
     <div class="card">
       <div class="success">
         <span class="checkmark">✅</span>
         <h2>Заявка отправлена!</h2>
-        <p>Администратор сервиса свяжется с вами<br>в ближайшее время.</p>
+        <p>Администратор свяжется с вами<br>в ближайшее время.</p>
       </div>
     </div>
   `);
 }
 
-// ── Utils ─────────────────────────────────────────────────────────────────────
+// ── Утилиты ───────────────────────────────────────────────────────────────────
 function esc(str) {
   return String(str || "").replace(/[&<>"']/g, c =>
-    ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" })[c]
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]
   );
 }
-
 function renderSpinner() {
   render(`<div class="spinner-wrap"><div class="spinner"></div></div>`);
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
+// ── Старт ─────────────────────────────────────────────────────────────────────
 init();
 </script>
 </body>

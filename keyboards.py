@@ -50,16 +50,19 @@ def kb_client_webservice(idservice: str) -> ReplyKeyboardMarkup:
 
 
 def kb_admin_main() -> ReplyKeyboardMarkup:
+    """Меню администратора (не управляющего)."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📋 Заявки сервиса")],
             [KeyboardButton(text="👥 Администраторы"), KeyboardButton(text="ℹ️ О сервисе")],
+            [KeyboardButton(text="🚪 Уйти из администраторов")],
         ],
         resize_keyboard=True,
     )
 
 
 def kb_owner_main() -> ReplyKeyboardMarkup:
+    """Меню управляющего."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📋 Заявки сервиса")],
@@ -75,6 +78,16 @@ def kb_cancel() -> ReplyKeyboardMarkup:
         keyboard=[[KeyboardButton(text="❌ Отмена")]],
         resize_keyboard=True,
     )
+
+
+def kb_confirm_leave(idservice: str) -> InlineKeyboardMarkup:
+    """Подтверждение выхода из администраторов."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, выйти", callback_data=f"leave_admin:{idservice}"),
+            InlineKeyboardButton(text="❌ Отмена",    callback_data="leave_cancel"),
+        ]
+    ])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -95,7 +108,7 @@ def kb_request_actions(request_id: str) -> InlineKeyboardMarkup:
 
 
 def kb_select_service(services: list, action: str) -> InlineKeyboardMarkup:
-    """Выбор сервиса из списка. action — префикс callback_data."""
+    """Выбор сервиса из списка."""
     rows = []
     for svc in services:
         rows.append([

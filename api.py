@@ -1,13 +1,10 @@
 """
-api.py — лёгкий REST-сервис для Telegram WebApp.
+api.py — REST-сервис для Telegram WebApp.
 
 Endpoints:
   GET /api/services?city=<city>   — список сервисов в городе
   GET /api/service/<id>           — детали одного сервиса
-
-Запускается параллельно с ботом только когда нужен WebApp.
-На Render можно запустить отдельным web-service'ом или внутри одного
-(через supervisord / procfile).
+  GET /healthz                    — healthcheck для Render
 """
 
 import os
@@ -20,13 +17,14 @@ from database import db
 
 app = FastAPI(title="AutoService API", docs_url=None, redoc_url=None)
 
-# Разрешаем запросы только с вашего фронтенда (GitHub Pages / Vercel / etc.)
-WEBAPP_ORIGIN = os.getenv("WEBAPP_ORIGIN", "*")
-
+# CORS — разрешаем запросы отовсюду.
+# Telegram WebApp открывается внутри iframe с origin telegram.org,
+# поэтому allow_origins="*" — единственный надёжный вариант.
+# allow_credentials=False обязателен при allow_origins="*".
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[WEBAPP_ORIGIN],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["GET", "OPTIONS"],
     allow_headers=["*"],
 )

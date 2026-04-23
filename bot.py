@@ -7,7 +7,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, BotCommandScopeDefault
+from aiogram.types import BotCommandScopeDefault
 
 from config import BOT_TOKEN
 from database import db
@@ -25,26 +25,20 @@ async def main() -> None:
     bot = Bot(token=BOT_TOKEN)
     dp  = Dispatcher(storage=MemoryStorage())
 
+    # Порядок важен: более специфичные роутеры — раньше
     dp.include_routers(
-        requests.router,
-        start.router,
-        register.router,
-        admin_mgmt.router,
-        admin_actions.router,
+        requests.router,      # WebApp data (самый специфичный)
+        start.router,         # /start
+        register.router,      # регистрация сервиса
+        admin_mgmt.router,    # добавить / удалить администратора
+        admin_actions.router, # статусы заявок, просмотр, fallback
     )
 
     await db.connect()
 
-    # Команды в меню бота (кнопка Menu / /)
-    await bot.set_my_commands(
-        commands=[
-            BotCommand(command="start",            description="🏠 Главное меню"),
-            BotCommand(command="recording",        description="🚗 Записаться в автосервис"),
-            BotCommand(command="register_service", description="📝 Зарегистрировать сервис"),
-            BotCommand(command="leave_admin",      description="🚪 Уйти из администраторов"),
-        ],
-        scope=BotCommandScopeDefault(),
-    )
+    # Убираем меню команд (бот работает через кнопки)
+    await bot.delete_my_commands(scope=BotCommandScopeDefault())
+    await bot.set_chat_menu_button()
 
     logger.info("🚀 Бот запущен (polling)")
     try:

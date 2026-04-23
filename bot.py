@@ -7,9 +7,9 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommandScopeDefault
+from aiogram.types import BotCommandScopeDefault, MenuButtonWebApp, WebAppInfo
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, WEBAPP_URL
 from database import db
 from handlers import admin_actions, admin_mgmt, register, requests, start
 
@@ -25,20 +25,31 @@ async def main() -> None:
     bot = Bot(token=BOT_TOKEN)
     dp  = Dispatcher(storage=MemoryStorage())
 
-    # Порядок важен: более специфичные роутеры — раньше
     dp.include_routers(
-        requests.router,      # WebApp data (самый специфичный)
-        start.router,         # /start
-        register.router,      # регистрация сервиса
-        admin_mgmt.router,    # добавить / удалить администратора
-        admin_actions.router, # статусы заявок, просмотр, fallback
+        requests.router,
+        start.router,
+        register.router,
+        admin_mgmt.router,
+        admin_actions.router,
     )
 
     await db.connect()
 
-    # Убираем меню команд (бот работает через кнопки)
+    # Убираем команды из меню
     await bot.delete_my_commands(scope=BotCommandScopeDefault())
-    await bot.set_chat_menu_button()
+
+    # Кнопка Menu Button — открывает WebApp напрямую
+    if WEBAPP_URL:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="🚗 Записаться",
+                web_app=WebAppInfo(url=WEBAPP_URL),
+            )
+        )
+        logger.info("✅ Menu Button установлена: %s", WEBAPP_URL)
+    else:
+        await bot.set_chat_menu_button()
+        logger.warning("⚠️ WEBAPP_URL не задан — Menu Button не установлена")
 
     logger.info("🚀 Бот запущен (polling)")
     try:

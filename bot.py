@@ -7,9 +7,9 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommandScopeDefault, MenuButtonWebApp, WebAppInfo
+from aiogram.types import BotCommand, BotCommandScopeDefault
 
-from config import BOT_TOKEN, WEBAPP_URL
+from config import BOT_TOKEN
 from database import db
 from handlers import admin_actions, admin_mgmt, register, requests, start
 
@@ -35,21 +35,16 @@ async def main() -> None:
 
     await db.connect()
 
-    # Убираем команды из меню
-    await bot.delete_my_commands(scope=BotCommandScopeDefault())
-
-    # Кнопка Menu Button — открывает WebApp напрямую
-    if WEBAPP_URL:
-        await bot.set_chat_menu_button(
-            menu_button=MenuButtonWebApp(
-                text="🚗 Записаться",
-                web_app=WebAppInfo(url=WEBAPP_URL),
-            )
-        )
-        logger.info("✅ Menu Button установлена: %s", WEBAPP_URL)
-    else:
-        await bot.set_chat_menu_button()
-        logger.warning("⚠️ WEBAPP_URL не задан — Menu Button не установлена")
+    # Команды в меню бота (кнопка Menu / /)
+    await bot.set_my_commands(
+        commands=[
+            BotCommand(command="start",            description="🏠 Главное меню"),
+            BotCommand(command="recording",        description="🚗 Записаться в автосервис"),
+            BotCommand(command="register_service", description="📝 Зарегистрировать сервис"),
+            BotCommand(command="leave_admin",      description="🚪 Уйти из администраторов"),
+        ],
+        scope=BotCommandScopeDefault(),
+    )
 
     logger.info("🚀 Бот запущен (polling)")
     try:

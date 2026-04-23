@@ -8,7 +8,7 @@ handlers/start.py
 import logging
 
 from aiogram import Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
@@ -82,5 +82,14 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         "Чтобы зарегистрировать свой автосервис — нажмите "
         "<b>«📝 Зарегистрировать сервис»</b>.",
         parse_mode="HTML",
+        reply_markup=kb_client_main(),
+    )
+
+
+@router.message(Command("recording"))
+async def cmd_book(message: Message) -> None:
+    from keyboards import kb_client_main
+    await message.answer(
+        "🚗 Нажмите кнопку ниже, чтобы записаться в автосервис:",
         reply_markup=kb_client_main(),
     )

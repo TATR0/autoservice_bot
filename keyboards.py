@@ -5,6 +5,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     WebAppInfo,
 )
 
@@ -53,6 +54,12 @@ def kb_admin_main() -> ReplyKeyboardMarkup:
     """Меню администратора (не управляющего)."""
     return ReplyKeyboardMarkup(
         keyboard=[
+            [
+                KeyboardButton(
+                    text="🚗 Записаться в сервис",
+                    web_app=WebAppInfo(url=WEBAPP_URL) if WEBAPP_URL else None,
+                )
+            ],
             [KeyboardButton(text="📋 Заявки сервиса")],
             [KeyboardButton(text="👥 Администраторы"), KeyboardButton(text="ℹ️ О сервисе")],
             [KeyboardButton(text="🚪 Уйти из администраторов")],
@@ -65,6 +72,12 @@ def kb_owner_main() -> ReplyKeyboardMarkup:
     """Меню управляющего."""
     return ReplyKeyboardMarkup(
         keyboard=[
+            [
+                KeyboardButton(
+                    text="🚗 Записаться в сервис",
+                    web_app=WebAppInfo(url=WEBAPP_URL) if WEBAPP_URL else None,
+                )
+            ],
             [KeyboardButton(text="📋 Заявки сервиса")],
             [KeyboardButton(text="👥 Администраторы"), KeyboardButton(text="ℹ️ О сервисе")],
             [KeyboardButton(text="➕ Добавить админа"), KeyboardButton(text="➖ Удалить админа")],

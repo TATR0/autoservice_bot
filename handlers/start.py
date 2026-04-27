@@ -1,13 +1,16 @@
 """
 handlers/start.py
+
+/start               — определяем роль и показываем нужное меню
+/start SVC_<uuid>    — клиент пришёл по ссылке сервиса
 """
 
 import logging
 
 from aiogram import Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, ReplyKeyboardRemove
+from aiogram.types import Message
 
 from database import db
 from keyboards import (
@@ -23,24 +26,19 @@ router = Router()
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
+    # Сбрасываем любое активное FSM-состояние при /start
     await state.clear()
 
     user_id = message.from_user.id
     args = message.text.strip().split(maxsplit=1)
     deep_link = args[1] if len(args) == 2 else None
 
-    # Сначала убираем старую клавиатуру — она могла остаться от предыдущей роли
-    await message.answer("⏳", reply_markup=ReplyKeyboardRemove())
-
-    # ── Deep-link: клиент пришёл по ссылке сервиса ────────────────────────────
+    # ── Пришёл по ссылке сервиса ─────────────────────────────────────────────
     if deep_link and deep_link.startswith("SVC_"):
         idservice = deep_link[4:]
         service = await db.get_service(idservice)
         if not service:
-            await message.answer(
-                "❌ Сервис не найден или больше не активен.",
-                reply_markup=kb_client_main(),
-            )
+            await message.answer("❌ Сервис не найден или больше не активен.")
             return
 
         await message.answer(
@@ -79,18 +77,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await message.answer(
         "🚗 <b>Добро пожаловать!</b>\n\n"
         "Здесь вы можете записаться в автосервис онлайн.\n\n"
-        "Нажмите <b>«Записаться в автосервис»</b> — "
+        "Нажмите кнопку <b>«Записаться в автосервис»</b> — "
         "откроется форма, выберите город и сервис.\n\n"
-        "Чтобы зарегистрировать свой сервис — нажмите "
+        "Чтобы зарегистрировать свой автосервис — нажмите "
         "<b>«📝 Зарегистрировать сервис»</b>.",
         parse_mode="HTML",
-        reply_markup=kb_client_main(),
-    )
-
-
-@router.message(Command("book"))
-async def cmd_book(message: Message) -> None:
-    await message.answer(
-        "🚗 Нажмите кнопку ниже, чтобы записаться в автосервис:",
         reply_markup=kb_client_main(),
     )

@@ -25,6 +25,7 @@ BTN_STATS          = "📊 Статистика"
 BTN_ADMINS         = "👥 Администраторы"
 BTN_INVITE         = "➕ Пригласить админа"
 BTN_REMOVE_ADMIN   = "➖ Удалить админа"
+BTN_SERVICES       = "🔧 Услуги"
 BTN_ABOUT          = "ℹ️ О сервисе"
 BTN_SWITCH         = "🔄 Сменить сервис"
 BTN_LEAVE          = "🚪 Уйти из администраторов"
@@ -78,6 +79,7 @@ def kb_owner_main(idservice: str, *, many_services: bool) -> ReplyKeyboardMarkup
         [KeyboardButton(text=BTN_SERVICE_REQS), KeyboardButton(text=BTN_STATS)],
         [KeyboardButton(text=BTN_INVITE), KeyboardButton(text=BTN_REMOVE_ADMIN)],
         [KeyboardButton(text=BTN_ADMINS), KeyboardButton(text=BTN_ABOUT)],
+        [KeyboardButton(text=BTN_SERVICES)],
         [_webapp_button(BTN_BOOK_OWN, idservice)],
     ]
     if many_services:
@@ -163,6 +165,21 @@ def kb_select_admin(admins: list, owner_id: int, titles: dict[int, str]) -> Inli
         for adm in admins if adm["idusertg"] != owner_id
     ]
     rows.append([InlineKeyboardButton(text=BTN_CANCEL, callback_data="cancel_action")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def kb_catalog(items: list) -> InlineKeyboardMarkup:
+    """Список услуг: тап по услуге ведёт к её удалению."""
+    rows = [
+        [InlineKeyboardButton(
+            text=f"❌ {item['title']}",
+            callback_data=f"svcdel:{item['idcatalog']}",
+        )]
+        for item in items
+    ]
+    rows.append([InlineKeyboardButton(
+        text="➕ Добавить услугу", callback_data="svcadd"
+    )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

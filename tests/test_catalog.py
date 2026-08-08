@@ -1,5 +1,7 @@
 """Тесты каталога услуг — идут против настоящей базы (см. tests/conftest.py)."""
 
+import asyncio
+
 import config
 from database import db
 
@@ -82,6 +84,72 @@ async def test_delete_twice_returns_none(service):
     assert await db.delete_catalog_item(service, str(item["idcatalog"])) is None
 
 
+async def test_delete_last_two_concurrently_only_one_succeeds(service):
+    """
+    Регрессия на write skew: без блокировки строк подзапрос-подсчёт
+    в двух параллельных транзакциях мог не увидеть чужой незакоммиченный
+    UPDATE, обе проверки «услуга не последняя» проходили одновременно,
+    и сервис оставался вовсе без активных услуг.
+
+    Сам race window — доли миллисекунды, поэтому одной попытки мало, чтобы
+    надёжно поймать регрессию: повторяем гонку несколько раз подряд,
+    возвращая обе услуги активными между попытками.
+    """
+    items = await db.get_catalog(service)
+    keep_ids = [item["idcatalog"] for item in items[:2]]
+    drop_ids = [item["idcatalog"] for item in items[2:]]
+    async with db.pool.acquire() as conn:
+        await conn.executemany(
+            "UPDATE service_catalog SET idrecstatus=-1, deletedate=now() WHERE idcatalog=$1",
+            [(idcatalog,) for idcatalog in drop_ids],
+        )
+
+    # Прогреваем пул двумя соединениями заранее: иначе одна из двух попыток
+    # ниже тратит время на установление нового TCP/TLS-соединения и де-факто
+    # стартует уже после того, как первая успела закоммититься — гонка не
+    # воспроизводится не из-за корректности SQL, а из-за задержки коннекта.
+    async with db.pool.acquire(), db.pool.acquire():
+        pass
+
+    for _ in range(30):
+        results = await asyncio.gather(
+            db.delete_catalog_item(service, str(keep_ids[0])),
+            db.delete_catalog_item(service, str(keep_ids[1])),
+        )
+        succeeded = [r for r in results if r is not None]
+        assert len(succeeded) == 1
+        assert len(await db.get_catalog(service)) == 1
+
+        async with db.pool.acquire() as conn:
+            await conn.executemany(
+                "UPDATE service_catalog SET idrecstatus=0, deletedate=NULL WHERE idcatalog=$1",
+                [(idcatalog,) for idcatalog in keep_ids],
+            )
+
+
 async def test_count_requests_by_catalog_zero_for_fresh_item(service):
     item = (await db.get_catalog(service))[0]
     assert await db.count_requests_by_catalog(service, str(item["idcatalog"])) == 0
+
+
+async def test_count_requests_by_catalog_counts_only_matching_item(service):
+    """Проверяем реальный подсчёт, а не то, что запрос всегда возвращает 0:
+    заявка привязана к одной услуге каталога — счётчик другой услуги того же
+    сервиса должен остаться нулевым."""
+    target, other = (await db.get_catalog(service))[:2]
+    async with db.pool.acquire() as conn:
+        idrequest = await conn.fetchval(
+            """
+            INSERT INTO requests (idservice, client_name, phone, idcatalog, service_title)
+            VALUES ($1,$2,$3,$4,$5)
+            RETURNING idrequests
+            """,
+            service, "Тест Тестов", "+79990000003",
+            target["idcatalog"], target["title"],
+        )
+    try:
+        assert await db.count_requests_by_catalog(service, str(target["idcatalog"])) == 1
+        assert await db.count_requests_by_catalog(service, str(other["idcatalog"])) == 0
+    finally:
+        async with db.pool.acquire() as conn:
+            await conn.execute("DELETE FROM requests WHERE idrequests=$1", idrequest)

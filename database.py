@@ -275,15 +275,28 @@ class Database:
 
         Правило «хотя бы одна услуга» живёт в самом запросе, а не в хендлере:
         иначе управляющий с двух устройств удалил бы две последние услуги
-        одновременно — обе проверки прошли бы, и сервис остался бы пустым.
+        одновременно. Простого подсчёта в подзапросе недостаточно: в READ
+        COMMITTED каждая параллельная транзакция видит свой снапшот и не
+        замечает чужой незакоммиченный UPDATE — write skew, обе проверки
+        пройдут одновременно. Поэтому сначала блокируем CTE (`FOR UPDATE`)
+        все активные строки услуги сервиса: вторая транзакция встанет в
+        очередь на эти строки, дождётся коммита первой и уже увидит
+        актуальное количество. `ORDER BY idcatalog` в CTE обязателен —
+        без единого порядка блокировки две параллельные транзакции могут
+        захватывать строки в разной последовательности и словить deadlock.
         """
         async with self.pool.acquire() as conn:
             return await conn.fetchrow(
                 """
+                WITH locked AS (
+                    SELECT idcatalog FROM service_catalog
+                     WHERE idservice=$2 AND idrecstatus=0
+                     ORDER BY idcatalog
+                     FOR UPDATE
+                )
                 UPDATE service_catalog SET idrecstatus=-1, deletedate=now()
                 WHERE idcatalog=$1 AND idservice=$2 AND idrecstatus=0
-                  AND (SELECT count(*) FROM service_catalog
-                        WHERE idservice=$2 AND idrecstatus=0) > 1
+                  AND (SELECT count(*) FROM locked) > 1
                 RETURNING *
                 """,
                 idcatalog, idservice,

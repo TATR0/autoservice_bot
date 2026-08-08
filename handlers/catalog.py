@@ -117,6 +117,7 @@ async def add_finish(message: Message, state: FSMContext) -> None:
     svc = await _owner_service(message, state)
     if svc is None:
         await state.set_state(None)
+        await show_main_menu(message, state)
         return
 
     try:
@@ -187,10 +188,15 @@ async def delete_confirm(callback: CallbackQuery, state: FSMContext) -> None:
 
     removed = await db.delete_catalog_item(str(svc["idservice"]), idcatalog)
     if removed is None:
-        await callback.answer(
-            "❌ Нельзя удалить последнюю услугу — сначала добавьте другую.",
-            show_alert=True,
-        )
+        # None приходит и на «последняя услуга», и на «уже удалили с другого
+        # устройства» — различаем повторным чтением, иначе покажем неверную причину
+        if await db.get_catalog_item(str(svc["idservice"]), idcatalog) is None:
+            await callback.answer("Услуга уже удалена.", show_alert=True)
+        else:
+            await callback.answer(
+                "❌ Нельзя удалить последнюю услугу — сначала добавьте другую.",
+                show_alert=True,
+            )
         await _show_catalog(callback.message, svc, edit=True)
         return
 

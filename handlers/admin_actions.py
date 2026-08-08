@@ -152,7 +152,7 @@ async def service_stats(message: Message, state: FSMContext) -> None:
         await message.answer("❌ Не удалось собрать статистику.")
         return
 
-    breakdown = await db.get_service_type_breakdown(idservice)
+    breakdown = await db.get_service_breakdown(idservice)
     avg_reaction = await db.get_avg_reaction_seconds(idservice)
 
     await message.answer(render.stats_card(svc, stats, breakdown, avg_reaction))

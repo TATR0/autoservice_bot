@@ -725,13 +725,16 @@ class Database:
                 idservice,
             )
 
-    async def get_service_type_breakdown(self, idservice: str) -> list[asyncpg.Record]:
+    async def get_service_breakdown(self, idservice: str) -> list[asyncpg.Record]:
+        """Сколько заявок по каждой услуге — группируем по снимку названия,
+        чтобы удалённые услуги не выпадали из статистики."""
         async with self.pool.acquire() as conn:
             return await conn.fetch(
                 """
-                SELECT service_type, count(*) AS cnt
-                FROM requests WHERE idservice=$1 AND idrecstatus=0
-                GROUP BY service_type ORDER BY cnt DESC
+                SELECT service_title AS title, count(*) AS cnt
+                FROM requests
+                WHERE idservice=$1 AND idrecstatus=0 AND service_title <> ''
+                GROUP BY service_title ORDER BY cnt DESC
                 """,
                 idservice,
             )

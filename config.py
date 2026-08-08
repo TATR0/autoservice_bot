@@ -57,17 +57,6 @@ INIT_DATA_MAX_AGE: int = int(os.getenv("INIT_DATA_MAX_AGE") or 3600)
 INVITE_TTL_DAYS: int = int(os.getenv("INVITE_TTL_DAYS") or 7)
 
 # ── Справочники ──────────────────────────────────────────────────────────────
-SERVICE_TYPES: dict[str, str] = {
-    "diagnostic":   "Диагностика",
-    "oil-change":   "Замена масла",
-    "tires":        "Шины и диски",
-    "brake":        "Тормозная система",
-    "engine":       "Ремонт двигателя",
-    "transmission": "Коробка передач",
-    "suspension":   "Подвеска",
-    "body":         "Кузовные работы",
-    "other":        "Другое",
-}
 
 # Шаблонный набор услуг: копируется сервису при регистрации, дальше
 # управляющий правит список сам (handlers/catalog.py).

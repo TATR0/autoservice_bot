@@ -93,13 +93,6 @@ def normalize_city(raw: object) -> str:
     )
 
 
-def validate_service_type(raw: object) -> str:
-    value = str(raw or "").strip()
-    if value not in config.SERVICE_TYPES:
-        raise ValidationError("Неизвестный тип работ.")
-    return value
-
-
 def validate_urgency(raw: object) -> str:
     value = str(raw or "").strip()
     if value not in config.URGENCY_LABELS:

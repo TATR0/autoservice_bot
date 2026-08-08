@@ -41,10 +41,6 @@ def status_label(status: str) -> str:
     return config.REQUEST_STATUS_LABELS.get(status, status)
 
 
-def service_type_label(key: str) -> str:
-    return config.SERVICE_TYPES.get(key, key)
-
-
 def urgency_label(key: str) -> str:
     return config.URGENCY_LABELS.get(key, key)
 
@@ -60,7 +56,7 @@ def request_card_for_staff(req, *, tz: str | None = None, title: str = "🚗 <b>
         f"💬 <b>Telegram ID:</b> <code>{req['idclienttg']}</code>\n\n"
         f"🚙 <b>Автомобиль:</b> {h(req['brand'])} {h(req['model'])}\n"
         f"🔢 <b>Гос. номер:</b> <code>{h(req['plate'])}</code>\n\n"
-        f"🔧 <b>Услуга:</b> {h(service_type_label(req['service_type']))}\n"
+        f"🔧 <b>Услуга:</b> {h(req['service_title'])}\n"
         f"⚡ <b>Срочность:</b> {h(urgency_label(req['urgency']))}\n"
     )
     if req["comment"]:
@@ -84,7 +80,7 @@ def request_line_for_staff(req, tz: str | None = None) -> str:
         f"{status_label(req['status'])}{overdue}\n"
         f"  📞 <code>{h(format_phone(req['phone']))}</code> | "
         f"🚗 {h(req['brand'])} {h(req['model'])} ({h(req['plate'])})\n"
-        f"  🔧 {h(service_type_label(req['service_type']))} | "
+        f"  🔧 {h(req['service_title'])} | "
         f"⚡ {h(urgency_label(req['urgency']))}\n"
         f"  🕒 {local_dt(req['createdate'], tz)}\n"
     )
@@ -94,7 +90,7 @@ def request_line_for_client(req) -> str:
     return (
         f"{request_number(req['seq'])} 🚗 <b>{h(req['brand'])} {h(req['model'])}</b>\n"
         f"   Сервис: {h(req['service_name'] or '—')}\n"
-        f"   Услуга: {h(service_type_label(req['service_type']))}\n"
+        f"   Услуга: {h(req['service_title'])}\n"
         f"   Статус: {status_label(req['status'])}\n"
         f"   Дата: {local_dt(req['createdate'])}\n\n"
     )
@@ -174,7 +170,7 @@ def stats_card(svc, stats, breakdown, avg_reaction_seconds: float | None) -> str
     if breakdown:
         text += "\n<b>Популярные работы:</b>\n"
         for row in breakdown[:5]:
-            text += f"• {h(service_type_label(row['service_type']))} — {row['cnt']}\n"
+            text += f"• {h(row['title'])} — {row['cnt']}\n"
     return text
 
 

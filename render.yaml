@@ -1,0 +1,25 @@
+# Render Blueprint — один Web Service вместо пары «worker + web».
+# Background Worker платный, а два процесса на free-плане не поднимутся.
+services:
+  - type: web
+    name: autoservice-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /healthz
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: BOT_USERNAME
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: BASE_URL
+        sync: false          # https://<имя-сервиса>.onrender.com
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: MASTER_CHAT_ID
+        value: "0"
+      - key: DEFAULT_TIMEZONE
+        value: Europe/Moscow

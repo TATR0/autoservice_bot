@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 
-# Устанавливаем пакеты в отдельную папку, чтобы не тащить dev-мусор дальше
 RUN pip install --upgrade pip \
  && pip install --prefix=/install --no-cache-dir -r requirements.txt
 
@@ -23,30 +22,23 @@ RUN pip install --upgrade pip \
 # ─────────────────────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
-# Не писать .pyc, не буферизировать stdout/stderr
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PORT=8080
 
 WORKDIR /app
 
-# Только runtime-либы (libpq нужна asyncpg в рантайме)
+# libpq нужна asyncpg в рантайме
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
-# Копируем установленные пакеты из builder
 COPY --from=builder /install /usr/local
-
-# Копируем исходники
 COPY . .
 
-# Порт для FastAPI (api.py)
-# Бот (bot.py) порт не открывает — он polling-клиент
 EXPOSE 8080
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CMD — по умолчанию запускает бота.
-# Для API-сервиса переопределите CMD в docker-compose или на платформе:
-#   command: uvicorn api:app --host 0.0.0.0 --port 8080
-# ─────────────────────────────────────────────────────────────────────────────
-CMD ["python", "bot.py"]
+# Один процесс: webhook-бот, REST API и статика WebApp внутри одного FastAPI.
+# Воркер строго один — иначе несколько процессов будут наперегонки ставить
+# вебхук и обрабатывать апдейты.
+CMD ["sh", "-c", "exec uvicorn app:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1"]

@@ -4,9 +4,16 @@ aiogram==3.27.0
 # PostgreSQL async driver (Supabase)
 asyncpg==0.31.0
 
-# REST API for WebApp
+# Webhook + REST API + статика WebApp — один процесс
 fastapi==0.136.0
 uvicorn[standard]==0.44.0
 
 # Env vars
 python-dotenv==1.1.0
+
+# База часовых поясов для zoneinfo: в slim-образах и на Windows её нет,
+# без неё «заявок за сегодня» считалось бы по UTC
+tzdata==2025.2
+
+# Опционально: FSM в Redis вместо PostgreSQL (задайте REDIS_URL)
+# redis==5.2.1

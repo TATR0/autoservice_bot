@@ -3,22 +3,21 @@ handlers/start.py
 
 /start               — определяем роль и показываем нужное меню
 /start SVC_<uuid>    — клиент пришёл по ссылке сервиса
+/start ADM_<token>   — приглашение стать администратором
 """
 
 import logging
 
-from aiogram import Router
-from aiogram.filters import CommandStart
+from aiogram import F, Router
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
+import keyboards as kb
 from database import db
-from keyboards import (
-    kb_admin_main,
-    kb_client_main,
-    kb_client_webservice,
-    kb_owner_main,
-)
+from handlers.common import set_active_service, show_main_menu
+from notifications import safe_send
+from validators import h
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -26,61 +25,155 @@ router = Router()
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
-    # Сбрасываем любое активное FSM-состояние при /start
+    # Сбрасываем незавершённый FSM-поток, активный сервис сохраняем
+    data = await state.get_data()
     await state.clear()
+    if data.get("active_service"):
+        await set_active_service(state, data["active_service"])
 
-    user_id = message.from_user.id
-    args = message.text.strip().split(maxsplit=1)
-    deep_link = args[1] if len(args) == 2 else None
+    parts = (message.text or "").split(maxsplit=1)
+    payload = parts[1].strip() if len(parts) == 2 else ""
 
-    # ── Пришёл по ссылке сервиса ─────────────────────────────────────────────
-    if deep_link and deep_link.startswith("SVC_"):
-        idservice = deep_link[4:]
-        service = await db.get_service(idservice)
-        if not service:
-            await message.answer("❌ Сервис не найден или больше не активен.")
-            return
+    if payload.startswith("SVC_"):
+        await _handle_service_link(message, payload[4:])
+        return
 
+    if payload.startswith("ADM_"):
+        await _handle_invite_link(message, payload[4:])
+        return
+
+    await show_main_menu(message, state)
+
+
+async def _handle_service_link(message: Message, idservice: str) -> None:
+    service = await db.get_service(idservice)
+    if not service:
         await message.answer(
-            f"🔧 <b>Добро пожаловать!</b>\n\n"
-            f"Вы открыли форму записи в <b>{service['service_name']}</b>.\n"
-            f"Нажмите кнопку ниже, чтобы заполнить заявку 👇",
-            parse_mode="HTML",
-            reply_markup=kb_client_webservice(idservice),
+            "❌ Сервис не найден или больше не активен.",
+            reply_markup=kb.kb_client_main(),
         )
         return
 
-    # ── Определяем роль ───────────────────────────────────────────────────────
-    owned = await db.get_owned_services(user_id)
-    if owned:
-        names = ", ".join(s["service_name"] for s in owned[:3])
+    if not kb.webapp_url(idservice):
         await message.answer(
-            f"👋 <b>Добро пожаловать, управляющий!</b>\n\n"
-            f"Ваши сервисы: <i>{names}</i>",
-            parse_mode="HTML",
-            reply_markup=kb_owner_main(),
+            "⚠️ Онлайн-форма временно недоступна.\n"
+            f"Позвоните в сервис: <code>{h(service['service_number'])}</code>"
         )
         return
 
-    admin_services = await db.get_admin_services(user_id)
-    if admin_services:
-        names = ", ".join(s["service_name"] for s in admin_services[:3])
-        await message.answer(
-            f"👋 <b>Добро пожаловать, администратор!</b>\n\n"
-            f"Вы обслуживаете: <i>{names}</i>",
-            parse_mode="HTML",
-            reply_markup=kb_admin_main(),
-        )
-        return
-
-    # Обычный пользователь
     await message.answer(
-        "🚗 <b>Добро пожаловать!</b>\n\n"
-        "Здесь вы можете записаться в автосервис онлайн.\n\n"
-        "Нажмите кнопку <b>«Записаться в автосервис»</b> — "
-        "откроется форма, выберите город и сервис.\n\n"
-        "Чтобы зарегистрировать свой автосервис — нажмите "
-        "<b>«📝 Зарегистрировать сервис»</b>.",
-        parse_mode="HTML",
-        reply_markup=kb_client_main(),
+        f"🔧 <b>Добро пожаловать!</b>\n\n"
+        f"Вы открыли форму записи в <b>{h(service['service_name'])}</b>.\n"
+        f"📍 {h(service['city'])}, {h(service['location_service'])}\n\n"
+        "Нажмите кнопку ниже, чтобы заполнить заявку 👇",
+        reply_markup=kb.kb_client_service(idservice),
     )
+
+
+async def _handle_invite_link(message: Message, token: str) -> None:
+    invite = await db.get_valid_invite(token)
+    if not invite:
+        await message.answer(
+            "❌ Приглашение недействительно: срок истёк или ссылку уже использовали.\n\n"
+            "Попросите управляющего прислать новую.",
+            reply_markup=kb.kb_client_main(),
+        )
+        return
+
+    if await db.is_admin(str(invite["idservice"]), message.from_user.id):
+        await message.answer(
+            f"ℹ️ Вы уже администратор сервиса <b>{h(invite['service_name'])}</b>."
+        )
+        return
+
+    await message.answer(
+        f"👥 Вас приглашают стать администратором сервиса "
+        f"<b>{h(invite['service_name'])}</b>.\n\n"
+        "Администратор видит заявки клиентов и меняет их статусы.",
+        reply_markup=kb.kb_accept_invite(token),
+    )
+
+
+@router.callback_query(F.data.startswith("invite_accept:"))
+async def invite_accept(callback: CallbackQuery, state: FSMContext) -> None:
+    token = callback.data.split(":", 1)[1]
+    invite = await db.use_invite(token, callback.from_user.id)
+
+    if invite is None:
+        await callback.answer("❌ Приглашение уже использовано или истекло.", show_alert=True)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    svc = await db.get_service(str(invite["idservice"]))
+    svc_name = svc["service_name"] if svc else "сервис"
+
+    await set_active_service(state, str(invite["idservice"]))
+    await callback.message.edit_text(
+        f"✅ Вы стали администратором сервиса <b>{h(svc_name)}</b>."
+    )
+    await callback.answer("Готово!")
+    await show_main_menu(
+        callback.message,
+        state,
+        greeting=f"🔧 Активный сервис: <b>{h(svc_name)}</b>",
+        user_id=callback.from_user.id,
+    )
+
+    user = await db.get_user(callback.from_user.id)
+    await safe_send(
+        callback.bot,
+        invite["created_by"],
+        f"👥 <b>{h(db.user_title(user, callback.from_user.id))}</b> принял приглашение "
+        f"и стал администратором сервиса <b>{h(svc_name)}</b>.",
+    )
+
+
+# ── Выбор активного сервиса ──────────────────────────────────────────────────
+
+@router.message(Command("menu"))
+@router.message(F.text == kb.BTN_SWITCH)
+async def switch_service(message: Message, state: FSMContext) -> None:
+    services = await db.get_user_services(message.from_user.id)
+    if not services:
+        await show_main_menu(message, state)
+        return
+    if len(services) == 1:
+        await set_active_service(state, str(services[0]["idservice"]))
+        await show_main_menu(message, state)
+        return
+
+    await message.answer(
+        "Выберите активный сервис:",
+        reply_markup=kb.kb_select_service(services, "pick_service"),
+    )
+
+
+@router.callback_query(F.data.startswith("pick_service:"))
+async def pick_service(callback: CallbackQuery, state: FSMContext) -> None:
+    idservice = callback.data.split(":", 1)[1]
+
+    if not await db.has_access(idservice, callback.from_user.id):
+        await callback.answer("❌ У вас нет доступа к этому сервису.", show_alert=True)
+        return
+
+    await set_active_service(state, idservice)
+    svc = await db.get_service(idservice)
+    svc_name = svc["service_name"] if svc else idservice
+
+    await callback.message.edit_text(f"✅ Активный сервис: <b>{h(svc_name)}</b>")
+    await callback.answer()
+    await show_main_menu(
+        callback.message,
+        state,
+        greeting=f"🔧 Работаем с сервисом <b>{h(svc_name)}</b>",
+        user_id=callback.from_user.id,
+    )
+
+
+@router.callback_query(F.data == "cancel_action")
+async def cancel_action(callback: CallbackQuery) -> None:
+    try:
+        await callback.message.delete()
+    except Exception:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.answer("Отменено.")

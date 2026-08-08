@@ -1,176 +1,213 @@
 """
 handlers/requests.py
 
-• Обработка данных из Telegram WebApp (webapp_data) → создание заявки
-• «📋 Мои заявки» для клиента
+• «📋 Мои заявки» — список заявок клиента
+• Отмена заявки клиентом
+• create_request_flow() — общая логика создания заявки, вызывается из app.py
+  (POST /api/requests) и из legacy-обработчика web_app_data
+
+Заявки принимаются по HTTP, а не через tg.sendData(): sendData работает
+только для WebApp, открытых кнопкой reply-клавиатуры, и молча теряет данные
+во всех остальных случаях.
 """
 
-import json
+from __future__ import annotations
+
 import logging
-from datetime import datetime
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
+from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import default_state
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
-from config import (
-    CLIENT_NOTIFICATIONS,
-    MASTER_CHAT_ID,
-    REQUEST_STATUS_LABELS,
-    SERVICE_TYPES,
-    URGENCY_LABELS,
-)
+import config
+import keyboards as kb
+import render
 from database import db
-from keyboards import kb_client_main, kb_request_actions
+from notifications import notify_staff, safe_send
+from validators import ValidationError, h, validate_request_fields
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# WebApp → новая заявка
-# ─────────────────────────────────────────────────────────────────────────────
+class RequestRejected(Exception):
+    """Заявку принять нельзя — текст предназначен клиенту."""
+
+
+async def create_request_flow(
+    bot: Bot,
+    *,
+    client_tg_id: int,
+    payload: dict,
+) -> tuple[dict, bool]:
+    """
+    Провалидировать, сохранить заявку и разослать уведомления.
+
+    Возвращает (краткое описание заявки, is_duplicate).
+    Бросает RequestRejected с понятным клиенту текстом.
+    """
+    service_id = str(payload.get("service_id") or "").strip()
+    if not service_id:
+        raise RequestRejected("Не выбран автосервис.")
+
+    service = await db.get_service(service_id)
+    if not service:
+        raise RequestRejected("Сервис не найден или больше не принимает заявки.")
+
+    try:
+        fields = validate_request_fields(payload)
+    except ValidationError as exc:
+        raise RequestRejected(str(exc)) from exc
+
+    client_uid = str(payload.get("client_uid") or "").strip()[:64] or None
+
+    # ── Антиспам ─────────────────────────────────────────────────────────────
+    # client_uid ловит двойной тап, поэтому кулдаун проверяем только для
+    # действительно новых отправок.
+    if client_uid is None:
+        elapsed = await db.seconds_since_last_request(client_tg_id)
+        if elapsed is not None and elapsed < config.REQUEST_COOLDOWN_SECONDS:
+            wait = int(config.REQUEST_COOLDOWN_SECONDS - elapsed) + 1
+            raise RequestRejected(f"Слишком часто. Повторите через {wait} сек.")
+
+    active = await db.count_active_client_requests(client_tg_id, service_id)
+    if active >= config.MAX_ACTIVE_REQUESTS_PER_CLIENT:
+        raise RequestRejected(
+            f"У вас уже {active} активных заявки(ок) в этом сервисе. "
+            "Дождитесь их обработки."
+        )
+
+    request, is_duplicate = await db.create_request(
+        idservice=service_id,
+        client_tg_id=client_tg_id,
+        client_uid=client_uid,
+        **fields,
+    )
+
+    summary = {
+        "request_id": str(request["idrequests"]),
+        "number": render.request_number(request["seq"]),
+        "service_name": service["service_name"],
+        "status": request["status"],
+    }
+
+    if is_duplicate:
+        logger.info("Повторная отправка заявки %s, дубль не создан", summary["number"])
+        return summary, True
+
+    await db.set_user_phone(client_tg_id, fields["phone"])
+
+    # Карточка администраторам и владельцу
+    await notify_staff(
+        bot,
+        service_id,
+        render.request_card_for_staff(request, tz=service["timezone"]),
+        reply_markup=kb.kb_request_actions(summary["request_id"], request["status"]),
+    )
+
+    # Подтверждение клиенту
+    await safe_send(
+        bot,
+        client_tg_id,
+        f"✅ <b>Заявка {summary['number']} отправлена!</b>\n\n"
+        f"<b>Сервис:</b> {h(service['service_name'])}\n"
+        f"<b>Услуга:</b> {h(render.service_type_label(fields['service_type']))}\n"
+        f"<b>Автомобиль:</b> {h(fields['brand'])} {h(fields['model'])}\n\n"
+        "Администратор свяжется с вами в ближайшее время.",
+        reply_markup=kb.kb_client_request_actions(summary["request_id"]),
+    )
+    return summary, False
+
+
+# ── Legacy: WebApp, открытый кнопкой reply-клавиатуры ────────────────────────
+# Основной путь — POST /api/requests. Этот обработчик остаётся страховкой,
+# если у клиента закешировалась старая версия формы.
 
 @router.message(F.web_app_data)
 async def handle_webapp_data(message: Message) -> None:
+    import json
+
     try:
-        data: dict = json.loads(message.web_app_data.data)
+        payload = json.loads(message.web_app_data.data)
     except json.JSONDecodeError:
-        await message.answer("❌ Ошибка: получены некорректные данные.")
+        await message.answer("❌ Получены некорректные данные формы.")
         return
 
-    service_id   = data.get("service_id", "")
-    client_name  = data.get("client_name") or "Не указано"
-    phone        = data.get("phone") or "—"
-    brand        = data.get("brand") or "—"
-    model        = data.get("model") or "—"
-    plate        = data.get("plate") or "—"
-    service_key  = data.get("service") or "other"
-    urgency_key  = data.get("urgency") or "low"
-    comment      = data.get("comment") or ""
+    # Старая форма присылала ключ "service" вместо "service_type"
+    payload.setdefault("service_type", payload.get("service"))
 
-    service_label = SERVICE_TYPES.get(service_key, service_key)
-    urgency_label = URGENCY_LABELS.get(urgency_key, urgency_key)
-
-    # Сохраняем в БД
     try:
-        request_id = await db.create_request(
-            idservice=service_id,
-            client_tg_id=message.from_user.id,
-            client_name=client_name,
-            phone=phone,
-            brand=brand,
-            model=model,
-            plate=plate,
-            service_type=service_key,
-            urgency=urgency_key,
-            comment=comment,
+        await create_request_flow(
+            message.bot, client_tg_id=message.from_user.id, payload=payload
         )
-    except Exception as exc:
-        logger.exception("Ошибка при сохранении заявки")
-        await message.answer(f"❌ Не удалось сохранить заявку:\n<code>{exc}</code>", parse_mode="HTML")
-        return
-
-    # Формируем сообщение для администратора
-    ts = datetime.now().strftime("%d.%m.%Y %H:%M")
-    admin_msg = (
-        "🚗 <b>НОВАЯ ЗАЯВКА</b>\n"
-        "─────────────────────\n"
-        f"👤 <b>Клиент:</b> {client_name}\n"
-        f"📞 <b>Телефон:</b> <code>{phone}</code>\n"
-        f"💬 <b>Telegram ID:</b> <code>{message.from_user.id}</code>\n\n"
-        f"🚙 <b>Автомобиль:</b> {brand} {model}\n"
-        f"🔢 <b>Гос. номер:</b> <code>{plate}</code>\n\n"
-        f"🔧 <b>Услуга:</b> {service_label}\n"
-        f"⚡ <b>Срочность:</b> {urgency_label}\n"
-    )
-    if comment:
-        admin_msg += f"\n💬 <b>Комментарий:</b>\n<i>{comment}</i>\n"
-    admin_msg += f"\n⏰ {ts}\n🆔 <code>{request_id}</code>"
-
-    # Отправляем всем администраторам сервиса
-    delivered = 0
-    if service_id:
-        admins = await db.get_active_admins(service_id)
-        for adm in admins:
-            try:
-                await message.bot.send_message(
-                    adm["idusertg"],
-                    admin_msg,
-                    parse_mode="HTML",
-                    reply_markup=kb_request_actions(request_id),
-                )
-                delivered += 1
-            except Exception:
-                logger.warning("Не удалось отправить заявку админу %s", adm["idusertg"])
-
-    # Если никому не доставили — в мастер-чат
-    if delivered == 0 and MASTER_CHAT_ID:
-        try:
-            await message.bot.send_message(
-                MASTER_CHAT_ID,
-                f"⚠️ <b>Заявка без администраторов</b>\n\n{admin_msg}",
-                parse_mode="HTML",
-            )
-        except Exception:
-            logger.exception("Не удалось отправить в мастер-чат")
-
-    # Подтверждение клиенту
-    await message.answer(
-        "✅ <b>Заявка отправлена!</b>\n\n"
-        "Администратор свяжется с вами в ближайшее время.\n\n"
-        f"🆔 Номер заявки: <code>{request_id}</code>",
-        parse_mode="HTML",
-        reply_markup=kb_client_main(),
-    )
+    except RequestRejected as exc:
+        await message.answer(f"❌ {h(exc)}")
+    except Exception:
+        logger.exception("Ошибка при создании заявки из web_app_data")
+        await message.answer("❌ Не удалось сохранить заявку. Попробуйте позже.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# «Мои заявки» — для клиента
-# ─────────────────────────────────────────────────────────────────────────────
+# ── «Мои заявки» ─────────────────────────────────────────────────────────────
 
-@router.message(F.text == "📋 Мои заявки", StateFilter(default_state))
+@router.message(F.text == kb.BTN_MY_REQUESTS, StateFilter(default_state))
 async def my_requests(message: Message) -> None:
-    # Сначала проверим: может быть, это администратор или управляющий
-    admin_services = await db.get_admin_services(message.from_user.id)
-    owned_services = await db.get_owned_services(message.from_user.id)
-    all_services = list({s["idservice"]: s for s in [*admin_services, *owned_services]}.values())
-
-    if all_services:
-        text = "<b>📋 Заявки по вашим сервисам:</b>\n\n"
-        for svc in all_services:
-            reqs = await db.get_service_requests(svc["idservice"], limit=10)
-            text += f"<b>— {svc['service_name']} —</b>\n"
-            if reqs:
-                for r in reqs:
-                    label = REQUEST_STATUS_LABELS.get(r["status"], r["status"])
-                    text += f"  • {r['client_name']} | {label}\n"
-            else:
-                text += "  <i>Заявок нет</i>\n"
-            text += "\n"
-        await message.answer(text, parse_mode="HTML")
-        return
-
-    # Клиентские заявки
-    reqs = await db.get_client_requests(message.from_user.id)
+    reqs = await db.get_client_requests(message.from_user.id, limit=10)
     if not reqs:
         await message.answer(
             "У вас ещё нет заявок.\n\nЗапишитесь в автосервис через кнопку ниже 👇",
-            reply_markup=kb_client_main(),
+            reply_markup=kb.kb_client_main(),
         )
         return
 
-    text = "<b>📋 Ваши заявки:</b>\n\n"
-    for r in reqs:
-        label  = REQUEST_STATUS_LABELS.get(r["status"], r["status"])
-        sname  = r.get("service_name") or "—"
-        date   = r["createdate"].strftime("%d.%m.%Y") if r["createdate"] else "—"
-        text += (
-            f"🚗 <b>{r['brand']} {r['model']}</b>\n"
-            f"   Сервис: {sname}\n"
-            f"   Статус: {label}\n"
-            f"   Дата: {date}\n"
-            f"   🆔 <code>{r['idrequests']}</code>\n\n"
+    text = "<b>📋 Ваши заявки:</b>\n\n" + "".join(
+        render.request_line_for_client(r) for r in reqs
+    )
+    for chunk in render.split_text(text):
+        await message.answer(chunk)
+
+
+# ── Отмена заявки клиентом ───────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("cancelreq:"))
+async def cancel_request(callback: CallbackQuery) -> None:
+    request_id = callback.data.split(":", 1)[1]
+
+    req = await db.get_request(request_id)
+    if not req:
+        await callback.answer("❌ Заявка не найдена.", show_alert=True)
+        return
+    if req["idclienttg"] != callback.from_user.id:
+        await callback.answer("❌ Это не ваша заявка.", show_alert=True)
+        return
+
+    updated = await db.update_request_status(
+        request_id,
+        "cancelled",
+        changed_by=callback.from_user.id,
+        allowed_from=config.STATUS_TRANSITIONS["cancelled"],
+        note="отменена клиентом",
+    )
+    if updated is None:
+        await callback.answer(
+            "Заявку уже нельзя отменить — она обработана сервисом.", show_alert=True
         )
-    await message.answer(text, parse_mode="HTML")
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(
+        f"🚫 Заявка {render.request_number(updated['seq'])} отменена."
+    )
+    await callback.answer("Заявка отменена.")
+
+    if updated["idservice"]:
+        user = await db.get_user(callback.from_user.id)
+        await notify_staff(
+            callback.bot,
+            str(updated["idservice"]),
+            f"🚫 <b>Клиент отменил заявку {render.request_number(updated['seq'])}</b>\n"
+            f"👤 {h(db.user_title(user, callback.from_user.id))}\n"
+            f"🚗 {h(updated['brand'])} {h(updated['model'])} ({h(updated['plate'])})",
+        )

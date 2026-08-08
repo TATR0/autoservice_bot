@@ -7,3 +7,7 @@ venv/
 *.egg-info/
 dist/
 .DS_Store
+
+# Служебные каталоги инструментов разработки
+.claude/
+.serena/

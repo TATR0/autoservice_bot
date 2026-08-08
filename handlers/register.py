@@ -1,215 +1,161 @@
 """
-handlers/register.py
+handlers/register.py — FSM-регистрация автосервиса.
 
-FSM-поток регистрации автосервиса.
-Доступен любому пользователю (в будущем — платная функция).
+Четыре шага: название, телефон, город, адрес. Шага с вводом tg id
+администратора нет: владелец сразу становится первым админом, остальных
+подключает инвайт-ссылкой (handlers/admin_mgmt.py).
 """
 
 import logging
-import re
 
 from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.state import State, StatesGroup, default_state
 from aiogram.types import Message
 
+import config
+import keyboards as kb
+import render
 from database import db
-from keyboards import kb_cancel, kb_owner_main
+from handlers.common import set_active_service, show_main_menu
+from validators import ValidationError, clean_text, normalize_city, normalize_phone
 
 logger = logging.getLogger(__name__)
 router = Router()
 
+TOTAL_STEPS = 4
 
-# ─────────────────────────────────────────────────────────────────────────────
 
 class RegService(StatesGroup):
-    name     = State()
-    phone    = State()
-    city     = State()
-    address  = State()
-    admin_id = State()
+    name = State()
+    phone = State()
+    city = State()
+    address = State()
 
 
-# ── Вход ─────────────────────────────────────────────────────────────────────
-
-@router.message(Command("register_service"))
-@router.message(F.text == "📝 Зарегистрировать сервис")
+@router.message(Command("register_service"), StateFilter(default_state))
+@router.message(F.text == kb.BTN_REGISTER, StateFilter(default_state))
 async def register_start(message: Message, state: FSMContext) -> None:
-    await state.clear()
+    owned = await db.count_owned_services(message.from_user.id)
+    if owned >= config.FREE_PLAN_SERVICE_LIMIT:
+        await message.answer(
+            f"⚠️ На текущем тарифе можно зарегистрировать "
+            f"{config.FREE_PLAN_SERVICE_LIMIT} сервис(а).\n"
+            f"У вас уже: {owned}.\n\n"
+            "Чтобы добавить ещё один, обратитесь к поддержке.",
+        )
+        return
+
+    await state.set_state(RegService.name)
     await message.answer(
         "🚗 <b>Регистрация автосервиса</b>\n\n"
-        "<b>Шаг 1/5.</b> Введите <b>название</b> вашего автосервиса:",
-        parse_mode="HTML",
-        reply_markup=kb_cancel(),
+        f"<b>Шаг 1/{TOTAL_STEPS}.</b> Введите <b>название</b> автосервиса:",
+        reply_markup=kb.kb_cancel(),
     )
-    await state.set_state(RegService.name)
 
 
-# ── Шаги ─────────────────────────────────────────────────────────────────────
+@router.message(StateFilter(RegService), F.text == kb.BTN_CANCEL)
+async def register_cancel(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await show_main_menu(message, state, greeting="↩️ Регистрация отменена.")
+
 
 @router.message(RegService.name)
 async def reg_name(message: Message, state: FSMContext) -> None:
-    if message.text == "❌ Отмена":
-        return await _cancel(message, state)
-    name = message.text.strip()
-    if len(name) < 3:
-        await message.answer("❌ Название должно быть не короче 3 символов. Попробуйте ещё раз.")
+    try:
+        name = clean_text(message.text, field="Название", min_len=2, max_len=80)
+    except ValidationError as exc:
+        await message.answer(f"❌ {exc}\nПопробуйте ещё раз:")
         return
+
     await state.update_data(name=name)
-    await message.answer(
-        "<b>Шаг 2/5.</b> Введите <b>номер телефона</b> сервиса:\n"
-        "<i>Пример: +7 (999) 123-45-67</i>",
-        parse_mode="HTML",
-    )
     await state.set_state(RegService.phone)
+    await message.answer(
+        f"<b>Шаг 2/{TOTAL_STEPS}.</b> Введите <b>номер телефона</b> сервиса:\n"
+        "<i>Пример: +7 999 123-45-67</i>",
+        reply_markup=kb.kb_cancel(),
+    )
 
 
 @router.message(RegService.phone)
 async def reg_phone(message: Message, state: FSMContext) -> None:
-    if message.text == "❌ Отмена":
-        return await _cancel(message, state)
-    phone = message.text.strip()
-    if len(re.sub(r"\D", "", phone)) < 10:
-        await message.answer("❌ Некорректный номер телефона. Попробуйте ещё раз.")
+    try:
+        phone = normalize_phone(message.text)
+    except ValidationError as exc:
+        await message.answer(f"❌ {exc}\nПопробуйте ещё раз:")
         return
+
     await state.update_data(phone=phone)
-    await message.answer(
-        "<b>Шаг 3/5.</b> Введите <b>город</b>:\n<i>Пример: Москва</i>",
-        parse_mode="HTML",
-    )
     await state.set_state(RegService.city)
+    await message.answer(
+        f"<b>Шаг 3/{TOTAL_STEPS}.</b> Введите <b>город</b>:\n<i>Пример: Москва</i>",
+        reply_markup=kb.kb_cancel(),
+    )
 
 
 @router.message(RegService.city)
 async def reg_city(message: Message, state: FSMContext) -> None:
-    if message.text == "❌ Отмена":
-        return await _cancel(message, state)
-    city = message.text.strip()
-    if len(city) < 2:
-        await message.answer("❌ Слишком короткое название города.")
+    try:
+        city = normalize_city(message.text)
+    except ValidationError as exc:
+        await message.answer(f"❌ {exc}\nПопробуйте ещё раз:")
         return
+
+    data = await state.get_data()
+    duplicate = await db.find_duplicate_service(message.from_user.id, data["name"], city)
+    if duplicate:
+        await state.set_state(None)
+        await show_main_menu(
+            message,
+            state,
+            greeting=(
+                f"⚠️ Сервис «{data['name']}» в городе {city} у вас уже зарегистрирован.\n"
+                "Повторная регистрация не нужна."
+            ),
+        )
+        return
+
     await state.update_data(city=city)
-    await message.answer(
-        "<b>Шаг 4/5.</b> Введите <b>адрес</b> (улица и дом):\n"
-        "<i>Пример: ул. Пушкина, д. 10</i>",
-        parse_mode="HTML",
-    )
     await state.set_state(RegService.address)
+    await message.answer(
+        f"<b>Шаг 4/{TOTAL_STEPS}.</b> Введите <b>адрес</b> (улица и дом):\n"
+        "<i>Пример: ул. Пушкина, д. 10</i>",
+        reply_markup=kb.kb_cancel(),
+    )
 
 
 @router.message(RegService.address)
 async def reg_address(message: Message, state: FSMContext) -> None:
-    if message.text == "❌ Отмена":
-        return await _cancel(message, state)
-    address = message.text.strip()
-    if len(address) < 5:
-        await message.answer("❌ Адрес слишком короткий.")
+    try:
+        address = clean_text(message.text, field="Адрес", min_len=2, max_len=120)
+    except ValidationError as exc:
+        await message.answer(f"❌ {exc}\nПопробуйте ещё раз:")
         return
-    await state.update_data(address=address)
-    await message.answer(
-        "<b>Шаг 5/5.</b> Укажите <b>Telegram-аккаунт администратора</b>:\n\n"
-        "• <code>@username</code>\n"
-        "• <code>123456789</code> — числовой ID (узнать: @userinfobot)\n\n"
-        "<i>Можно указать себя.</i>",
-        parse_mode="HTML",
-    )
-    await state.set_state(RegService.admin_id)
-
-
-@router.message(RegService.admin_id)
-async def reg_admin(message: Message, state: FSMContext) -> None:
-    if message.text == "❌ Отмена":
-        return await _cancel(message, state)
-
-    admin_tg_id, admin_display = await _resolve_user(message, message.text.strip())
-    if admin_tg_id is None:
-        return  # ошибка уже отправлена
 
     data = await state.get_data()
-    await state.clear()
+    await state.set_state(None)
 
     try:
         idservice = await db.create_service(
             name=data["name"],
             phone=data["phone"],
             city=data["city"],
-            address=data["address"],
+            address=address,
             owner_tg_id=message.from_user.id,
         )
-        await db.add_admin(idservice, admin_tg_id)
-    except Exception as exc:
+    except Exception:
         logger.exception("Ошибка при регистрации сервиса")
-        await message.answer(f"❌ Ошибка при сохранении:\n<code>{exc}</code>", parse_mode="HTML")
+        await message.answer(
+            "❌ Не удалось сохранить сервис. Попробуйте позже.",
+            reply_markup=kb.kb_client_main(),
+        )
         return
 
-    link = db.service_link(idservice)
-    await message.answer(
-        "✅ <b>Сервис успешно зарегистрирован!</b>\n\n"
-        f"<b>Название:</b> {data['name']}\n"
-        f"<b>Телефон:</b> {data['phone']}\n"
-        f"<b>Город:</b> {data['city']}\n"
-        f"<b>Адрес:</b> {data['address']}\n"
-        f"<b>Администратор:</b> {admin_display}\n\n"
-        f"<b>ID сервиса:</b> <code>{idservice}</code>\n\n"
-        "🔗 <b>Ссылка для клиентов</b> (разместите её там, где вас найдут):\n"
-        f"<code>{link}</code>",
-        parse_mode="HTML",
-        reply_markup=kb_owner_main(),
+    svc = await db.get_service(idservice)
+    await set_active_service(state, idservice)
+
+    await message.answer(render.registration_summary(svc, db.service_link(idservice)))
+    await show_main_menu(
+        message, state, greeting="Меню управляющего готово к работе 👇"
     )
-
-    # Уведомляем администратора (если он отличается от регистратора)
-    if admin_tg_id != message.from_user.id:
-        try:
-            await message.bot.send_message(
-                admin_tg_id,
-                f"👋 Вас назначили администратором сервиса <b>{data['name']}</b>!\n\n"
-                f"Нажмите /start для работы с заявками.",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass  # пользователь не запустил бота — ок
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def _cancel(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    from keyboards import kb_client_main
-    await message.answer("↩️ Регистрация отменена.", reply_markup=kb_client_main())
-
-
-async def _resolve_user(message: Message, text: str) -> tuple[int | None, str]:
-    """Вернуть (tg_id, display_name) или (None, '') при ошибке."""
-    m = re.match(r"^@(\w{5,32})$", text)
-    if m:
-        try:
-            chat = await message.bot.get_chat(f"@{m.group(1)}")
-            return chat.id, f"@{m.group(1)} (ID: {chat.id})"
-        except Exception:
-            await message.answer(
-                f"❌ Не удалось найти <code>@{m.group(1)}</code>.\n"
-                "Убедитесь, что пользователь уже писал боту, или введите числовой ID.",
-                parse_mode="HTML",
-            )
-            return None, ""
-
-    if text.lstrip("-").isdigit():
-        tg_id = int(text)
-        try:
-            await message.bot.get_chat(tg_id)
-            return tg_id, f"ID {tg_id}"
-        except Exception:
-            await message.answer(
-                f"❌ Пользователь <code>{tg_id}</code> не найден.",
-                parse_mode="HTML",
-            )
-            return None, ""
-
-    await message.answer(
-        "❌ Неверный формат. Введите <code>@username</code> или числовой ID.",
-        parse_mode="HTML",
-    )
-    return None, ""

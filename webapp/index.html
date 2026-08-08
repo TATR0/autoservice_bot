@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Запись в автосервис</title>
+
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0d0f14;
+    --surface:   #161a23;
+    --border:    rgba(255,255,255,0.07);
+    --accent:    #f0c040;
+    --accent2:   #ff7a3c;
+    --text:      #f0f0f0;
+    --muted:     #8a8fa8;
+    --danger:    #ff9090;
+    --radius:    16px;
+    --radius-sm: 10px;
+    --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  html { font-size: 16px; }
+  body {
+    font-family: var(--font-body);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100dvh;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+    overflow-x: hidden;
+  }
+
+  .app {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 20px 16px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    animation: rise .4s cubic-bezier(.22,1,.36,1);
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .header { text-align: center; padding: 8px 0 4px; }
+  .header .logo {
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    background: linear-gradient(100deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    word-break: break-word;
+  }
+  .header .sub { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .card-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: .5px;
+    text-transform: uppercase;
+  }
+
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .7px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .field input, .field select, .field textarea {
+    width: 100%;
+    background: rgba(255,255,255,0.05);
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 15px;
+    padding: 12px 14px;
+    transition: border-color .2s, background .2s, box-shadow .2s;
+    -webkit-appearance: none;
+  }
+  .field select { cursor: pointer; }
+  .field input::placeholder, .field textarea::placeholder { color: var(--muted); }
+  .field input:focus, .field select:focus, .field textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: rgba(240,192,64,.06);
+    box-shadow: 0 0 0 3px rgba(240,192,64,.12);
+  }
+  .field input.invalid, .field textarea.invalid { border-color: rgba(255,80,80,.6); }
+  .field textarea { resize: none; min-height: 80px; }
+  .field .char { font-size: 11px; color: var(--muted); text-align: right; }
+
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  .consent { display: flex; gap: 10px; align-items: flex-start; font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .consent input { width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px; accent-color: var(--accent); }
+
+  .svc-list { display: flex; flex-direction: column; gap: 10px; }
+  .svc-item {
+    background: rgba(255,255,255,0.04);
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 14px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+  }
+  .svc-item:hover, .svc-item:active {
+    border-color: var(--accent);
+    background: rgba(240,192,64,.06);
+  }
+  .svc-item .svc-name { font-weight: 600; font-size: 15px; }
+  .svc-item .svc-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .svc-arrow { color: var(--accent); font-size: 18px; flex-shrink: 0; }
+
+  .btn {
+    width: 100%;
+    padding: 15px;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: .3px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: transform .15s, box-shadow .2s, opacity .2s;
+  }
+  .btn:active { transform: scale(.97); }
+  .btn-primary { background: linear-gradient(110deg, var(--accent), var(--accent2)); color: #111; }
+  .btn-secondary { background: rgba(255,255,255,0.07); color: var(--text); border: 1.5px solid var(--border); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; transform: none !important; }
+
+  .empty { text-align: center; padding: 28px 0; color: var(--muted); font-size: 14px; }
+  .empty .icon { font-size: 36px; margin-bottom: 10px; }
+
+  .spinner-wrap { display: flex; justify-content: center; padding: 28px 0; }
+  .spinner {
+    width: 32px; height: 32px;
+    border: 3px solid rgba(255,255,255,.1);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .success { text-align: center; padding: 32px 20px; }
+  .success .checkmark {
+    font-size: 56px; margin-bottom: 16px; display: block;
+    animation: pop .4s cubic-bezier(.22,1,.36,1);
+  }
+  @keyframes pop {
+    from { transform: scale(.5); opacity: 0; }
+    to   { transform: scale(1);  opacity: 1; }
+  }
+  .success h2 { font-size: 20px; font-weight: 800; margin-bottom: 10px; }
+  .success p { font-size: 14px; color: var(--muted); line-height: 1.6; }
+  .success .num {
+    display: inline-block;
+    margin: 14px 0 4px;
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    background: rgba(240,192,64,.1);
+    color: var(--accent);
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 1px;
+  }
+
+  .error-banner {
+    background: rgba(255, 80, 80, 0.12);
+    border: 1.5px solid rgba(255, 80, 80, 0.3);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    font-size: 13px;
+    color: var(--danger);
+    text-align: center;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app"></div>
+
+<script>
+"use strict";
+
+// ── Telegram WebApp ──────────────────────────────────────────────────────────
+const tg = window.Telegram?.WebApp;
+if (tg) {
+  tg.ready();
+  try { tg.expand(); } catch (e) {}
+}
+
+// Статика отдаётся тем же сервисом, что и API, — базовый URL пустой,
+// запросы идут на текущий origin. Настраивать ничего не нужно.
+const API_BASE = "";
+
+const SERVICE_TYPES = [
+  { value: "diagnostic",   label: "Диагностика" },
+  { value: "oil-change",   label: "Замена масла" },
+  { value: "tires",        label: "Шины и диски" },
+  { value: "brake",        label: "Тормозная система" },
+  { value: "engine",       label: "Ремонт двигателя" },
+  { value: "transmission", label: "Коробка передач" },
+  { value: "suspension",   label: "Подвеска" },
+  { value: "body",         label: "Кузовные работы" },
+  { value: "other",        label: "Другое" },
+];
+const URGENCY = [
+  { value: "low",    label: "Обычный — 7+ дней" },
+  { value: "medium", label: "Средний — 3–5 дней" },
+  { value: "high",   label: "Срочный — 1–2 дня" },
+  { value: "urgent", label: "Очень срочный — сегодня" },
+];
+
+const params = new URLSearchParams(location.search);
+const state = {
+  serviceId:       params.get("service_id") || null,
+  selectedService: null,
+  city:            "",
+  profile:         { name: "", phone: "" },
+  // Один uid на попытку отправки: повторный тап не создаст дубль заявки
+  clientUid:       newUid(),
+};
+
+const app = document.getElementById("app");
+const render = html => { app.innerHTML = html; };
+
+function newUid() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return "uid-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10);
+}
+
+function esc(str) {
+  return String(str ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
+  );
+}
+
+function alertUser(text) {
+  if (tg?.showAlert) tg.showAlert(text);
+  else alert(text);
+}
+
+async function api(path, options) {
+  const res = await fetch(API_BASE + path, options);
+  let body = null;
+  try { body = await res.json(); } catch (e) {}
+  if (!res.ok) {
+    throw new Error(body?.error || `Ошибка сервера (${res.status})`);
+  }
+  return body;
+}
+
+function renderSpinner() {
+  render(`<div class="spinner-wrap"><div class="spinner"></div></div>`);
+}
+
+// ── Старт ────────────────────────────────────────────────────────────────────
+async function init() {
+  if (!tg?.initData) {
+    render(`
+      <div class="header"><div class="logo">⚙ АВТОСЕРВИС</div></div>
+      <div class="card">
+        <div class="error-banner">
+          Форма открывается только внутри Telegram.<br>
+          Вернитесь в чат с ботом и нажмите кнопку записи.
+        </div>
+      </div>
+    `);
+    return;
+  }
+
+  loadProfile();
+
+  if (state.serviceId) {
+    renderSpinner();
+    try {
+      state.selectedService = await api(`/api/service/${encodeURIComponent(state.serviceId)}`);
+      document.title = state.selectedService.service_name + " — запись";
+    } catch (e) {
+      render(`
+        <div class="header"><div class="logo">⚙ АВТОСЕРВИС</div></div>
+        <div class="card">
+          <div class="error-banner">${esc(e.message)}</div>
+          <button class="btn btn-secondary" onclick="location.href=location.pathname">
+            Выбрать другой сервис
+          </button>
+        </div>
+      `);
+      return;
+    }
+    renderForm();
+  } else {
+    renderCityPicker();
+  }
+}
+
+async function loadProfile() {
+  try {
+    const me = await api(`/api/me?init_data=${encodeURIComponent(tg.initData)}`);
+    state.profile = { name: me.name || "", phone: me.phone || "" };
+    const nameInput  = document.getElementById("f_name");
+    const phoneInput = document.getElementById("f_phone");
+    if (nameInput  && !nameInput.value)  nameInput.value  = state.profile.name;
+    if (phoneInput && !phoneInput.value) phoneInput.value = state.profile.phone;
+  } catch (e) {
+    // Автоподстановка — не критично, форму можно заполнить руками
+  }
+}
+
+// ── Шаг 1: поиск по городу ───────────────────────────────────────────────────
+function renderCityPicker() {
+  render(`
+    <div class="header">
+      <div class="logo">⚙ АВТОСЕРВИС</div>
+      <div class="sub">Онлайн-запись на обслуживание</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Найти сервис</div>
+      <div class="field">
+        <label>Ваш город</label>
+        <input id="cityInput" placeholder="Например: Москва" autocomplete="address-level2">
+      </div>
+      <button class="btn btn-primary" id="searchBtn">Найти сервисы →</button>
+    </div>
+    <div id="results"></div>
+  `);
+
+  const input = document.getElementById("cityInput");
+  const btn   = document.getElementById("searchBtn");
+  input.value = state.city;
+  btn.addEventListener("click", doSearch);
+  input.addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
+
+  async function doSearch() {
+    const city = input.value.trim();
+    if (city.length < 2) {
+      alertUser("Введите название города");
+      return;
+    }
+    state.city = city;
+    btn.disabled = true;
+    btn.textContent = "Поиск...";
+
+    const results = document.getElementById("results");
+    results.innerHTML = `<div class="spinner-wrap"><div class="spinner"></div></div>`;
+
+    try {
+      const list = await api(`/api/services?city=${encodeURIComponent(city)}`);
+      renderServicesList(list, results);
+    } catch (e) {
+      results.innerHTML = `<div class="card"><div class="error-banner">${esc(e.message)}</div></div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Найти сервисы →";
+    }
+  }
+}
+
+function renderServicesList(list, container) {
+  if (!list || list.length === 0) {
+    container.innerHTML = `
+      <div class="card">
+        <div class="empty">
+          <div class="icon">🔍</div>
+          Сервисов в городе <b>${esc(state.city)}</b> не найдено.<br>
+          Попробуйте другой город.
+        </div>
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="card-title">Найдено: ${list.length}</div>
+      <div class="svc-list">${list.map((s, i) => `
+        <div class="svc-item" data-index="${i}">
+          <div>
+            <div class="svc-name">${esc(s.service_name)}</div>
+            <div class="svc-meta">
+              ${esc(s.service_number || "")}${s.location_service ? " · " + esc(s.location_service) : ""}
+            </div>
+          </div>
+          <span class="svc-arrow">›</span>
+        </div>
+      `).join("")}</div>
+    </div>`;
+
+  container.querySelectorAll(".svc-item").forEach(el => {
+    el.addEventListener("click", () => {
+      state.selectedService = list[Number(el.dataset.index)];
+      state.serviceId       = state.selectedService.idservice;
+      document.title        = state.selectedService.service_name + " — запись";
+      renderForm();
+    });
+  });
+}
+
+// ── Шаг 2: форма записи ──────────────────────────────────────────────────────
+function renderForm() {
+  const svc = state.selectedService || {};
+  const meta = [
+    svc.service_number ? "📞 " + esc(svc.service_number) : "",
+    svc.location_service ? "📍 " + esc(svc.location_service) : "",
+  ].filter(Boolean).join(" · ");
+
+  render(`
+    <div class="header">
+      <div class="logo">${svc.service_name ? esc(svc.service_name) : "⚙ АВТОСЕРВИС"}</div>
+      <div class="sub">${meta || "Заполните форму записи"}</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Ваши данные</div>
+      <div class="field">
+        <label>Имя *</label>
+        <input id="f_name" placeholder="Иван Иванов" autocomplete="name"
+               value="${esc(state.profile.name)}" maxlength="60">
+      </div>
+      <div class="field">
+        <label>Телефон *</label>
+        <input id="f_phone" type="tel" placeholder="+7 999 123-45-67" autocomplete="tel"
+               value="${esc(state.profile.phone)}" maxlength="20">
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Автомобиль</div>
+      <div class="row">
+        <div class="field">
+          <label>Марка *</label>
+          <input id="f_brand" placeholder="Toyota" maxlength="40">
+        </div>
+        <div class="field">
+          <label>Модель *</label>
+          <input id="f_model" placeholder="Camry" maxlength="40">
+        </div>
+      </div>
+      <div class="field">
+        <label>Гос. номер *</label>
+        <input id="f_plate" placeholder="А777АА777" maxlength="12" style="text-transform:uppercase">
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Услуга</div>
+      <div class="field">
+        <label>Тип работы *</label>
+        <select id="f_service_type">
+          ${SERVICE_TYPES.map(s => `<option value="${s.value}">${s.label}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field">
+        <label>Срочность *</label>
+        <select id="f_urgency">
+          ${URGENCY.map(u => `<option value="${u.value}">${u.label}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field">
+        <label>Комментарий</label>
+        <textarea id="f_comment" maxlength="500" placeholder="Опишите проблему подробнее..."></textarea>
+        <div class="char"><span id="charNum">0</span> / 500</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <label class="consent">
+        <input type="checkbox" id="f_consent">
+        <span>
+          Согласен на обработку персональных данных (имя, телефон, госномер)
+          для оформления записи в автосервис.
+        </span>
+      </label>
+    </div>
+
+    <div id="formError"></div>
+    <button class="btn btn-primary" id="submitBtn">Отправить заявку</button>
+    ${state.city ? `<button class="btn btn-secondary" id="backBtn">← Выбрать другой сервис</button>` : ""}
+  `);
+
+  document.getElementById("f_comment").addEventListener("input", function () {
+    document.getElementById("charNum").textContent = this.value.length;
+  });
+  document.getElementById("backBtn")?.addEventListener("click", () => {
+    state.serviceId = null;
+    state.selectedService = null;
+    renderCityPicker();
+  });
+  document.getElementById("submitBtn").addEventListener("click", doSubmit);
+}
+
+// ── Отправка ─────────────────────────────────────────────────────────────────
+async function doSubmit() {
+  const el  = id => document.getElementById(id);
+  const get = id => el(id)?.value?.trim() || "";
+
+  document.querySelectorAll(".invalid").forEach(n => n.classList.remove("invalid"));
+
+  const required = ["f_name", "f_phone", "f_brand", "f_model", "f_plate"];
+  const empty = required.filter(id => !get(id));
+  if (empty.length) {
+    empty.forEach(id => el(id).classList.add("invalid"));
+    alertUser("Заполните все обязательные поля (*)");
+    return;
+  }
+  if (get("f_phone").replace(/\D/g, "").length < 10) {
+    el("f_phone").classList.add("invalid");
+    alertUser("Введите корректный номер телефона");
+    return;
+  }
+  if (!el("f_consent").checked) {
+    alertUser("Нужно согласие на обработку персональных данных");
+    return;
+  }
+
+  const btn = el("submitBtn");
+  btn.disabled = true;
+  btn.textContent = "Отправка...";
+  el("formError").innerHTML = "";
+
+  try {
+    const result = await api("/api/requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        init_data:    tg.initData,
+        client_uid:   state.clientUid,
+        service_id:   state.serviceId,
+        client_name:  get("f_name"),
+        phone:        get("f_phone"),
+        brand:        get("f_brand"),
+        model:        get("f_model"),
+        plate:        get("f_plate").toUpperCase(),
+        service_type: get("f_service_type"),
+        urgency:      get("f_urgency"),
+        comment:      get("f_comment"),
+        consent:      true,
+      }),
+    });
+    renderSuccess(result);
+  } catch (e) {
+    el("formError").innerHTML = `<div class="error-banner">${esc(e.message)}</div>`;
+    btn.disabled = false;
+    btn.textContent = "Отправить заявку";
+    // Новый uid: прошлая попытка не дошла, следующая — самостоятельная заявка
+    state.clientUid = newUid();
+  }
+}
+
+// ── Шаг 3: успех ─────────────────────────────────────────────────────────────
+function renderSuccess(result) {
+  render(`
+    <div class="header">
+      <div class="logo">${esc(result.service_name || "Автосервис")}</div>
+    </div>
+    <div class="card">
+      <div class="success">
+        <span class="checkmark">✅</span>
+        <h2>${result.duplicate ? "Заявка уже принята" : "Заявка отправлена!"}</h2>
+        <div class="num">${esc(result.number)}</div>
+        <p>Администратор свяжется с вами<br>в ближайшее время.<br><br>
+           Подтверждение отправлено в чат с ботом.</p>
+      </div>
+    </div>
+    <button class="btn btn-primary" id="closeBtn">Закрыть</button>
+  `);
+  document.getElementById("closeBtn").addEventListener("click", () => {
+    if (tg?.close) tg.close();
+  });
+}
+
+init();
+</script>
+</body>
+</html>

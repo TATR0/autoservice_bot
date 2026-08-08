@@ -1,248 +1,192 @@
 """
-handlers/admin_actions.py
+handlers/admin_actions.py — работа сотрудников с заявками.
+
+Смена статуса идёт условным UPDATE: если два администратора одновременно
+нажали «Принять», второй получит «заявку уже взял другой сотрудник»,
+а история статусов не задвоится.
 """
 
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import StateFilter
+from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import default_state
 from aiogram.types import CallbackQuery, Message
 
-from config import CLIENT_NOTIFICATIONS, REQUEST_STATUS_LABELS, SERVICE_TYPES, URGENCY_LABELS
+import config
+import keyboards as kb
+import render
 from database import db
-from keyboards import kb_request_actions
+from handlers.common import require_active_service, show_main_menu
+from notifications import safe_send
+from validators import h
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
-async def _get_all_user_services(tg_id: int) -> list:
-    admin_svcs = await db.get_admin_services(tg_id)
-    owned_svcs = await db.get_owned_services(tg_id)
-    merged = {s["idservice"]: s for s in [*admin_svcs, *owned_svcs]}
-    return list(merged.values())
-
-
-# ── Смена статуса заявки ──────────────────────────────────────────────────────
+# ── Смена статуса заявки ─────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("req:"))
 async def request_status_cb(callback: CallbackQuery) -> None:
-    _, status, request_id = callback.data.split(":", 2)
+    try:
+        _, status, request_id = callback.data.split(":", 2)
+    except ValueError:
+        await callback.answer("❌ Некорректная кнопка.", show_alert=True)
+        return
+
+    if status not in config.STATUS_TRANSITIONS:
+        await callback.answer("❌ Неизвестный статус.", show_alert=True)
+        return
 
     req = await db.get_request(request_id)
     if not req:
         await callback.answer("❌ Заявка не найдена.", show_alert=True)
         return
-
-    has_access = (
-        await db.is_admin(req["idservice"], callback.from_user.id)
-        or await db.is_owner(req["idservice"], callback.from_user.id)
-    )
-    if not has_access:
+    if not req["idservice"]:
+        await callback.answer("❌ Сервис заявки удалён.", show_alert=True)
+        return
+    if not await db.has_access(str(req["idservice"]), callback.from_user.id):
         await callback.answer("❌ У вас нет прав изменять эту заявку.", show_alert=True)
         return
 
-    await db.set_request_status(request_id, status)
+    updated = await db.update_request_status(
+        request_id,
+        status,
+        changed_by=callback.from_user.id,
+        allowed_from=config.STATUS_TRANSITIONS[status],
+    )
+    if updated is None:
+        current = render.status_label(req["status"])
+        await callback.answer(
+            f"Заявку уже обработал другой сотрудник.\nТекущий статус: {current}",
+            show_alert=True,
+        )
+        # Подтягиваем актуальные кнопки
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=kb.kb_request_actions(request_id, req["status"])
+            )
+        except Exception:
+            pass
+        return
 
-    label = REQUEST_STATUS_LABELS.get(status, status)
-    new_text = callback.message.html_text + f"\n\n📌 <b>Статус обновлён:</b> {label}"
+    label = render.status_label(status)
+    handler_user = await db.get_user(callback.from_user.id)
+    svc = await db.get_service(str(updated["idservice"]))
+
+    card = render.request_card_for_staff(
+        updated, tz=svc["timezone"] if svc else None
+    )
+    card += f"\n👤 <b>Обработал:</b> {h(db.user_title(handler_user, callback.from_user.id))}"
+
     try:
-        await callback.message.edit_text(new_text, parse_mode="HTML")
+        await callback.message.edit_text(
+            card, reply_markup=kb.kb_request_actions(request_id, status)
+        )
     except Exception:
-        pass
+        logger.debug("Не удалось обновить карточку заявки", exc_info=True)
     await callback.answer(f"✅ Статус: {label}")
 
-    notify = CLIENT_NOTIFICATIONS.get(status)
-    if notify and req["idclienttg"]:
-        svc = await db.get_service(req["idservice"])
+    # Уведомляем клиента
+    notify = config.CLIENT_NOTIFICATIONS.get(status)
+    if notify and updated["idclienttg"]:
         svc_name = svc["service_name"] if svc else "Автосервис"
-        try:
-            await callback.bot.send_message(
-                req["idclienttg"],
-                f"{notify}\n\n<b>Сервис:</b> {svc_name}\n🆔 <code>{request_id}</code>",
-                parse_mode="HTML",
-            )
-        except Exception as exc:
-            logger.warning("Не удалось уведомить клиента %s: %s", req["idclienttg"], exc)
-
-
-# ── 📋 Заявки сервиса ─────────────────────────────────────────────────────────
-
-@router.message(F.text == "📋 Заявки сервиса", StateFilter(default_state))
-async def service_requests(message: Message) -> None:
-    services = await _get_all_user_services(message.from_user.id)
-    if not services:
-        await message.answer("❌ У вас нет доступных сервисов.")
-        return
-
-    for svc in services:
-        reqs = await db.get_service_requests(svc["idservice"], limit=15)
-        text = f"<b>📋 {svc['service_name']}</b>\n"
-
-        if not reqs:
-            text += "<i>Заявок нет</i>"
-            await message.answer(text, parse_mode="HTML")
-            continue
-
-        for r in reqs:
-            label = REQUEST_STATUS_LABELS.get(r["status"], r["status"])
-            st    = SERVICE_TYPES.get(r["service_type"], r["service_type"])
-            ur    = URGENCY_LABELS.get(r["urgency"], r["urgency"])
-            date  = r["createdate"].strftime("%d.%m %H:%M") if r["createdate"] else "—"
-            text += (
-                f"\n• <b>{r['client_name']}</b> | {label}\n"
-                f"  📞 <code>{r['phone']}</code> | 🚗 {r['brand']} {r['model']}\n"
-                f"  🔧 {st} | ⚡ {ur}\n"
-                f"  🕒 {date} | 🆔 <code>{r['idrequests']}</code>\n"
-            )
-
-        for chunk in _split_text(text, 4000):
-            await message.answer(chunk, parse_mode="HTML")
-
-
-# ── ℹ️ О сервисе ──────────────────────────────────────────────────────────────
-
-@router.message(F.text == "ℹ️ О сервисе", StateFilter(default_state))
-async def about_service(message: Message) -> None:
-    services = await _get_all_user_services(message.from_user.id)
-    if not services:
-        await message.answer("❌ У вас нет доступных сервисов.")
-        return
-
-    for svc in services:
-        link       = db.service_link(svc["idservice"])
-        admins     = await db.get_active_admins(svc["idservice"])
-        admins_str = ", ".join(f"<code>{a['idusertg']}</code>" for a in admins) or "<i>нет</i>"
-        is_owner   = svc["owner_id"] == message.from_user.id
-        role       = "👑 Управляющий" if is_owner else "🔧 Администратор"
-
-        await message.answer(
-            f"<b>ℹ️ {svc['service_name']}</b>\n\n"
-            f"📞 Телефон: {svc['service_number']}\n"
-            f"🏙 Город: {svc['city']}\n"
-            f"📍 Адрес: {svc['location_service']}\n"
-            f"👥 Администраторы: {admins_str}\n"
-            f"🔑 Ваша роль: {role}\n\n"
-            f"🔗 <b>Ссылка для клиентов:</b>\n<code>{link}</code>",
-            parse_mode="HTML",
+        markup = (
+            kb.kb_client_request_actions(request_id)
+            if status in ("accepted", "called")
+            else None
+        )
+        await safe_send(
+            callback.bot,
+            updated["idclienttg"],
+            f"{notify}\n\n"
+            f"<b>Сервис:</b> {h(svc_name)}\n"
+            f"<b>Заявка:</b> {render.request_number(updated['seq'])}",
+            reply_markup=markup,
         )
 
 
-# ── 👥 Администраторы ─────────────────────────────────────────────────────────
+# ── 📋 Заявки сервиса ────────────────────────────────────────────────────────
 
-@router.message(F.text == "👥 Администраторы", StateFilter(default_state))
-async def list_admins(message: Message) -> None:
-    services = await _get_all_user_services(message.from_user.id)
-    if not services:
-        await message.answer("❌ У вас нет доступных сервисов.")
+@router.message(F.text == kb.BTN_SERVICE_REQS, StateFilter(default_state))
+async def service_requests(message: Message, state: FSMContext) -> None:
+    svc = await require_active_service(message, state)
+    if svc is None:
         return
 
-    for svc in services:
-        admins = await db.get_active_admins(svc["idservice"])
-        text   = f"<b>👥 Администраторы — {svc['service_name']}</b>\n\n"
-        if admins:
-            for adm in admins:
-                owner_mark = " 👑" if svc["owner_id"] == adm["idusertg"] else ""
-                text += f"• <code>{adm['idusertg']}</code>{owner_mark}\n"
-        else:
-            text += "<i>Администраторов нет</i>"
-        await message.answer(text, parse_mode="HTML")
-
-
-# ── 🚪 Уйти из администраторов (/leave_admin + кнопка) ───────────────────────
-
-@router.message(Command("leave_admin"), StateFilter(default_state))
-@router.message(F.text == "🚪 Уйти из администраторов", StateFilter(default_state))
-async def leave_admin_start(message: Message) -> None:
-    from keyboards import kb_confirm_leave, kb_select_service
-
-    admin_svcs = await db.get_admin_services(message.from_user.id)
-    owned_ids  = {s["idservice"] for s in await db.get_owned_services(message.from_user.id)}
-    leavable   = [s for s in admin_svcs if s["idservice"] not in owned_ids]
-
-    if not leavable:
+    reqs = await db.get_service_requests(str(svc["idservice"]), limit=20)
+    if not reqs:
         await message.answer(
-            "ℹ️ Вы не являетесь администратором ни в одном чужом сервисе.\n\n"
-            "<i>Управляющий не может покинуть собственный сервис.</i>",
-            parse_mode="HTML",
+            f"<b>📋 {h(svc['service_name'])}</b>\n\n<i>Заявок пока нет.</i>"
         )
         return
 
-    if len(leavable) == 1:
-        svc = leavable[0]
+    text = f"<b>📋 {h(svc['service_name'])} — последние {len(reqs)} заявок</b>\n"
+    text += "".join(render.request_line_for_staff(r, svc["timezone"]) for r in reqs)
+    for chunk in render.split_text(text):
+        await message.answer(chunk)
+
+    # Новые заявки отправляем отдельными карточками с кнопками действий
+    for req in [r for r in reqs if r["status"] == "new"][:5]:
         await message.answer(
-            f"Вы уверены, что хотите выйти из администраторов сервиса "
-            f"<b>{svc['service_name']}</b>?",
-            parse_mode="HTML",
-            reply_markup=kb_confirm_leave(svc["idservice"]),
-        )
-    else:
-        await message.answer(
-            "Из какого сервиса вы хотите выйти?",
-            reply_markup=kb_select_service(leavable, "leave_pick"),
+            render.request_card_for_staff(
+                req, tz=svc["timezone"], title="🆕 <b>ТРЕБУЕТ РЕАКЦИИ</b>"
+            ),
+            reply_markup=kb.kb_request_actions(str(req["idrequests"]), req["status"]),
         )
 
 
-@router.callback_query(F.data.startswith("leave_pick:"))
-async def leave_admin_pick_service(callback: CallbackQuery) -> None:
-    from keyboards import kb_confirm_leave
-    idservice = callback.data.split(":", 1)[1]
-    svc = await db.get_service(idservice)
-    svc_name = svc["service_name"] if svc else idservice
-    await callback.message.edit_text(
-        f"Вы уверены, что хотите выйти из администраторов сервиса <b>{svc_name}</b>?",
-        parse_mode="HTML",
-        reply_markup=kb_confirm_leave(idservice),
+# ── 📊 Статистика ────────────────────────────────────────────────────────────
+
+@router.message(F.text == kb.BTN_STATS, StateFilter(default_state))
+async def service_stats(message: Message, state: FSMContext) -> None:
+    svc = await require_active_service(message, state)
+    if svc is None:
+        return
+
+    idservice = str(svc["idservice"])
+    stats = await db.get_service_stats(idservice)
+    if not stats:
+        await message.answer("❌ Не удалось собрать статистику.")
+        return
+
+    breakdown = await db.get_service_type_breakdown(idservice)
+    avg_reaction = await db.get_avg_reaction_seconds(idservice)
+
+    await message.answer(render.stats_card(svc, stats, breakdown, avg_reaction))
+
+
+# ── ℹ️ О сервисе ─────────────────────────────────────────────────────────────
+
+@router.message(F.text == kb.BTN_ABOUT, StateFilter(default_state))
+async def about_service(message: Message, state: FSMContext) -> None:
+    svc = await require_active_service(message, state)
+    if svc is None:
+        return
+
+    admins = await db.get_active_admins(str(svc["idservice"]))
+    admins_text = (
+        ", ".join(h(db.user_title(a, a["idusertg"])) for a in admins) or "<i>нет</i>"
+    )
+    await message.answer(
+        render.service_card(
+            svc,
+            link=db.service_link(str(svc["idservice"])),
+            role=svc["role"],
+            admins_text=admins_text,
+        )
     )
 
 
-@router.callback_query(F.data.startswith("leave_admin:"))
-async def leave_admin_confirm(callback: CallbackQuery) -> None:
-    from keyboards import kb_client_main
-    idservice = callback.data.split(":", 1)[1]
-
-    if await db.is_owner(idservice, callback.from_user.id):
-        await callback.answer("❌ Управляющий не может покинуть собственный сервис.", show_alert=True)
-        return
-
-    svc = await db.get_service(idservice)
-    svc_name = svc["service_name"] if svc else idservice
-    await db.remove_admin(idservice, callback.from_user.id)
-
-    await callback.message.edit_text(
-        f"✅ Вы вышли из администраторов сервиса <b>{svc_name}</b>.",
-        parse_mode="HTML",
-    )
-    await callback.message.answer("Возвращаю вас в главное меню.", reply_markup=kb_client_main())
-
-
-@router.callback_query(F.data == "leave_cancel")
-async def leave_admin_cancel(callback: CallbackQuery) -> None:
-    await callback.message.delete()
-    await callback.answer("Отменено.")
-
-
-# ── Fallback ──────────────────────────────────────────────────────────────────
+# ── Fallback ─────────────────────────────────────────────────────────────────
+# Регистрируется последним роутером: сюда попадает всё, что не разобрали выше.
 
 @router.message(StateFilter(default_state))
-async def fallback(message: Message) -> None:
-    from keyboards import kb_client_main
-    await message.answer(
-        "❓ Неизвестная команда.\n\nНажмите /start для начала.",
-        reply_markup=kb_client_main(),
+async def fallback(message: Message, state: FSMContext) -> None:
+    await show_main_menu(
+        message,
+        state,
+        greeting="❓ Не понял команду. Воспользуйтесь кнопками меню 👇",
     )
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _split_text(text: str, limit: int) -> list[str]:
-    chunks, current = [], ""
-    for line in text.split("\n"):
-        if len(current) + len(line) + 1 > limit:
-            chunks.append(current)
-            current = ""
-        current += line + "\n"
-    if current:
-        chunks.append(current)
-    return chunks

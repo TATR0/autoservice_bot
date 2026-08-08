@@ -222,6 +222,51 @@ class Database:
                 idcatalog, idservice,
             )
 
+    async def add_catalog_item(
+        self, idservice: str, title: str
+    ) -> asyncpg.Record | None:
+        """
+        Добавить услугу. None — активная услуга с таким названием уже есть.
+
+        Ранее удалённая услуга воскресает, а не создаётся заново: так заявки,
+        оформленные на неё до удаления, снова оказываются слинкованы со своей
+        строкой каталога.
+        """
+        async with self.pool.acquire() as conn, conn.transaction():
+            revived = await conn.fetchrow(
+                """
+                UPDATE service_catalog SET idrecstatus=0, deletedate=NULL
+                WHERE idcatalog = (
+                        SELECT idcatalog FROM service_catalog
+                         WHERE idservice=$1 AND idrecstatus=-1
+                           AND lower(trim(title))=lower(trim($2))
+                         ORDER BY deletedate DESC NULLS LAST
+                         LIMIT 1)
+                  AND NOT EXISTS (
+                        SELECT 1 FROM service_catalog
+                         WHERE idservice=$1 AND idrecstatus=0
+                           AND lower(trim(title))=lower(trim($2)))
+                RETURNING *
+                """,
+                idservice, title,
+            )
+            if revived:
+                return revived
+
+            # DO NOTHING вместо исключения: активный дубликат — не ошибка
+            # уровня БД, а понятный ответ пользователю «такая услуга уже есть»
+            return await conn.fetchrow(
+                """
+                INSERT INTO service_catalog
+                    (idcatalog, idservice, title, sort_order, idrecstatus)
+                VALUES ($1,$2,$3,$4,0)
+                ON CONFLICT (idservice, lower(trim(title))) WHERE idrecstatus = 0
+                DO NOTHING
+                RETURNING *
+                """,
+                _new_id(), idservice, title, 1000,
+            )
+
     async def get_owned_services(self, owner_tg_id: int) -> list[asyncpg.Record]:
         """Сервисы, где пользователь — управляющий (owner)."""
         async with self.pool.acquire() as conn:

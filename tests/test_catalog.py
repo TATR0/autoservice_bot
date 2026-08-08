@@ -153,3 +153,29 @@ async def test_count_requests_by_catalog_counts_only_matching_item(service):
     finally:
         async with db.pool.acquire() as conn:
             await conn.execute("DELETE FROM requests WHERE idrequests=$1", idrequest)
+
+
+async def test_request_stores_title_snapshot(service):
+    """Название услуги сохраняется в заявке — удаление услуги не ломает историю."""
+    item = (await db.get_catalog(service))[0]
+
+    request, is_duplicate = await db.create_request(
+        idservice=service,
+        client_tg_id=999_000_003,
+        client_name="Иван Тестов",
+        phone="+79990000003",
+        brand="Toyota",
+        model="Camry",
+        plate="А777АА777",
+        idcatalog=str(item["idcatalog"]),
+        service_title=item["title"],
+        urgency="low",
+        comment="",
+    )
+    assert not is_duplicate
+    assert request["service_title"] == item["title"]
+    assert str(request["idcatalog"]) == str(item["idcatalog"])
+
+    await db.delete_catalog_item(service, str(item["idcatalog"]))
+    again = await db.get_request(str(request["idrequests"]))
+    assert again["service_title"] == item["title"]

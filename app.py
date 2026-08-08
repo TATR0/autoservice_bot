@@ -167,7 +167,7 @@ class RequestPayload(BaseModel):
     brand: str = ""
     model: str = ""
     plate: str = ""
-    service_type: str = ""
+    idcatalog: str = ""
     urgency: str = ""
     comment: str = ""
     consent: bool = False

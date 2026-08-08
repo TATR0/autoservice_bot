@@ -26,7 +26,7 @@ import keyboards as kb
 import render
 from database import db
 from notifications import notify_staff, safe_send
-from validators import ValidationError, h, validate_request_fields
+from validators import ValidationError, h, validate_request_fields, validate_uuid
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -48,9 +48,10 @@ async def create_request_flow(
     Возвращает (краткое описание заявки, is_duplicate).
     Бросает RequestRejected с понятным клиенту текстом.
     """
-    service_id = str(payload.get("service_id") or "").strip()
-    if not service_id:
-        raise RequestRejected("Не выбран автосервис.")
+    try:
+        service_id = validate_uuid(payload.get("service_id"), field="Сервис")
+    except ValidationError as exc:
+        raise RequestRejected(str(exc)) from exc
 
     service = await db.get_service(service_id)
     if not service:
@@ -58,8 +59,15 @@ async def create_request_flow(
 
     try:
         fields = validate_request_fields(payload)
+        idcatalog = validate_uuid(payload.get("idcatalog"), field="Услуга")
     except ValidationError as exc:
         raise RequestRejected(str(exc)) from exc
+
+    # Услуга обязана принадлежать этому сервису и быть активной: клиент мог
+    # держать форму открытой, пока управляющий убирал услугу из списка
+    item = await db.get_catalog_item(service_id, idcatalog)
+    if item is None:
+        raise RequestRejected("Эта услуга больше не оказывается — выберите другую.")
 
     client_uid = str(payload.get("client_uid") or "").strip()[:64] or None
 
@@ -83,6 +91,8 @@ async def create_request_flow(
         idservice=service_id,
         client_tg_id=client_tg_id,
         client_uid=client_uid,
+        idcatalog=idcatalog,
+        service_title=item["title"],
         **fields,
     )
 
@@ -113,7 +123,7 @@ async def create_request_flow(
         client_tg_id,
         f"✅ <b>Заявка {summary['number']} отправлена!</b>\n\n"
         f"<b>Сервис:</b> {h(service['service_name'])}\n"
-        f"<b>Услуга:</b> {h(render.service_type_label(fields['service_type']))}\n"
+        f"<b>Услуга:</b> {h(item['title'])}\n"
         f"<b>Автомобиль:</b> {h(fields['brand'])} {h(fields['model'])}\n\n"
         "Администратор свяжется с вами в ближайшее время.",
         reply_markup=kb.kb_client_request_actions(summary["request_id"]),
@@ -135,8 +145,13 @@ async def handle_webapp_data(message: Message) -> None:
         await message.answer("❌ Получены некорректные данные формы.")
         return
 
-    # Старая форма присылала ключ "service" вместо "service_type"
-    payload.setdefault("service_type", payload.get("service"))
+    # Старая форма присылала ключ service_type из общего справочника. Услуги
+    # теперь свои у каждого сервиса, сопоставить их со старыми ключами нельзя.
+    if not payload.get("idcatalog"):
+        await message.answer(
+            "❌ Форма записи устарела — закройте её и откройте заново."
+        )
+        return
 
     try:
         await create_request_flow(

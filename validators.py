@@ -133,7 +133,6 @@ def validate_request_fields(payload: dict) -> dict:
         "brand":        clean_text(payload.get("brand"), field="Марка", min_len=1, max_len=40),
         "model":        clean_text(payload.get("model"), field="Модель", min_len=1, max_len=40),
         "plate":        normalize_plate(payload.get("plate")),
-        "service_type": validate_service_type(payload.get("service_type")),
         "urgency":      validate_urgency(payload.get("urgency")),
         "comment":      clean_text(
             payload.get("comment"), field="Комментарий", max_len=500, multiline=True

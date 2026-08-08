@@ -549,7 +549,8 @@ class Database:
         brand: str,
         model: str,
         plate: str,
-        service_type: str,
+        idcatalog: str,
+        service_title: str,
         urgency: str,
         comment: str,
         client_uid: str | None = None,
@@ -565,14 +566,15 @@ class Database:
                 """
                 INSERT INTO requests
                     (idrequests, idservice, idclienttg, client_name, phone,
-                     brand, model, plate, service_type, urgency, comment,
-                     client_uid, status, idrecstatus)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'new',0)
+                     brand, model, plate, idcatalog, service_title, urgency,
+                     comment, client_uid, status, idrecstatus)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'new',0)
                 ON CONFLICT (client_uid) WHERE client_uid IS NOT NULL DO NOTHING
                 RETURNING *
                 """,
                 _new_id(), idservice, client_tg_id, client_name, phone,
-                brand, model, plate, service_type, urgency, comment, client_uid,
+                brand, model, plate, idcatalog, service_title, urgency,
+                comment, client_uid,
             )
             if row is None:
                 existing = await conn.fetchrow(

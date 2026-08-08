@@ -19,6 +19,9 @@ class ValidationError(ValueError):
 
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _SPACES_RE = re.compile(r"\s+")
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+)
 
 
 def h(value: object) -> str:
@@ -102,6 +105,24 @@ def validate_urgency(raw: object) -> str:
     if value not in config.URGENCY_LABELS:
         raise ValidationError("Неизвестная срочность.")
     return value
+
+
+def validate_uuid(raw: object, *, field: str) -> str:
+    """
+    Проверить UUID из недоверенного источника — тела запроса или callback_data.
+
+    Без проверки asyncpg бросает DataError на мусорной строке, и вместо
+    понятного отказа клиент получает 500.
+    """
+    value = str(raw or "").strip()
+    if not _UUID_RE.match(value):
+        raise ValidationError(f"«{field}»: некорректный идентификатор.")
+    return value
+
+
+def validate_service_title(raw: object) -> str:
+    """Название услуги, которое вводит управляющий."""
+    return clean_text(raw, field="Название услуги", min_len=2, max_len=40)
 
 
 def validate_request_fields(payload: dict) -> dict:

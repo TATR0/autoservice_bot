@@ -204,6 +204,24 @@ class Database:
                 idservice,
             )
 
+    async def get_catalog_item(
+        self, idservice: str, idcatalog: str
+    ) -> asyncpg.Record | None:
+        """
+        Одна активная услуга сервиса.
+
+        Фильтр по idservice обязателен: без него клиент подставил бы в заявку
+        idcatalog чужого сервиса.
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                SELECT * FROM service_catalog
+                WHERE idcatalog=$1 AND idservice=$2 AND idrecstatus=0
+                """,
+                idcatalog, idservice,
+            )
+
     async def get_owned_services(self, owner_tg_id: int) -> list[asyncpg.Record]:
         """Сервисы, где пользователь — управляющий (owner)."""
         async with self.pool.acquire() as conn:

@@ -608,18 +608,22 @@ async def test_add_duplicate_returns_none_ignoring_case(service):
     assert len(await db.get_catalog(service)) == len(config.DEFAULT_SERVICE_TITLES)
 
 
-async def test_add_revives_deleted_item(service):
-    items = await db.get_catalog(service)
-    target = items[0]
-    await db.delete_catalog_item(service, str(target["idcatalog"]))
+async def test_add_after_manual_deactivation_revives_same_row(service):
+    """Воскрешение: услуга с тем же названием переиспользует старую строку,
+    поэтому оформленные на неё заявки остаются слинкованы."""
+    target = (await db.get_catalog(service))[0]
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE service_catalog SET idrecstatus=-1, deletedate=now() WHERE idcatalog=$1",
+            target["idcatalog"],
+        )
 
     revived = await db.add_catalog_item(service, target["title"])
-    # тот же idcatalog: старые заявки снова слинкованы со своей услугой
     assert str(revived["idcatalog"]) == str(target["idcatalog"])
     assert revived["idrecstatus"] == 0
 ```
 
-Третий тест опирается на `delete_catalog_item` из задачи 6 — до неё он падает, это нормально: реализуем метод в задаче 6 и там же снова прогоняем файл целиком.
+Третий тест деактивирует строку напрямую в SQL, а не через `delete_catalog_item`: этот метод появится только в задаче 6, а коммит должен остаться зелёным.
 
 - [ ] **Шаг 2: Запустить и убедиться, что тесты падают**
 
@@ -688,7 +692,7 @@ pytest tests/test_catalog.py -v
 pytest tests/test_catalog.py -v
 ```
 
-Ожидается: 5 passed, 1 failed — падает только `test_add_revives_deleted_item` с `AttributeError: ... 'delete_catalog_item'`. Это ожидаемо, метод появится в задаче 6.
+Ожидается: 6 passed
 
 - [ ] **Шаг 5: Коммит**
 
@@ -791,13 +795,13 @@ pytest tests/test_catalog.py -v
         return value or 0
 ```
 
-- [ ] **Шаг 4: Запустить весь файл — теперь должно пройти всё**
+- [ ] **Шаг 4: Запустить весь файл**
 
 ```bash
 pytest tests/test_catalog.py -v
 ```
 
-Ожидается: 10 passed (включая `test_add_revives_deleted_item` из задачи 5)
+Ожидается: 10 passed
 
 - [ ] **Шаг 5: Коммит**
 

@@ -766,17 +766,25 @@ pytest tests/test_catalog.py -v
         """
         Мягко удалить услугу. None — удалять нечего или она последняя.
 
-        Правило «хотя бы одна услуга» живёт в самом запросе, а не в хендлере:
-        иначе управляющий с двух устройств удалил бы две последние услуги
-        одновременно — обе проверки прошли бы, и сервис остался бы пустым.
+        CTE с FOR UPDATE блокирует все активные услуги сервиса до подсчёта.
+        Без блокировки правило «хотя бы одна услуга» не работает: в READ
+        COMMITTED две транзакции читают свои снапшоты, не видят UPDATE друг
+        друга, и управляющий с двух устройств удаляет две последние услуги
+        одновременно — сервис остаётся пустым. ORDER BY задаёт единый порядок
+        захвата строк и тем исключает взаимную блокировку.
         """
         async with self.pool.acquire() as conn:
             return await conn.fetchrow(
                 """
+                WITH locked AS (
+                    SELECT idcatalog FROM service_catalog
+                     WHERE idservice=$2 AND idrecstatus=0
+                     ORDER BY idcatalog
+                     FOR UPDATE
+                )
                 UPDATE service_catalog SET idrecstatus=-1, deletedate=now()
                 WHERE idcatalog=$1 AND idservice=$2 AND idrecstatus=0
-                  AND (SELECT count(*) FROM service_catalog
-                        WHERE idservice=$2 AND idrecstatus=0) > 1
+                  AND (SELECT count(*) FROM locked) > 1
                 RETURNING *
                 """,
                 idcatalog, idservice,

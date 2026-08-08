@@ -154,6 +154,9 @@ class Database:
                 """,
                 _new_id(), idservice, owner_tg_id,
             )
+            # Сервис без услуг не должен существовать даже мгновение:
+            # в форме записи клиенту было бы нечего выбрать.
+            await self._seed_catalog(conn, idservice)
         return idservice
 
     async def get_service(self, idservice: str) -> asyncpg.Record | None:
@@ -172,6 +175,33 @@ class Database:
                 ORDER BY service_name
                 """,
                 city,
+            )
+
+    # ── service_catalog ──────────────────────────────────────────────────────
+
+    async def _seed_catalog(self, conn: asyncpg.Connection, idservice: str) -> None:
+        """Раздать сервису шаблонный набор услуг. Вызывается внутри транзакции."""
+        await conn.executemany(
+            """
+            INSERT INTO service_catalog (idcatalog, idservice, title, sort_order, idrecstatus)
+            VALUES ($1,$2,$3,$4,0)
+            """,
+            [
+                (_new_id(), idservice, title, (i + 1) * 10)
+                for i, title in enumerate(config.DEFAULT_SERVICE_TITLES)
+            ],
+        )
+
+    async def get_catalog(self, idservice: str) -> list[asyncpg.Record]:
+        """Активные услуги сервиса в порядке показа."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT * FROM service_catalog
+                WHERE idservice=$1 AND idrecstatus=0
+                ORDER BY sort_order, title
+                """,
+                idservice,
             )
 
     async def get_owned_services(self, owner_tg_id: int) -> list[asyncpg.Record]:

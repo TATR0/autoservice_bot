@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 import config
 from database import db
 from fsm_storage import build_storage
-from handlers import admin_actions, admin_mgmt, register, requests, start
+from handlers import admin_actions, admin_mgmt, catalog, register, requests, start
 from handlers.requests import RequestRejected, create_request_flow
 from middlewares import ErrorLoggingMiddleware, UserMiddleware
 from validators import ValidationError, validate_uuid
@@ -54,6 +54,7 @@ dp.include_routers(
     requests.router,
     start.router,
     register.router,
+    catalog.router,
     admin_mgmt.router,
     admin_actions.router,
 )

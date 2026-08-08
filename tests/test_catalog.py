@@ -56,3 +56,32 @@ async def test_add_after_manual_deactivation_revives_same_row(service):
     revived = await db.add_catalog_item(service, target["title"])
     assert str(revived["idcatalog"]) == str(target["idcatalog"])
     assert revived["idrecstatus"] == 0
+
+
+async def test_delete_is_soft(service):
+    items = await db.get_catalog(service)
+    removed = await db.delete_catalog_item(service, str(items[0]["idcatalog"]))
+    assert removed is not None
+    assert removed["idrecstatus"] == -1
+    assert len(await db.get_catalog(service)) == len(items) - 1
+
+
+async def test_cannot_delete_last_item(service):
+    items = await db.get_catalog(service)
+    for item in items[:-1]:
+        assert await db.delete_catalog_item(service, str(item["idcatalog"])) is not None
+
+    last = items[-1]
+    assert await db.delete_catalog_item(service, str(last["idcatalog"])) is None
+    assert len(await db.get_catalog(service)) == 1
+
+
+async def test_delete_twice_returns_none(service):
+    item = (await db.get_catalog(service))[0]
+    assert await db.delete_catalog_item(service, str(item["idcatalog"])) is not None
+    assert await db.delete_catalog_item(service, str(item["idcatalog"])) is None
+
+
+async def test_count_requests_by_catalog_zero_for_fresh_item(service):
+    item = (await db.get_catalog(service))[0]
+    assert await db.count_requests_by_catalog(service, str(item["idcatalog"])) == 0

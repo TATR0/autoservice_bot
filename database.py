@@ -267,6 +267,40 @@ class Database:
                 _new_id(), idservice, title, 1000,
             )
 
+    async def delete_catalog_item(
+        self, idservice: str, idcatalog: str
+    ) -> asyncpg.Record | None:
+        """
+        Мягко удалить услугу. None — удалять нечего или она последняя.
+
+        Правило «хотя бы одна услуга» живёт в самом запросе, а не в хендлере:
+        иначе управляющий с двух устройств удалил бы две последние услуги
+        одновременно — обе проверки прошли бы, и сервис остался бы пустым.
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE service_catalog SET idrecstatus=-1, deletedate=now()
+                WHERE idcatalog=$1 AND idservice=$2 AND idrecstatus=0
+                  AND (SELECT count(*) FROM service_catalog
+                        WHERE idservice=$2 AND idrecstatus=0) > 1
+                RETURNING *
+                """,
+                idcatalog, idservice,
+            )
+
+    async def count_requests_by_catalog(self, idservice: str, idcatalog: str) -> int:
+        """Сколько заявок оформлено на эту услугу — для текста подтверждения."""
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval(
+                """
+                SELECT count(*) FROM requests
+                WHERE idservice=$1 AND idcatalog=$2 AND idrecstatus=0
+                """,
+                idservice, idcatalog,
+            )
+        return value or 0
+
     async def get_owned_services(self, owner_tg_id: int) -> list[asyncpg.Record]:
         """Сервисы, где пользователь — управляющий (owner)."""
         async with self.pool.acquire() as conn:

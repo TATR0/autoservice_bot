@@ -217,17 +217,6 @@ if (tg) {
 // запросы идут на текущий origin. Настраивать ничего не нужно.
 const API_BASE = "";
 
-const SERVICE_TYPES = [
-  { value: "diagnostic",   label: "Диагностика" },
-  { value: "oil-change",   label: "Замена масла" },
-  { value: "tires",        label: "Шины и диски" },
-  { value: "brake",        label: "Тормозная система" },
-  { value: "engine",       label: "Ремонт двигателя" },
-  { value: "transmission", label: "Коробка передач" },
-  { value: "suspension",   label: "Подвеска" },
-  { value: "body",         label: "Кузовные работы" },
-  { value: "other",        label: "Другое" },
-];
 const URGENCY = [
   { value: "low",    label: "Обычный — 7+ дней" },
   { value: "medium", label: "Средний — 3–5 дней" },
@@ -278,6 +267,29 @@ function renderSpinner() {
   render(`<div class="spinner-wrap"><div class="spinner"></div></div>`);
 }
 
+// Единственный путь к форме: карточку сервиса вместе с каталогом услуг
+// всегда берём с сервера — в результатах поиска по городу услуг нет.
+async function openService(serviceId) {
+  renderSpinner();
+  try {
+    state.selectedService = await api(`/api/service/${encodeURIComponent(serviceId)}`);
+    state.serviceId = serviceId;
+    document.title = state.selectedService.service_name + " — запись";
+  } catch (e) {
+    render(`
+      <div class="header"><div class="logo">⚙ АВТОСЕРВИС</div></div>
+      <div class="card">
+        <div class="error-banner">${esc(e.message)}</div>
+        <button class="btn btn-secondary" onclick="location.href=location.pathname">
+          Выбрать другой сервис
+        </button>
+      </div>
+    `);
+    return;
+  }
+  renderForm();
+}
+
 // ── Старт ────────────────────────────────────────────────────────────────────
 async function init() {
   if (!tg?.initData) {
@@ -296,23 +308,7 @@ async function init() {
   loadProfile();
 
   if (state.serviceId) {
-    renderSpinner();
-    try {
-      state.selectedService = await api(`/api/service/${encodeURIComponent(state.serviceId)}`);
-      document.title = state.selectedService.service_name + " — запись";
-    } catch (e) {
-      render(`
-        <div class="header"><div class="logo">⚙ АВТОСЕРВИС</div></div>
-        <div class="card">
-          <div class="error-banner">${esc(e.message)}</div>
-          <button class="btn btn-secondary" onclick="location.href=location.pathname">
-            Выбрать другой сервис
-          </button>
-        </div>
-      `);
-      return;
-    }
-    renderForm();
+    await openService(state.serviceId);
   } else {
     renderCityPicker();
   }
@@ -411,10 +407,7 @@ function renderServicesList(list, container) {
 
   container.querySelectorAll(".svc-item").forEach(el => {
     el.addEventListener("click", () => {
-      state.selectedService = list[Number(el.dataset.index)];
-      state.serviceId       = state.selectedService.idservice;
-      document.title        = state.selectedService.service_name + " — запись";
-      renderForm();
+      openService(list[Number(el.dataset.index)].idservice);
     });
   });
 }
@@ -422,10 +415,23 @@ function renderServicesList(list, container) {
 // ── Шаг 2: форма записи ──────────────────────────────────────────────────────
 function renderForm() {
   const svc = state.selectedService || {};
+  const catalog = svc.catalog || [];
   const meta = [
     svc.service_number ? "📞 " + esc(svc.service_number) : "",
     svc.location_service ? "📍 " + esc(svc.location_service) : "",
   ].filter(Boolean).join(" · ");
+
+  if (catalog.length === 0) {
+    render(`
+      <div class="header"><div class="logo">${esc(svc.service_name || "Автосервис")}</div></div>
+      <div class="card">
+        <div class="error-banner">
+          Сервис пока не настроил список услуг.<br>Попробуйте позже.
+        </div>
+      </div>
+    `);
+    return;
+  }
 
   render(`
     <div class="header">
@@ -469,8 +475,8 @@ function renderForm() {
       <div class="card-title">Услуга</div>
       <div class="field">
         <label>Тип работы *</label>
-        <select id="f_service_type">
-          ${SERVICE_TYPES.map(s => `<option value="${s.value}">${s.label}</option>`).join("")}
+        <select id="f_catalog">
+          ${catalog.map(s => `<option value="${esc(s.idcatalog)}">${esc(s.title)}</option>`).join("")}
         </select>
       </div>
       <div class="field">
@@ -554,7 +560,7 @@ async function doSubmit() {
         brand:        get("f_brand"),
         model:        get("f_model"),
         plate:        get("f_plate").toUpperCase(),
-        service_type: get("f_service_type"),
+        idcatalog:    get("f_catalog"),
         urgency:      get("f_urgency"),
         comment:      get("f_comment"),
         consent:      true,

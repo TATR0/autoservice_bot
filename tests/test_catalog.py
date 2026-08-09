@@ -2,8 +2,11 @@
 
 import asyncio
 
+import pytest
+
 import config
 from database import db
+from handlers.requests import RequestRejected, create_request_flow
 
 
 async def test_new_service_gets_default_catalog(service):
@@ -31,6 +34,57 @@ async def test_get_catalog_item_rejects_foreign_service(service, db_ready):
     finally:
         async with db.pool.acquire() as conn:
             await conn.execute("DELETE FROM services WHERE idservice=$1", other)
+
+
+async def test_create_request_flow_rejects_foreign_catalog_item(service, db_ready):
+    """Единственная защита от подстановки чужой услуги — проверка внутри
+    create_request_flow, а не в форме на клиенте. Дёргаем сам флоу, а не
+    db.create_request напрямую, иначе эта защита остаётся непокрытой."""
+    other = await db.create_service(
+        name="Тест чужой 2", phone="+79990000004", city="Тестоград",
+        address="ул. Чужая, 4", owner_tg_id=999_000_004,
+    )
+    try:
+        foreign = (await db.get_catalog(other))[0]
+        payload = {
+            "service_id": service,
+            "idcatalog": str(foreign["idcatalog"]),
+            "client_name": "Иван Тестов",
+            "phone": "+79990000004",
+            "brand": "Toyota",
+            "model": "Camry",
+            "plate": "А777АА777",
+            "urgency": "low",
+            "comment": "",
+            "consent": True,
+        }
+        with pytest.raises(RequestRejected):
+            await create_request_flow(None, client_tg_id=999_000_004, payload=payload)
+    finally:
+        async with db.pool.acquire() as conn:
+            await conn.execute("DELETE FROM services WHERE idservice=$1", other)
+
+
+async def test_create_request_flow_rejects_deleted_own_catalog_item(service):
+    """Та же защита срабатывает и на мягко удалённую услугу своего сервиса —
+    клиент мог держать форму открытой, пока управляющий убрал услугу."""
+    item = (await db.get_catalog(service))[0]
+    await db.delete_catalog_item(service, str(item["idcatalog"]))
+
+    payload = {
+        "service_id": service,
+        "idcatalog": str(item["idcatalog"]),
+        "client_name": "Иван Тестов",
+        "phone": "+79990000005",
+        "brand": "Toyota",
+        "model": "Camry",
+        "plate": "А777АА777",
+        "urgency": "low",
+        "comment": "",
+        "consent": True,
+    }
+    with pytest.raises(RequestRejected):
+        await create_request_flow(None, client_tg_id=999_000_005, payload=payload)
 
 
 async def test_add_catalog_item_creates_new(service):

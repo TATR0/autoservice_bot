@@ -159,7 +159,7 @@ async def api_service(service_id: str):
     if not svc:
         raise HTTPException(status_code=404, detail="Сервис не найден")
 
-    catalog = await db.get_catalog(service_id)
+    items = await db.get_catalog(service_id)
     return {
         "idservice": str(svc["idservice"]),
         "service_name": svc["service_name"],
@@ -167,7 +167,7 @@ async def api_service(service_id: str):
         "city": svc["city"],
         "location_service": svc["location_service"],
         "catalog": [
-            {"idcatalog": str(c["idcatalog"]), "title": c["title"]} for c in catalog
+            {"idcatalog": str(c["idcatalog"]), "title": c["title"]} for c in items
         ],
     }
 

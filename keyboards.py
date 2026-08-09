@@ -73,8 +73,13 @@ def kb_client_main() -> ReplyKeyboardMarkup:
     )
 
 
-def kb_client_service(idservice: str) -> ReplyKeyboardMarkup:
-    """Кнопка записи в конкретный сервис (переход по deep-link)."""
+def kb_client_service() -> ReplyKeyboardMarkup:
+    """
+    Меню клиента, пришедшего по ссылке сервиса. Без «Зарегистрировать сервис»:
+    человек пришёл записываться, а не заводить свой автосервис. Запись в
+    конкретный сервис открывает inline-кнопка из kb_open_webapp — она приходит
+    отдельным сообщением и несёт service_id.
+    """
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_BOOK)],

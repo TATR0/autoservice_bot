@@ -25,7 +25,7 @@ def webapp_configured(monkeypatch):
 def _all_reply_keyboards():
     return {
         "kb_client_main": kb.kb_client_main(),
-        "kb_client_service": kb.kb_client_service(SERVICE_ID),
+        "kb_client_service": kb.kb_client_service(),
         "kb_owner_main": kb.kb_owner_main(SERVICE_ID, many_services=False),
         "kb_admin_main": kb.kb_admin_main(SERVICE_ID, many_services=False),
         "kb_cancel": kb.kb_cancel(),

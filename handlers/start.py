@@ -65,7 +65,7 @@ async def _handle_service_link(message: Message, idservice: str) -> None:
         f"🔧 <b>Добро пожаловать!</b>\n\n"
         f"Вы открыли форму записи в <b>{h(service['service_name'])}</b>.\n"
         f"📍 {h(service['city'])}, {h(service['location_service'])}",
-        reply_markup=kb.kb_client_service(idservice),
+        reply_markup=kb.kb_client_service(),
     )
     # Отдельным сообщением, потому что inline-кнопку и reply-клавиатуру
     # нельзя приложить к одному сообщению.

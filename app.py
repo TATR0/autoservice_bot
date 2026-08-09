@@ -27,9 +27,10 @@ from pydantic import BaseModel, Field
 import config
 from database import db
 from fsm_storage import build_storage
-from handlers import admin_actions, admin_mgmt, register, requests, start
+from handlers import admin_actions, admin_mgmt, catalog, register, requests, start
 from handlers.requests import RequestRejected, create_request_flow
 from middlewares import ErrorLoggingMiddleware, UserMiddleware
+from validators import ValidationError, validate_uuid
 from webapp_auth import InitDataError, verify_init_data
 
 logging.basicConfig(
@@ -53,6 +54,7 @@ dp.include_routers(
     requests.router,
     start.router,
     register.router,
+    catalog.router,
     admin_mgmt.router,
     admin_actions.router,
 )
@@ -146,15 +148,27 @@ async def api_services(city: str = Query(..., min_length=2, max_length=60)):
 
 @app.get("/api/service/{service_id}")
 async def api_service(service_id: str):
+    # Без проверки формата asyncpg бросит DataError на мусорном id,
+    # и клиент получит 500 вместо понятного «сервис не найден»
+    try:
+        service_id = validate_uuid(service_id, field="Сервис")
+    except ValidationError:
+        raise HTTPException(status_code=404, detail="Сервис не найден")
+
     svc = await db.get_service(service_id)
     if not svc:
         raise HTTPException(status_code=404, detail="Сервис не найден")
+
+    items = await db.get_catalog(service_id)
     return {
         "idservice": str(svc["idservice"]),
         "service_name": svc["service_name"],
         "service_number": svc["service_number"],
         "city": svc["city"],
         "location_service": svc["location_service"],
+        "catalog": [
+            {"idcatalog": str(c["idcatalog"]), "title": c["title"]} for c in items
+        ],
     }
 
 
@@ -167,7 +181,7 @@ class RequestPayload(BaseModel):
     brand: str = ""
     model: str = ""
     plate: str = ""
-    service_type: str = ""
+    idcatalog: str = ""
     urgency: str = ""
     comment: str = ""
     consent: bool = False

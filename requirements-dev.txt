@@ -1,0 +1,4 @@
+# Только для разработки. В продакшен-образ не попадает — там requirements.txt.
+# Установка:  pip install -r requirements-dev.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0

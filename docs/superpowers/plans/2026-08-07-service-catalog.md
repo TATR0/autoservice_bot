@@ -15,9 +15,9 @@
 ## Глобальные ограничения
 
 - Весь текст интерфейса, комментарии и docstring'и — на русском языке.
-- Удаления только мягкие: `idrecstatus = 0` активна, `-1` удалена.
+- Удаления только мягкие: `idrecstatus = 0` активна, `-1` удалена. Жёсткого `DELETE` в `database.py` быть не должно ни в одном методе.
 - `parse_mode=HTML`; любое пользовательское значение экранируется через `validators.h()`.
-- Ни один SQL-запрос не пишется вне `database.py`.
+- Ни один SQL-запрос не пишется вне `database.py`. Единственное исключение — тестовые фикстуры в `tests/conftest.py`: они убирают за собой созданные записи жёстким `DELETE`, и заводить ради этого метод в `database.py` нельзя — им тут же кто-нибудь снесёт живой сервис вместо мягкого удаления.
 - Права: править каталог может только управляющий (`services.owner_id`), проверка обязательна и в message-, и в callback-хендлерах.
 - Лимиты: до 30 услуг на сервис, название 2–40 символов, в одном сервисе нет двух активных услуг с одинаковым названием (без учёта регистра).
 - В сервисе всегда остаётся минимум одна активная услуга.
@@ -608,18 +608,22 @@ async def test_add_duplicate_returns_none_ignoring_case(service):
     assert len(await db.get_catalog(service)) == len(config.DEFAULT_SERVICE_TITLES)
 
 
-async def test_add_revives_deleted_item(service):
-    items = await db.get_catalog(service)
-    target = items[0]
-    await db.delete_catalog_item(service, str(target["idcatalog"]))
+async def test_add_after_manual_deactivation_revives_same_row(service):
+    """Воскрешение: услуга с тем же названием переиспользует старую строку,
+    поэтому оформленные на неё заявки остаются слинкованы."""
+    target = (await db.get_catalog(service))[0]
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE service_catalog SET idrecstatus=-1, deletedate=now() WHERE idcatalog=$1",
+            target["idcatalog"],
+        )
 
     revived = await db.add_catalog_item(service, target["title"])
-    # тот же idcatalog: старые заявки снова слинкованы со своей услугой
     assert str(revived["idcatalog"]) == str(target["idcatalog"])
     assert revived["idrecstatus"] == 0
 ```
 
-Третий тест опирается на `delete_catalog_item` из задачи 6 — до неё он падает, это нормально: реализуем метод в задаче 6 и там же снова прогоняем файл целиком.
+Третий тест деактивирует строку напрямую в SQL, а не через `delete_catalog_item`: этот метод появится только в задаче 6, а коммит должен остаться зелёным.
 
 - [ ] **Шаг 2: Запустить и убедиться, что тесты падают**
 
@@ -688,7 +692,7 @@ pytest tests/test_catalog.py -v
 pytest tests/test_catalog.py -v
 ```
 
-Ожидается: 5 passed, 1 failed — падает только `test_add_revives_deleted_item` с `AttributeError: ... 'delete_catalog_item'`. Это ожидаемо, метод появится в задаче 6.
+Ожидается: 6 passed
 
 - [ ] **Шаг 5: Коммит**
 
@@ -762,17 +766,25 @@ pytest tests/test_catalog.py -v
         """
         Мягко удалить услугу. None — удалять нечего или она последняя.
 
-        Правило «хотя бы одна услуга» живёт в самом запросе, а не в хендлере:
-        иначе управляющий с двух устройств удалил бы две последние услуги
-        одновременно — обе проверки прошли бы, и сервис остался бы пустым.
+        CTE с FOR UPDATE блокирует все активные услуги сервиса до подсчёта.
+        Без блокировки правило «хотя бы одна услуга» не работает: в READ
+        COMMITTED две транзакции читают свои снапшоты, не видят UPDATE друг
+        друга, и управляющий с двух устройств удаляет две последние услуги
+        одновременно — сервис остаётся пустым. ORDER BY задаёт единый порядок
+        захвата строк и тем исключает взаимную блокировку.
         """
         async with self.pool.acquire() as conn:
             return await conn.fetchrow(
                 """
+                WITH locked AS (
+                    SELECT idcatalog FROM service_catalog
+                     WHERE idservice=$2 AND idrecstatus=0
+                     ORDER BY idcatalog
+                     FOR UPDATE
+                )
                 UPDATE service_catalog SET idrecstatus=-1, deletedate=now()
                 WHERE idcatalog=$1 AND idservice=$2 AND idrecstatus=0
-                  AND (SELECT count(*) FROM service_catalog
-                        WHERE idservice=$2 AND idrecstatus=0) > 1
+                  AND (SELECT count(*) FROM locked) > 1
                 RETURNING *
                 """,
                 idcatalog, idservice,
@@ -791,13 +803,13 @@ pytest tests/test_catalog.py -v
         return value or 0
 ```
 
-- [ ] **Шаг 4: Запустить весь файл — теперь должно пройти всё**
+- [ ] **Шаг 4: Запустить весь файл**
 
 ```bash
 pytest tests/test_catalog.py -v
 ```
 
-Ожидается: 10 passed (включая `test_add_revives_deleted_item` из задачи 5)
+Ожидается: 10 passed
 
 - [ ] **Шаг 5: Коммит**
 
@@ -1349,7 +1361,11 @@ async def add_cancel(message: Message, state: FSMContext) -> None:
 async def add_finish(message: Message, state: FSMContext) -> None:
     svc = await _owner_service(message, state)
     if svc is None:
+        # Права потеряны прямо во время ввода. Без возврата меню человек
+        # останется с одной кнопкой «Отмена» — при входе в FSM обычная
+        # клавиатура заменяется на неё.
         await state.set_state(None)
+        await show_main_menu(message, state)
         return
 
     try:
@@ -1420,10 +1436,15 @@ async def delete_confirm(callback: CallbackQuery, state: FSMContext) -> None:
 
     removed = await db.delete_catalog_item(str(svc["idservice"]), idcatalog)
     if removed is None:
-        await callback.answer(
-            "❌ Нельзя удалить последнюю услугу — сначала добавьте другую.",
-            show_alert=True,
-        )
+        # None приходит и на «последняя услуга», и на «уже удалили с другого
+        # устройства» — различаем повторным чтением, иначе покажем неверную причину
+        if await db.get_catalog_item(str(svc["idservice"]), idcatalog) is None:
+            await callback.answer("Услуга уже удалена.", show_alert=True)
+        else:
+            await callback.answer(
+                "❌ Нельзя удалить последнюю услугу — сначала добавьте другую.",
+                show_alert=True,
+            )
         await _show_catalog(callback.message, svc, edit=True)
         return
 

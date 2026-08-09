@@ -154,6 +154,9 @@ class Database:
                 """,
                 _new_id(), idservice, owner_tg_id,
             )
+            # Сервис без услуг не должен существовать даже мгновение:
+            # в форме записи клиенту было бы нечего выбрать.
+            await self._seed_catalog(conn, idservice)
         return idservice
 
     async def get_service(self, idservice: str) -> asyncpg.Record | None:
@@ -173,6 +176,143 @@ class Database:
                 """,
                 city,
             )
+
+    # ── service_catalog ──────────────────────────────────────────────────────
+
+    async def _seed_catalog(self, conn: asyncpg.Connection, idservice: str) -> None:
+        """Раздать сервису шаблонный набор услуг. Вызывается внутри транзакции."""
+        await conn.executemany(
+            """
+            INSERT INTO service_catalog (idcatalog, idservice, title, sort_order, idrecstatus)
+            VALUES ($1,$2,$3,$4,0)
+            """,
+            [
+                (_new_id(), idservice, title, (i + 1) * 10)
+                for i, title in enumerate(config.DEFAULT_SERVICE_TITLES)
+            ],
+        )
+
+    async def get_catalog(self, idservice: str) -> list[asyncpg.Record]:
+        """Активные услуги сервиса в порядке показа."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT * FROM service_catalog
+                WHERE idservice=$1 AND idrecstatus=0
+                ORDER BY sort_order, title
+                """,
+                idservice,
+            )
+
+    async def get_catalog_item(
+        self, idservice: str, idcatalog: str
+    ) -> asyncpg.Record | None:
+        """
+        Одна активная услуга сервиса.
+
+        Фильтр по idservice обязателен: без него клиент подставил бы в заявку
+        idcatalog чужого сервиса.
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                SELECT * FROM service_catalog
+                WHERE idcatalog=$1 AND idservice=$2 AND idrecstatus=0
+                """,
+                idcatalog, idservice,
+            )
+
+    async def add_catalog_item(
+        self, idservice: str, title: str
+    ) -> asyncpg.Record | None:
+        """
+        Добавить услугу. None — активная услуга с таким названием уже есть.
+
+        Ранее удалённая услуга воскресает, а не создаётся заново: так заявки,
+        оформленные на неё до удаления, снова оказываются слинкованы со своей
+        строкой каталога.
+        """
+        async with self.pool.acquire() as conn, conn.transaction():
+            revived = await conn.fetchrow(
+                """
+                UPDATE service_catalog SET idrecstatus=0, deletedate=NULL
+                WHERE idcatalog = (
+                        SELECT idcatalog FROM service_catalog
+                         WHERE idservice=$1 AND idrecstatus=-1
+                           AND lower(trim(title))=lower(trim($2))
+                         ORDER BY deletedate DESC NULLS LAST
+                         LIMIT 1)
+                  AND NOT EXISTS (
+                        SELECT 1 FROM service_catalog
+                         WHERE idservice=$1 AND idrecstatus=0
+                           AND lower(trim(title))=lower(trim($2)))
+                RETURNING *
+                """,
+                idservice, title,
+            )
+            if revived:
+                return revived
+
+            # DO NOTHING вместо исключения: активный дубликат — не ошибка
+            # уровня БД, а понятный ответ пользователю «такая услуга уже есть»
+            return await conn.fetchrow(
+                """
+                INSERT INTO service_catalog
+                    (idcatalog, idservice, title, sort_order, idrecstatus)
+                VALUES ($1,$2,$3,$4,0)
+                ON CONFLICT (idservice, lower(trim(title))) WHERE idrecstatus = 0
+                DO NOTHING
+                RETURNING *
+                """,
+                _new_id(), idservice, title, 1000,
+            )
+
+    async def delete_catalog_item(
+        self, idservice: str, idcatalog: str
+    ) -> asyncpg.Record | None:
+        """
+        Мягко удалить услугу. None — удалять нечего или она последняя.
+
+        Правило «хотя бы одна услуга» живёт в самом запросе, а не в хендлере:
+        иначе управляющий с двух устройств удалил бы две последние услуги
+        одновременно. Простого подсчёта в подзапросе недостаточно: в READ
+        COMMITTED каждая параллельная транзакция видит свой снапшот и не
+        замечает чужой незакоммиченный UPDATE — write skew, обе проверки
+        пройдут одновременно. Поэтому сначала блокируем CTE (`FOR UPDATE`)
+        все активные строки услуги сервиса: вторая транзакция встанет в
+        очередь на эти строки, дождётся коммита первой и уже увидит
+        актуальное количество. `ORDER BY idcatalog` в CTE обязателен —
+        без единого порядка блокировки две параллельные транзакции могут
+        захватывать строки в разной последовательности и словить deadlock.
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                WITH locked AS (
+                    SELECT idcatalog FROM service_catalog
+                     WHERE idservice=$2 AND idrecstatus=0
+                     ORDER BY idcatalog
+                     FOR UPDATE
+                )
+                UPDATE service_catalog SET idrecstatus=-1, deletedate=now()
+                WHERE idcatalog=$1 AND idservice=$2 AND idrecstatus=0
+                  AND (SELECT count(*) FROM locked) > 1
+                RETURNING *
+                """,
+                idcatalog, idservice,
+            )
+
+    async def count_requests_by_catalog(self, idservice: str, idcatalog: str) -> int:
+        """Сколько заявок оформлено на эту услугу — для текста подтверждения."""
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval(
+                """
+                SELECT count(*) FROM requests
+                WHERE idservice=$1 AND idcatalog=$2 AND idrecstatus=0
+                """,
+                idservice, idcatalog,
+            )
+        return value or 0
 
     async def get_owned_services(self, owner_tg_id: int) -> list[asyncpg.Record]:
         """Сервисы, где пользователь — управляющий (owner)."""
@@ -409,7 +549,8 @@ class Database:
         brand: str,
         model: str,
         plate: str,
-        service_type: str,
+        idcatalog: str,
+        service_title: str,
         urgency: str,
         comment: str,
         client_uid: str | None = None,
@@ -425,14 +566,15 @@ class Database:
                 """
                 INSERT INTO requests
                     (idrequests, idservice, idclienttg, client_name, phone,
-                     brand, model, plate, service_type, urgency, comment,
-                     client_uid, status, idrecstatus)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'new',0)
+                     brand, model, plate, idcatalog, service_title, urgency,
+                     comment, client_uid, status, idrecstatus)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'new',0)
                 ON CONFLICT (client_uid) WHERE client_uid IS NOT NULL DO NOTHING
                 RETURNING *
                 """,
                 _new_id(), idservice, client_tg_id, client_name, phone,
-                brand, model, plate, service_type, urgency, comment, client_uid,
+                brand, model, plate, idcatalog, service_title, urgency,
+                comment, client_uid,
             )
             if row is None:
                 existing = await conn.fetchrow(
@@ -583,13 +725,16 @@ class Database:
                 idservice,
             )
 
-    async def get_service_type_breakdown(self, idservice: str) -> list[asyncpg.Record]:
+    async def get_service_breakdown(self, idservice: str) -> list[asyncpg.Record]:
+        """Сколько заявок по каждой услуге — группируем по снимку названия,
+        чтобы удалённые услуги не выпадали из статистики."""
         async with self.pool.acquire() as conn:
             return await conn.fetch(
                 """
-                SELECT service_type, count(*) AS cnt
-                FROM requests WHERE idservice=$1 AND idrecstatus=0
-                GROUP BY service_type ORDER BY cnt DESC
+                SELECT service_title AS title, count(*) AS cnt
+                FROM requests
+                WHERE idservice=$1 AND idrecstatus=0 AND service_title <> ''
+                GROUP BY service_title ORDER BY cnt DESC
                 """,
                 idservice,
             )

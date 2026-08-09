@@ -26,6 +26,7 @@ import keyboards as kb
 import render
 from database import db
 from notifications import notify_staff, safe_send
+from handlers.common import require_active_service
 from validators import ValidationError, h, validate_request_fields, validate_uuid
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,30 @@ async def handle_webapp_data(message: Message) -> None:
     except Exception:
         logger.exception("Ошибка при создании заявки из web_app_data")
         await message.answer("❌ Не удалось сохранить заявку. Попробуйте позже.")
+
+
+# ── Открытие формы записи ────────────────────────────────────────────────────
+# Форма открывается inline-кнопкой, а не кнопкой reply-клавиатуры: мини-
+# приложения, открытые с reply-клавиатуры, не получают от Telegram подписанный
+# initData, а без него сервер заявку не примет (см. keyboards.kb_open_webapp).
+
+@router.message(F.text.in_({kb.BTN_BOOK, kb.BTN_BOOK_OWN}), StateFilter(default_state))
+async def open_booking_form(message: Message, state: FSMContext) -> None:
+    service_id = None
+    if message.text == kb.BTN_BOOK_OWN:
+        svc = await require_active_service(message, state)
+        if svc is None:
+            return
+        service_id = str(svc["idservice"])
+
+    markup = kb.kb_open_webapp(service_id)
+    if markup is None:
+        await message.answer(
+            "⚠️ Онлайн-запись временно недоступна. Попробуйте позже."
+        )
+        return
+
+    await message.answer("Нажмите кнопку ниже — откроется форма записи 👇", reply_markup=markup)
 
 
 # ── «Мои заявки» ─────────────────────────────────────────────────────────────

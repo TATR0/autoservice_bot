@@ -42,13 +42,23 @@ def webapp_url(service_id: str | None = None) -> str | None:
     return config.WEBAPP_URL
 
 
-def _webapp_button(text: str, service_id: str | None = None) -> KeyboardButton:
+def kb_open_webapp(service_id: str | None = None) -> InlineKeyboardMarkup | None:
     """
-    WebApp открывается кнопкой reply-клавиатуры: только так Telegram
-    передаёт корректный initData, которым мы подписываем заявку.
+    Inline-кнопка, открывающая форму записи. None — если BASE_URL не задан.
+
+    Форму нельзя открывать кнопкой reply-клавиатуры: такие мини-приложения
+    задуманы под старый механизм sendData и подписанный initData от Telegram
+    не получают (в хеше приходят только версия, платформа и тема). Сервер
+    заявку без initData не принимает — иначе её можно было бы оформить от
+    чужого имени. initData дают только inline-кнопки, кнопка меню, вложения
+    и прямые ссылки на мини-приложение.
     """
     url = webapp_url(service_id)
-    return KeyboardButton(text=text, web_app=WebAppInfo(url=url) if url else None)
+    if not url:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🚗 Открыть форму записи", web_app=WebAppInfo(url=url))
+    ]])
 
 
 # ── Reply-клавиатуры ─────────────────────────────────────────────────────────
@@ -56,7 +66,7 @@ def _webapp_button(text: str, service_id: str | None = None) -> KeyboardButton:
 def kb_client_main() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [_webapp_button(BTN_BOOK)],
+            [KeyboardButton(text=BTN_BOOK)],
             [KeyboardButton(text=BTN_MY_REQUESTS), KeyboardButton(text=BTN_REGISTER)],
         ],
         resize_keyboard=True,
@@ -67,7 +77,7 @@ def kb_client_service(idservice: str) -> ReplyKeyboardMarkup:
     """Кнопка записи в конкретный сервис (переход по deep-link)."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [_webapp_button("🚗 Записаться онлайн", idservice)],
+            [KeyboardButton(text=BTN_BOOK)],
             [KeyboardButton(text=BTN_MY_REQUESTS)],
         ],
         resize_keyboard=True,
@@ -80,7 +90,7 @@ def kb_owner_main(idservice: str, *, many_services: bool) -> ReplyKeyboardMarkup
         [KeyboardButton(text=BTN_INVITE), KeyboardButton(text=BTN_REMOVE_ADMIN)],
         [KeyboardButton(text=BTN_ADMINS), KeyboardButton(text=BTN_ABOUT)],
         [KeyboardButton(text=BTN_SERVICES)],
-        [_webapp_button(BTN_BOOK_OWN, idservice)],
+        [KeyboardButton(text=BTN_BOOK_OWN)],
     ]
     if many_services:
         rows.append([KeyboardButton(text=BTN_SWITCH)])
@@ -93,7 +103,7 @@ def kb_admin_main(idservice: str, *, many_services: bool) -> ReplyKeyboardMarkup
     rows = [
         [KeyboardButton(text=BTN_SERVICE_REQS), KeyboardButton(text=BTN_STATS)],
         [KeyboardButton(text=BTN_ADMINS), KeyboardButton(text=BTN_ABOUT)],
-        [_webapp_button(BTN_BOOK_OWN, idservice)],
+        [KeyboardButton(text=BTN_BOOK_OWN)],
     ]
     if many_services:
         rows.append([KeyboardButton(text=BTN_SWITCH)])

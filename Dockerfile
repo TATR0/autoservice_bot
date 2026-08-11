@@ -34,7 +34,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install /usr/local
-COPY . .
+
+# Непривилегированный пользователь: уязвимость в зависимостях не должна сразу
+# давать root в контейнере. Код копируется уже с нужным владельцем, чтобы не
+# делать лишний chown отдельным слоем.
+RUN useradd --create-home --uid 10001 appuser
+COPY --chown=appuser:appuser . .
+USER appuser
 
 EXPOSE 8080
 

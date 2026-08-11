@@ -20,7 +20,7 @@ import render
 from database import db
 from handlers.common import require_active_service, show_main_menu
 from notifications import safe_send
-from validators import h
+from validators import ValidationError, h, validate_uuid
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -30,9 +30,12 @@ router = Router()
 
 @router.callback_query(F.data.startswith("req:"))
 async def request_status_cb(callback: CallbackQuery) -> None:
+    # callback_data приходит от клиента и может быть подделан: без проверки
+    # формата мусорный id уходит в asyncpg и роняет хендлер DataError'ом
     try:
-        _, status, request_id = callback.data.split(":", 2)
-    except ValueError:
+        _, status, raw_id = callback.data.split(":", 2)
+        request_id = validate_uuid(raw_id, field="Заявка")
+    except (ValueError, ValidationError):
         await callback.answer("❌ Некорректная кнопка.", show_alert=True)
         return
 

@@ -24,7 +24,7 @@ from aiogram.types import CallbackQuery, Message
 import config
 import keyboards as kb
 import render
-from database import db
+from database import ForeignClientUid, db
 from notifications import notify_staff, safe_send
 from handlers.common import require_active_service
 from validators import ValidationError, h, validate_request_fields, validate_uuid
@@ -88,14 +88,22 @@ async def create_request_flow(
             "Дождитесь их обработки."
         )
 
-    request, is_duplicate = await db.create_request(
-        idservice=service_id,
-        client_tg_id=client_tg_id,
-        client_uid=client_uid,
-        idcatalog=idcatalog,
-        service_title=item["title"],
-        **fields,
-    )
+    try:
+        request, is_duplicate = await db.create_request(
+            idservice=service_id,
+            client_tg_id=client_tg_id,
+            client_uid=client_uid,
+            idcatalog=idcatalog,
+            service_title=item["title"],
+            **fields,
+        )
+    except ForeignClientUid:
+        logger.warning(
+            "Клиент %s прислал client_uid чужой заявки", client_tg_id
+        )
+        raise RequestRejected(
+            "Не удалось распознать отправку. Закройте форму, откройте заново и повторите."
+        ) from None
 
     summary = {
         "request_id": str(request["idrequests"]),
@@ -116,6 +124,12 @@ async def create_request_flow(
         service_id,
         render.request_card_for_staff(request, tz=service["timezone"]),
         reply_markup=kb.kb_request_actions(summary["request_id"], request["status"]),
+        master_alert=(
+            f"⚠️ <b>Заявка {summary['number']} никому не доставлена</b>\n"
+            f"Сервис: {h(service['service_name'])}\n\n"
+            "<i>Сотрудники недоступны. Данные клиента не пересылаем — "
+            "заявка ждёт в базе.</i>"
+        ),
     )
 
     # Подтверждение клиенту
@@ -212,7 +226,12 @@ async def my_requests(message: Message) -> None:
 
 @router.callback_query(F.data.startswith("cancelreq:"))
 async def cancel_request(callback: CallbackQuery) -> None:
-    request_id = callback.data.split(":", 1)[1]
+    # callback_data приходит от клиента: мусорный id иначе роняет asyncpg
+    try:
+        request_id = validate_uuid(callback.data.split(":", 1)[1], field="Заявка")
+    except (IndexError, ValidationError):
+        await callback.answer("❌ Заявка не найдена.", show_alert=True)
+        return
 
     req = await db.get_request(request_id)
     if not req:

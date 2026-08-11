@@ -124,6 +124,20 @@ async def invite_accept(callback: CallbackQuery, state: FSMContext) -> None:
         user_id=callback.from_user.id,
     )
 
+    # Управляющий обязан узнать, кто именно принял приглашение: ссылку могли
+    # переслать не тому, а новый администратор видит персональные данные всех
+    # клиентов сервиса.
+    if svc:
+        new_admin = await db.get_user(callback.from_user.id)
+        await safe_send(
+            callback.bot,
+            svc["owner_id"],
+            f"👥 <b>Новый администратор</b> в сервисе <b>{h(svc_name)}</b>:\n"
+            f"{h(db.user_title(new_admin, callback.from_user.id))}\n\n"
+            f"<i>Если вы не приглашали этого человека, снимите его кнопкой "
+            f"«{kb.BTN_REMOVE_ADMIN}».</i>",
+        )
+
     user = await db.get_user(callback.from_user.id)
     await safe_send(
         callback.bot,

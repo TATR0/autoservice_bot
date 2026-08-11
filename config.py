@@ -53,7 +53,10 @@ DEFAULT_TIMEZONE: str = os.getenv("DEFAULT_TIMEZONE", "Europe/Moscow")
 FREE_PLAN_SERVICE_LIMIT: int = int(os.getenv("FREE_PLAN_SERVICE_LIMIT") or 1)
 REQUEST_COOLDOWN_SECONDS: int = int(os.getenv("REQUEST_COOLDOWN_SECONDS") or 60)
 MAX_ACTIVE_REQUESTS_PER_CLIENT: int = int(os.getenv("MAX_ACTIVE_REQUESTS") or 3)
-INIT_DATA_MAX_AGE: int = int(os.getenv("INIT_DATA_MAX_AGE") or 3600)
+# Срок годности подписи Telegram WebApp. Чем он короче, тем меньше окно, в
+# котором перехваченный initData можно переиграть. Форму заполняют за минуты,
+# поэтому час был неоправданно щедрым.
+INIT_DATA_MAX_AGE: int = int(os.getenv("INIT_DATA_MAX_AGE") or 600)
 INVITE_TTL_DAYS: int = int(os.getenv("INVITE_TTL_DAYS") or 7)
 
 # ── Справочники ──────────────────────────────────────────────────────────────

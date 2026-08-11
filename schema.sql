@@ -150,7 +150,7 @@ CREATE INDEX IF NOT EXISTS idx_rsh_request ON request_status_history (idrequests
 
 -- ── Инвайты администраторов ──────────────────────────────────
 CREATE TABLE IF NOT EXISTS admin_invites (
-    token      text        PRIMARY KEY,
+    token      text        PRIMARY KEY, -- sha256-отпечаток приглашения, не сам токен
     idservice  uuid        NOT NULL REFERENCES services(idservice) ON DELETE CASCADE,
     created_by bigint      NOT NULL,
     used_by    bigint,

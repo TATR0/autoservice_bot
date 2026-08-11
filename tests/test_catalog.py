@@ -1,11 +1,12 @@
 """Тесты каталога услуг — идут против настоящей базы (см. tests/conftest.py)."""
 
 import asyncio
+import uuid
 
 import pytest
 
 import config
-from database import db
+from database import ForeignClientUid, db
 from handlers.requests import RequestRejected, create_request_flow
 
 
@@ -233,3 +234,59 @@ async def test_request_stores_title_snapshot(service):
     await db.delete_catalog_item(service, str(item["idcatalog"]))
     again = await db.get_request(str(request["idrequests"]))
     assert again["service_title"] == item["title"]
+
+
+# ── Безопасность ─────────────────────────────────────────────────────────────
+
+async def test_foreign_client_uid_is_rejected(service):
+    """Чужой client_uid не должен возвращать чужую заявку."""
+    item = (await db.get_catalog(service))[0]
+    shared_uid = "uid-" + uuid.uuid4().hex
+
+    await db.create_request(
+        idservice=service, client_tg_id=999_000_010, client_name="Первый клиент",
+        phone="+79990000010", brand="Toyota", model="Camry", plate="А111АА11",
+        idcatalog=str(item["idcatalog"]), service_title=item["title"],
+        urgency="low", comment="", client_uid=shared_uid,
+    )
+
+    # Второй клиент подставляет чужой client_uid
+    with pytest.raises(ForeignClientUid):
+        await db.create_request(
+            idservice=service, client_tg_id=999_000_011, client_name="Второй клиент",
+            phone="+79990000011", brand="Kia", model="Rio", plate="В222ВВ22",
+            idcatalog=str(item["idcatalog"]), service_title=item["title"],
+            urgency="low", comment="", client_uid=shared_uid,
+        )
+
+
+async def test_own_client_uid_still_deduplicates(service):
+    """Повторный тап «Отправить» у самого клиента по-прежнему не плодит дубли."""
+    item = (await db.get_catalog(service))[0]
+    uid = "uid-" + uuid.uuid4().hex
+    fields = dict(
+        idservice=service, client_tg_id=999_000_012, client_name="Клиент",
+        phone="+79990000012", brand="Lada", model="Vesta", plate="С333СС33",
+        idcatalog=str(item["idcatalog"]), service_title=item["title"],
+        urgency="low", comment="", client_uid=uid,
+    )
+    first, dup_first = await db.create_request(**fields)
+    second, dup_second = await db.create_request(**fields)
+
+    assert dup_first is False and dup_second is True
+    assert str(first["idrequests"]) == str(second["idrequests"])
+
+
+async def test_invite_token_is_not_stored_in_plaintext(service):
+    """В базе лежит отпечаток приглашения, а сама ссылка работает."""
+    token = await db.create_invite(service, 999_000_013)
+
+    async with db.pool.acquire() as conn:
+        stored = await conn.fetchval(
+            "SELECT token FROM admin_invites WHERE idservice=$1", service
+        )
+    assert stored != token, "токен приглашения сохранён открытым текстом"
+    assert len(stored) == 64, "ожидался sha256-отпечаток"
+
+    assert await db.get_valid_invite(token) is not None
+    assert await db.get_valid_invite("подобранный-токен") is None

@@ -131,7 +131,7 @@ def validate_price(raw: object) -> int | None:
 
     compact = re.sub(r"\s", "", text)
     compact = re.sub(r"(₽|руб\.?|р\.?)$", "", compact, flags=re.IGNORECASE)
-    if not compact.isdigit():
+    if not compact.isdecimal():
         raise ValidationError(
             "Введите число рублей, например 3000, или «-», чтобы не указывать цену."
         )

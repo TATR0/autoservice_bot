@@ -59,6 +59,11 @@ def test_price_dash_means_not_set():
     assert validate_price("—") is None
 
 
+def test_price_accepts_en_dash_as_not_set():
+    """Код принимает три вида тире — проверяем все."""
+    assert validate_price("–") is None
+
+
 def test_price_rejects_text():
     with pytest.raises(ValidationError):
         validate_price("дорого")
@@ -74,9 +79,19 @@ def test_price_rejects_absurd_value():
         validate_price("10000001")
 
 
+def test_price_allows_upper_boundary():
+    assert validate_price("10000000") == 10_000_000
+
+
 def test_price_allows_zero():
     """Ноль — это «бесплатно», осмысленное значение для акции."""
     assert validate_price("0") == 0
+
+
+def test_price_rejects_unicode_digit_lookalikes():
+    """isdigit() пропускает надстрочные цифры, а int() их не понимает."""
+    with pytest.raises(ValidationError):
+        validate_price("²")
 
 
 # ── Список выбранных услуг ───────────────────────────────────────────────────

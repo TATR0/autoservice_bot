@@ -82,10 +82,17 @@ async def notify_staff(
     *,
     reply_markup: InlineKeyboardMarkup | None = None,
     exclude: int | None = None,
+    master_alert: str | None = None,
 ) -> int:
     """
     Уведомить всех активных администраторов сервиса и владельца
-    (без дублей). Если не доставлено никому — отправить в мастер-чат.
+    (без дублей). Если не доставлено никому — сообщить в мастер-чат.
+
+    В мастер-чат уходит master_alert, а не исходный текст: владелец бота —
+    не сотрудник сервиса, и персональные данные клиента ему не предназначены.
+    Клиент соглашался на обработку данных ради записи в автосервис, а не ради
+    пересылки оператору платформы. Без master_alert отправляется сухое
+    уведомление вообще без подробностей.
     """
     staff = [uid for uid in await db.get_staff_ids(idservice) if uid != exclude]
     delivered = await broadcast(bot, staff, text, reply_markup=reply_markup)
@@ -94,6 +101,11 @@ async def notify_staff(
         await safe_send(
             bot,
             config.MASTER_CHAT_ID,
-            f"⚠️ <b>Некому доставить уведомление сервиса</b>\n\n{text}",
+            master_alert
+            or (
+                "⚠️ <b>Некому доставить уведомление сервиса</b>\n"
+                f"<code>{idservice}</code>\n\n"
+                "<i>Все сотрудники недоступны или заблокировали бота.</i>"
+            ),
         )
     return delivered

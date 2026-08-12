@@ -10,6 +10,7 @@ app.py — единственная точка входа: Telegram-бот (webh
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -30,6 +31,7 @@ from fsm_storage import build_storage
 from handlers import admin_actions, admin_mgmt, catalog, register, requests, start
 from handlers.requests import RequestRejected, create_request_flow
 from middlewares import ErrorLoggingMiddleware, UserMiddleware
+from ratelimit import DatabaseGate, RateLimiter, enforce
 from validators import ValidationError, validate_uuid
 from webapp_auth import InitDataError, verify_init_data
 
@@ -41,6 +43,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 WEBAPP_DIR = Path(__file__).parent / "webapp"
+
+# ── Лимиты публичного API ────────────────────────────────────────────────────
+# Поиск по городу и карточка сервиса открыты без аутентификации, поэтому
+# ограничены жёстче всего по частоте. Отправка заявки дополнительно защищена
+# кулдауном по Telegram-аккаунту в create_request_flow, здесь — грубый отсев.
+_lookup_limiter = RateLimiter(limit=60, window_seconds=60)
+_profile_limiter = RateLimiter(limit=30, window_seconds=60)
+_submit_limiter = RateLimiter(limit=10, window_seconds=60)
+
+# Публичному API оставляем меньше соединений, чем есть в пуле: остаток
+# гарантированно достаётся боту, иначе наплыв на /api/services заодно
+# остановит обработку апдейтов Telegram.
+_db_gate = DatabaseGate(max_concurrent=max(1, config.DB_POOL_MAX - 2))
+
+# Ссылки на фоновые задачи обработки апдейтов. Без них сборщик мусора вправе
+# уничтожить задачу на середине: asyncio держит только слабую ссылку.
+_background_tasks: set[asyncio.Task] = set()
 
 bot = Bot(
     token=config.BOT_TOKEN or "0:placeholder",
@@ -97,6 +116,15 @@ async def lifespan(app: FastAPI):
                 await bot.delete_webhook()
             except Exception:
                 logger.warning("Не удалось снять webhook", exc_info=True)
+
+        # Даём фоновым задачам доработать до закрытия пула: иначе на середине
+        # обработки апдейта у них из-под ног уедет соединение с базой.
+        if _background_tasks:
+            logger.info("Ожидаю %d фоновых задач", len(_background_tasks))
+            done, pending = await asyncio.wait(set(_background_tasks), timeout=15)
+            for task in pending:
+                task.cancel()
+
         await db.close()
         await bot.session.close()
         logger.info("Остановлено")
@@ -109,6 +137,35 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+
+# ── Заголовки безопасности ───────────────────────────────────────────────────
+# Защита в глубину: пользовательские данные в форме и так экранируются, но
+# при ошибке экранирования CSP не даст загрузить чужой скрипт.
+#
+# 'unsafe-inline' обязателен: разметка формы лежит в одном файле вместе со
+# своими <script> и <style>. Разнести их — отдельная работа, а запрет внешних
+# источников работает и так. frame-ancestors намеренно не задаём: Telegram
+# открывает мини-приложение во встроенном браузере, и лишний запрет рискует
+# сломать форму на части платформ.
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' https://telegram.org 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'none'"
+)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Content-Security-Policy", _CSP)
+    return response
 
 
 # ── Telegram webhook ─────────────────────────────────────────────────────────
@@ -125,15 +182,38 @@ async def telegram_webhook(
         raise HTTPException(status_code=403, detail="forbidden")
 
     update = Update.model_validate(await request.json(), context={"bot": bot})
-    await dp.feed_update(bot, update)
+
+    # Обработка уходит в фон, Telegram получает 200 сразу. Синхронно было
+    # нельзя: один /start — это около десятка обращений к Supabase плюс
+    # отправка сообщения, суммарно 6–8 секунд. Telegram столько не ждёт,
+    # обрывает соединение с «Read timeout expired» и присылает апдейт заново —
+    # снаружи это выглядит как молчащий бот и задвоенные ответы.
+    task = asyncio.create_task(_process_update(update))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     return {"ok": True}
+
+
+async def _process_update(update: Update) -> None:
+    """Обработать апдейт вне запроса вебхука."""
+    try:
+        await dp.feed_update(bot, update)
+    except Exception:
+        # Внутри диспетчера ошибки ловит ErrorLoggingMiddleware; сюда долетит
+        # лишь то, что случилось вокруг него. Молча терять это нельзя —
+        # отвечать на апдейт уже некому, останется только лог.
+        logger.exception("Не удалось обработать апдейт %s", update.update_id)
 
 
 # ── REST API для WebApp ──────────────────────────────────────────────────────
 
 @app.get("/api/services")
-async def api_services(city: str = Query(..., min_length=2, max_length=60)):
-    rows = await db.get_services_by_city(city)
+async def api_services(
+    request: Request, city: str = Query(..., min_length=2, max_length=60)
+):
+    enforce(_lookup_limiter, request)
+    async with _db_gate:
+        rows = await db.get_services_by_city(city)
     return [
         {
             "idservice": str(r["idservice"]),
@@ -147,7 +227,9 @@ async def api_services(city: str = Query(..., min_length=2, max_length=60)):
 
 
 @app.get("/api/service/{service_id}")
-async def api_service(service_id: str):
+async def api_service(request: Request, service_id: str):
+    enforce(_lookup_limiter, request)
+
     # Без проверки формата asyncpg бросит DataError на мусорном id,
     # и клиент получит 500 вместо понятного «сервис не найден»
     try:
@@ -155,11 +237,11 @@ async def api_service(service_id: str):
     except ValidationError:
         raise HTTPException(status_code=404, detail="Сервис не найден")
 
-    svc = await db.get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail="Сервис не найден")
-
-    items = await db.get_catalog(service_id)
+    async with _db_gate:
+        svc = await db.get_service(service_id)
+        if not svc:
+            raise HTTPException(status_code=404, detail="Сервис не найден")
+        items = await db.get_catalog(service_id)
     return {
         "idservice": str(svc["idservice"]),
         "service_name": svc["service_name"],
@@ -188,7 +270,9 @@ class RequestPayload(BaseModel):
 
 
 @app.post("/api/requests")
-async def api_create_request(payload: RequestPayload):
+async def api_create_request(request: Request, payload: RequestPayload):
+    enforce(_submit_limiter, request)
+
     # idclienttg берём только из проверенного initData, никогда из тела запроса
     try:
         tg_user = verify_init_data(payload.init_data)
@@ -227,14 +311,16 @@ async def api_create_request(payload: RequestPayload):
 
 
 @app.get("/api/me")
-async def api_me(init_data: str = Query(..., alias="init_data")):
+async def api_me(request: Request, init_data: str = Query(..., alias="init_data")):
     """Профиль клиента для автоподстановки имени и телефона в форму."""
+    enforce(_profile_limiter, request)
     try:
         tg_user = verify_init_data(init_data)
     except InitDataError:
         raise HTTPException(status_code=401, detail="Не удалось подтвердить Telegram-аккаунт")
 
-    user = await db.get_user(int(tg_user["id"]))
+    async with _db_gate:
+        user = await db.get_user(int(tg_user["id"]))
     name = " ".join(
         p for p in (tg_user.get("first_name"), tg_user.get("last_name")) if p
     )
@@ -255,7 +341,12 @@ async def root():
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
+    # headers обязательны: в них уезжает Retry-After при срабатывании лимита
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.detail},
+        headers=exc.headers,
+    )
 
 
 @app.exception_handler(Exception)

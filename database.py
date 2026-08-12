@@ -8,6 +8,7 @@ database.py — единственный модуль для работы с Pos
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import secrets
 from typing import Any, Iterable, Sequence
@@ -20,8 +21,29 @@ import config
 logger = logging.getLogger(__name__)
 
 
+class ForeignClientUid(Exception):
+    """
+    client_uid уже занят заявкой другого клиента.
+
+    Свой uid форма генерирует случайно, поэтому в норме такого не бывает —
+    это либо подбор чужого идентификатора, либо сломанный клиент.
+    """
+
+
 def _new_id() -> str:
     return str(uuid4())
+
+
+def _token_digest(token: str) -> str:
+    """
+    В базе лежит отпечаток приглашения, а не само приглашение.
+
+    Токен из ссылки равносилен правам администратора: кто им владеет, тот
+    видит персональные данные всех клиентов сервиса. Утёкший дамп базы не
+    должен раздавать действующие приглашения. Соль не нужна — токен и так
+    случайный на 128 бит, перебору не поддаётся.
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _is_local(dsn: str) -> bool:
@@ -494,8 +516,9 @@ class Database:
                 INSERT INTO admin_invites (token, idservice, created_by, expires_at)
                 VALUES ($1,$2,$3, now() + ($4 || ' days')::interval)
                 """,
-                token, idservice, created_by, str(config.INVITE_TTL_DAYS),
+                _token_digest(token), idservice, created_by, str(config.INVITE_TTL_DAYS),
             )
+        # Наружу отдаём сам токен — в базе остался только его отпечаток
         return token
 
     async def get_valid_invite(self, token: str) -> asyncpg.Record | None:
@@ -508,7 +531,7 @@ class Database:
                 WHERE i.token=$1 AND i.used_at IS NULL AND i.expires_at > now()
                   AND s.idrecstatus = 0
                 """,
-                token,
+                _token_digest(token),
             )
 
     async def use_invite(self, token: str, used_by: int) -> asyncpg.Record | None:
@@ -523,7 +546,7 @@ class Database:
                 WHERE token=$1 AND used_at IS NULL AND expires_at > now()
                 RETURNING *
                 """,
-                token, used_by,
+                _token_digest(token), used_by,
             )
             if invite is None:
                 return None
@@ -577,9 +600,14 @@ class Database:
                 comment, client_uid,
             )
             if row is None:
+                # Фильтр по idclienttg обязателен: без него, подобрав чужой
+                # client_uid, клиент получил бы номер и сервис чужой заявки.
                 existing = await conn.fetchrow(
-                    "SELECT * FROM requests WHERE client_uid=$1", client_uid
+                    "SELECT * FROM requests WHERE client_uid=$1 AND idclienttg=$2",
+                    client_uid, client_tg_id,
                 )
+                if existing is None:
+                    raise ForeignClientUid(client_uid)
                 return existing, True
 
             await conn.execute(

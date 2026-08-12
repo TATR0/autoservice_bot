@@ -118,6 +118,50 @@ def validate_service_title(raw: object) -> str:
     return clean_text(raw, field="Название услуги", min_len=2, max_len=40)
 
 
+def validate_price(raw: object) -> int | None:
+    """
+    Цена услуги в рублях. None — цена не указана.
+
+    Управляющий вводит её текстом, поэтому принимаем и «3 000», и «3000 ₽»:
+    отказ из-за пробела внутри числа выглядит придиркой, а не проверкой.
+    """
+    text = clean_text(raw, field="Цена", max_len=20)
+    if text in {"-", "—", "–", ""}:
+        return None
+
+    compact = re.sub(r"\s", "", text)
+    compact = re.sub(r"(₽|руб\.?|р\.?)$", "", compact, flags=re.IGNORECASE)
+    if not compact.isdigit():
+        raise ValidationError(
+            "Введите число рублей, например 3000, или «-», чтобы не указывать цену."
+        )
+
+    value = int(compact)
+    if value > 10_000_000:
+        raise ValidationError("Цена не может быть больше 10 000 000 ₽.")
+    return value
+
+
+def validate_catalog_ids(raw: object) -> list[str]:
+    """
+    Список выбранных клиентом услуг. Порядок сохраняется — в нём заявка
+    показывается администратору. Дубликаты схлопываются: повторный элемент
+    ничего не добавляет, а в базе на него стоит уникальный индекс.
+    """
+    if not isinstance(raw, (list, tuple)):
+        raise ValidationError("Выберите хотя бы одну услугу.")
+
+    chosen: list[str] = []
+    for value in raw:
+        item = validate_uuid(value, field="Услуга")
+        if item not in chosen:
+            chosen.append(item)
+
+    if not chosen:
+        raise ValidationError("Выберите хотя бы одну услугу.")
+    return chosen
+
+
 def validate_request_fields(payload: dict) -> dict:
     """Проверить и нормализовать поля заявки из WebApp. Бросает ValidationError."""
     return {

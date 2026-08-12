@@ -41,6 +41,13 @@ def status_label(status: str) -> str:
     return config.REQUEST_STATUS_LABELS.get(status, status)
 
 
+def price_label(price_rub: int | None) -> str:
+    """Цена для показа. Всегда «от»: точную сервис назовёт после осмотра."""
+    if price_rub is None:
+        return "цена по запросу"
+    return "от " + f"{price_rub:,}".replace(",", " ") + " ₽"
+
+
 def urgency_label(key: str) -> str:
     return config.URGENCY_LABELS.get(key, key)
 

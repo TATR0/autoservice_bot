@@ -103,3 +103,69 @@ def test_docs_are_disabled(client):
 def test_webhook_rejects_wrong_secret(client):
     response = client.post("/webhook/не-тот-секрет", json={"update_id": 1})
     assert response.status_code == 403
+
+
+# ── Вебхук отвечает Telegram сразу ───────────────────────────────────────────
+
+def test_webhook_does_not_wait_for_handler(client, monkeypatch):
+    """
+    Telegram не должен ждать обработку апдейта.
+
+    Один /start — это около десятка обращений к базе плюс отправка сообщения.
+    Если отвечать после обработки, Telegram обрывает соединение по таймауту,
+    считает доставку неудачной и присылает апдейт заново: снаружи это молчащий
+    бот и задвоенные ответы.
+    """
+    import asyncio
+    import time
+
+    import config
+
+    handled = asyncio.Event()
+
+    async def slow_feed_update(_bot, _update):
+        await asyncio.sleep(1.0)
+        handled.set()
+
+    monkeypatch.setattr(app_module.dp, "feed_update", slow_feed_update)
+
+    started = time.monotonic()
+    response = client.post(
+        f"/webhook/{config.WEBHOOK_SECRET}",
+        json={"update_id": 1},
+        headers={"X-Telegram-Bot-Api-Secret-Token": config.WEBHOOK_SECRET},
+    )
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert elapsed < 0.5, f"вебхук ждал обработчик {elapsed:.2f}s"
+    assert not handled.is_set(), "обработчик успел доработать — значит ответ его ждал"
+
+
+async def test_background_processing_never_raises(monkeypatch):
+    """
+    Упавший обработчик не должен ронять фоновую задачу необработанным
+    исключением: отвечать Telegram уже нечем, остаётся только запись в лог.
+    """
+    from types import SimpleNamespace
+
+    async def failing_feed_update(_bot, _update):
+        raise RuntimeError("обработчик упал")
+
+    monkeypatch.setattr(app_module.dp, "feed_update", failing_feed_update)
+
+    await app_module._process_update(SimpleNamespace(update_id=42))
+
+
+async def test_background_processing_passes_update_through(monkeypatch):
+    seen = []
+
+    async def capture(_bot, update):
+        seen.append(update)
+
+    monkeypatch.setattr(app_module.dp, "feed_update", capture)
+
+    sentinel = object()
+    await app_module._process_update(sentinel)
+    assert seen == [sentinel]

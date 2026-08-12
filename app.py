@@ -10,6 +10,7 @@ app.py — единственная точка входа: Telegram-бот (webh
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -55,6 +56,10 @@ _submit_limiter = RateLimiter(limit=10, window_seconds=60)
 # гарантированно достаётся боту, иначе наплыв на /api/services заодно
 # остановит обработку апдейтов Telegram.
 _db_gate = DatabaseGate(max_concurrent=max(1, config.DB_POOL_MAX - 2))
+
+# Ссылки на фоновые задачи обработки апдейтов. Без них сборщик мусора вправе
+# уничтожить задачу на середине: asyncio держит только слабую ссылку.
+_background_tasks: set[asyncio.Task] = set()
 
 bot = Bot(
     token=config.BOT_TOKEN or "0:placeholder",
@@ -111,6 +116,15 @@ async def lifespan(app: FastAPI):
                 await bot.delete_webhook()
             except Exception:
                 logger.warning("Не удалось снять webhook", exc_info=True)
+
+        # Даём фоновым задачам доработать до закрытия пула: иначе на середине
+        # обработки апдейта у них из-под ног уедет соединение с базой.
+        if _background_tasks:
+            logger.info("Ожидаю %d фоновых задач", len(_background_tasks))
+            done, pending = await asyncio.wait(set(_background_tasks), timeout=15)
+            for task in pending:
+                task.cancel()
+
         await db.close()
         await bot.session.close()
         logger.info("Остановлено")
@@ -168,8 +182,27 @@ async def telegram_webhook(
         raise HTTPException(status_code=403, detail="forbidden")
 
     update = Update.model_validate(await request.json(), context={"bot": bot})
-    await dp.feed_update(bot, update)
+
+    # Обработка уходит в фон, Telegram получает 200 сразу. Синхронно было
+    # нельзя: один /start — это около десятка обращений к Supabase плюс
+    # отправка сообщения, суммарно 6–8 секунд. Telegram столько не ждёт,
+    # обрывает соединение с «Read timeout expired» и присылает апдейт заново —
+    # снаружи это выглядит как молчащий бот и задвоенные ответы.
+    task = asyncio.create_task(_process_update(update))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     return {"ok": True}
+
+
+async def _process_update(update: Update) -> None:
+    """Обработать апдейт вне запроса вебхука."""
+    try:
+        await dp.feed_update(bot, update)
+    except Exception:
+        # Внутри диспетчера ошибки ловит ErrorLoggingMiddleware; сюда долетит
+        # лишь то, что случилось вокруг него. Молча терять это нельзя —
+        # отвечать на апдейт уже некому, останется только лог.
+        logger.exception("Не удалось обработать апдейт %s", update.update_id)
 
 
 # ── REST API для WebApp ──────────────────────────────────────────────────────

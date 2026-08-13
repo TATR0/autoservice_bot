@@ -85,6 +85,16 @@ CREATE INDEX IF NOT EXISTS idx_catalog_service
 CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_unique_title
     ON service_catalog (idservice, lower(trim(title))) WHERE idrecstatus = 0;
 
+ALTER TABLE service_catalog
+    ADD COLUMN IF NOT EXISTS price_rub int;
+
+-- Цена в целых рублях: копейки в прайсе автосервиса не встречаются, а numeric
+-- тянет округления на ровном месте. NULL — «не указана», это не то же самое,
+-- что 0 («бесплатно»).
+ALTER TABLE service_catalog DROP CONSTRAINT IF EXISTS chk_catalog_price;
+ALTER TABLE service_catalog ADD  CONSTRAINT chk_catalog_price
+    CHECK (price_rub IS NULL OR price_rub BETWEEN 0 AND 10000000);
+
 
 -- ── Заявки клиентов ──────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS requests (
@@ -96,7 +106,6 @@ CREATE TABLE IF NOT EXISTS requests (
     brand        text        NOT NULL DEFAULT '—',
     model        text        NOT NULL DEFAULT '—',
     plate        text        NOT NULL DEFAULT '—',
-    service_type text        NOT NULL DEFAULT 'other', -- legacy: не читается приложением, ждёт удаления после проверки бэкфила
     urgency      text        NOT NULL DEFAULT 'low',
     comment      text                 DEFAULT '',
     status       text        NOT NULL DEFAULT 'new',
@@ -111,6 +120,10 @@ ALTER TABLE requests
     ADD COLUMN IF NOT EXISTS updatedate timestamptz NOT NULL DEFAULT now(),
     ADD COLUMN IF NOT EXISTS idcatalog     uuid REFERENCES service_catalog(idcatalog) ON DELETE SET NULL,
     ADD COLUMN IF NOT EXISTS service_title text NOT NULL DEFAULT '';
+
+-- Колонка пережила прошлую фичу как страховка на случай отката. Бэкфил
+-- проверен, приложение её не читает и не пишет — удаляем.
+ALTER TABLE requests DROP COLUMN IF EXISTS service_type;
 
 CREATE INDEX IF NOT EXISTS idx_requests_service ON requests (idservice);
 CREATE INDEX IF NOT EXISTS idx_requests_client  ON requests (idclienttg);
@@ -146,6 +159,31 @@ CREATE TABLE IF NOT EXISTS request_status_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rsh_request ON request_status_history (idrequests, changed_at);
+
+
+-- ── Позиции заявки ───────────────────────────────────────────────────────
+-- Одна строка на одну выбранную клиентом услугу. title и price_rub —
+-- снимки на момент оформления: управляющий вправе поменять цену завтра, но
+-- клиенту обещали сегодняшнюю. position хранит порядок, в котором клиент
+-- видел услуги, чтобы карточка администратору совпадала с формой.
+CREATE TABLE IF NOT EXISTS request_services (
+    idrequestservice uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    idrequests       uuid        NOT NULL REFERENCES requests(idrequests) ON DELETE CASCADE,
+    idcatalog        uuid        REFERENCES service_catalog(idcatalog) ON DELETE SET NULL,
+    title            text        NOT NULL,
+    price_rub        int,
+    position         int         NOT NULL DEFAULT 0,
+    createdate       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_request_services_request
+    ON request_services (idrequests);
+CREATE INDEX IF NOT EXISTS idx_request_services_catalog
+    ON request_services (idcatalog);
+
+-- одну и ту же услугу нельзя добавить в заявку дважды
+CREATE UNIQUE INDEX IF NOT EXISTS idx_request_services_unique
+    ON request_services (idrequests, idcatalog) WHERE idcatalog IS NOT NULL;
 
 
 -- ── Инвайты администраторов ──────────────────────────────────
@@ -220,21 +258,6 @@ SELECT s.idservice, t.title, t.ord
  WHERE s.idrecstatus = 0
    AND NOT EXISTS (SELECT 1 FROM service_catalog c WHERE c.idservice = s.idservice);
 
-UPDATE requests r
-   SET service_title = m.title
-  FROM (VALUES
-        ('diagnostic',   'Диагностика'),
-        ('oil-change',   'Замена масла'),
-        ('tires',        'Шины и диски'),
-        ('brake',        'Тормозная система'),
-        ('engine',       'Ремонт двигателя'),
-        ('transmission', 'Коробка передач'),
-        ('suspension',   'Подвеска'),
-        ('body',         'Кузовные работы'),
-        ('other',        'Другое')
-       ) AS m(key, title)
- WHERE r.service_title = '' AND r.service_type = m.key;
-
 -- ключа не нашлось в списке выше — заявка всё равно должна быть читаемой
 UPDATE requests SET service_title = 'Другое' WHERE service_title = '';
 
@@ -245,6 +268,14 @@ UPDATE requests r
    AND c.idservice = r.idservice
    AND c.idrecstatus = 0
    AND lower(trim(c.title)) = lower(trim(r.service_title));
+
+-- Существующие заявки: у каждой ровно одна услуга, она становится позицией.
+INSERT INTO request_services (idrequests, idcatalog, title, position)
+SELECT r.idrequests, r.idcatalog, r.service_title, 0
+  FROM requests r
+ WHERE r.service_title <> ''
+   AND NOT EXISTS (
+        SELECT 1 FROM request_services rs WHERE rs.idrequests = r.idrequests);
 
 
 -- ── Row Level Security ───────────────────────────────────────
@@ -257,5 +288,6 @@ ALTER TABLE admins                 ENABLE ROW LEVEL SECURITY;
 ALTER TABLE service_catalog        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE requests               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE request_status_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE request_services        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_invites          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fsm_storage            ENABLE ROW LEVEL SECURITY;

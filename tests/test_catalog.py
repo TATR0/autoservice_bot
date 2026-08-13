@@ -290,3 +290,77 @@ async def test_invite_token_is_not_stored_in_plaintext(service):
 
     assert await db.get_valid_invite(token) is not None
     assert await db.get_valid_invite("подобранный-токен") is None
+
+
+# ── Цена услуги ──────────────────────────────────────────────────────────────
+
+async def test_add_catalog_item_stores_price(service):
+    item = await db.add_catalog_item(service, "Полировка кузова", price_rub=3000)
+    assert item["price_rub"] == 3000
+
+
+async def test_add_catalog_item_without_price(service):
+    item = await db.add_catalog_item(service, "Химчистка салона")
+    assert item["price_rub"] is None
+
+
+async def test_set_catalog_item_price(service):
+    item = (await db.get_catalog(service))[0]
+    updated = await db.set_catalog_item_price(service, str(item["idcatalog"]), 1500)
+    assert updated["price_rub"] == 1500
+
+
+async def test_set_catalog_item_price_clears_it(service):
+    item = await db.add_catalog_item(service, "Полировка фар", price_rub=1500)
+    cleared = await db.set_catalog_item_price(service, str(item["idcatalog"]), None)
+    assert cleared["price_rub"] is None
+
+
+async def test_set_catalog_item_price_rejects_foreign_service(service, db_ready):
+    """Цену чужой услуги менять нельзя."""
+    other = await db.create_service(
+        name="Тест чужой цены", phone="+79990000020", city="Тестоград",
+        address="ул. Чужая, 3", owner_tg_id=999_000_020,
+    )
+    try:
+        foreign = (await db.get_catalog(other))[0]
+        assert await db.set_catalog_item_price(service, str(foreign["idcatalog"]), 100) is None
+    finally:
+        async with db.pool.acquire() as conn:
+            await conn.execute("DELETE FROM services WHERE idservice=$1", other)
+
+
+async def test_get_catalog_items_returns_requested_only(service):
+    catalog = await db.get_catalog(service)
+    wanted = [str(catalog[0]["idcatalog"]), str(catalog[2]["idcatalog"])]
+    items = await db.get_catalog_items(service, wanted)
+    assert {str(i["idcatalog"]) for i in items} == set(wanted)
+
+
+async def test_get_catalog_items_skips_deleted(service):
+    catalog = await db.get_catalog(service)
+    target = str(catalog[0]["idcatalog"])
+    await db.delete_catalog_item(service, target)
+    assert await db.get_catalog_items(service, [target]) == []
+
+
+async def test_get_catalog_items_can_include_deleted(service):
+    """Удалённую услугу нужно уметь назвать по имени в тексте отказа."""
+    catalog = await db.get_catalog(service)
+    target = str(catalog[0]["idcatalog"])
+    await db.delete_catalog_item(service, target)
+    items = await db.get_catalog_items(service, [target], only_active=False)
+    assert [i["title"] for i in items] == [catalog[0]["title"]]
+
+
+async def test_get_catalog_items_rejects_foreign_service(service, db_ready):
+    other = await db.create_service(
+        name="Тест чужой выборки", phone="+79990000021", city="Тестоград",
+        address="ул. Чужая, 4", owner_tg_id=999_000_021,
+    )
+    try:
+        foreign = (await db.get_catalog(other))[0]
+        assert await db.get_catalog_items(service, [str(foreign["idcatalog"])]) == []
+    finally:
+        async with db.pool.acquire() as conn:
+            await conn.execute("DELETE FROM services WHERE idservice=$1", other)

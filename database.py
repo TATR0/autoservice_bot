@@ -245,19 +245,21 @@ class Database:
             )
 
     async def add_catalog_item(
-        self, idservice: str, title: str
+        self, idservice: str, title: str, price_rub: int | None = None
     ) -> asyncpg.Record | None:
         """
         Добавить услугу. None — активная услуга с таким названием уже есть.
 
         Ранее удалённая услуга воскресает, а не создаётся заново: так заявки,
         оформленные на неё до удаления, снова оказываются слинкованы со своей
-        строкой каталога.
+        строкой каталога. Цена при воскрешении перезаписывается переданной:
+        управляющий заводит услугу заново и указывает актуальную цену, а не
+        наследует прошлогоднюю.
         """
         async with self.pool.acquire() as conn, conn.transaction():
             revived = await conn.fetchrow(
                 """
-                UPDATE service_catalog SET idrecstatus=0, deletedate=NULL
+                UPDATE service_catalog SET idrecstatus=0, deletedate=NULL, price_rub=$3
                 WHERE idcatalog = (
                         SELECT idcatalog FROM service_catalog
                          WHERE idservice=$1 AND idrecstatus=-1
@@ -270,7 +272,7 @@ class Database:
                            AND lower(trim(title))=lower(trim($2)))
                 RETURNING *
                 """,
-                idservice, title,
+                idservice, title, price_rub,
             )
             if revived:
                 return revived
@@ -280,13 +282,60 @@ class Database:
             return await conn.fetchrow(
                 """
                 INSERT INTO service_catalog
-                    (idcatalog, idservice, title, sort_order, idrecstatus)
-                VALUES ($1,$2,$3,$4,0)
+                    (idcatalog, idservice, title, price_rub, sort_order, idrecstatus)
+                VALUES ($1,$2,$3,$4,$5,0)
                 ON CONFLICT (idservice, lower(trim(title))) WHERE idrecstatus = 0
                 DO NOTHING
                 RETURNING *
                 """,
-                _new_id(), idservice, title, 1000,
+                _new_id(), idservice, title, price_rub, 1000,
+            )
+
+    async def set_catalog_item_price(
+        self, idservice: str, idcatalog: str, price_rub: int | None
+    ) -> asyncpg.Record | None:
+        """
+        Изменить цену услуги. None — услуги нет, она удалена или чужая.
+
+        Отдельный метод, а не «обновить услугу целиком»: переименование услуг
+        сознательно вне области, и смешивать эти операции незачем.
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE service_catalog SET price_rub=$3
+                WHERE idcatalog=$1 AND idservice=$2 AND idrecstatus=0
+                RETURNING *
+                """,
+                idcatalog, idservice, price_rub,
+            )
+
+    async def get_catalog_items(
+        self,
+        idservice: str,
+        idcatalogs: Sequence[str],
+        *,
+        only_active: bool = True,
+    ) -> list[asyncpg.Record]:
+        """
+        Услуги сервиса по списку идентификаторов, одним запросом.
+
+        Фильтр по idservice обязателен: без него клиент подставил бы в заявку
+        услуги чужого сервиса. only_active=False нужен, чтобы назвать удалённую
+        услугу по имени в тексте отказа, а не отделаться безличным «одна из
+        услуг недоступна».
+        """
+        if not idcatalogs:
+            return []
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT * FROM service_catalog
+                WHERE idservice=$1 AND idcatalog = ANY($2::uuid[])
+                  AND (NOT $3::bool OR idrecstatus = 0)
+                ORDER BY sort_order, title
+                """,
+                idservice, list(idcatalogs), only_active,
             )
 
     async def delete_catalog_item(

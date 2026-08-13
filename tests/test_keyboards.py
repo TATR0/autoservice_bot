@@ -63,3 +63,18 @@ def test_open_webapp_keyboard_is_none_without_base_url(monkeypatch):
     """Локальная разработка без BASE_URL: кнопку показывать нечем."""
     monkeypatch.setattr(config, "WEBAPP_URL", "")
     assert kb.kb_open_webapp() is None
+
+
+def test_catalog_list_opens_item_card(webapp_configured):
+    """Тап по услуге ведёт в её карточку, а не сразу в удаление."""
+    items = [{"idcatalog": SERVICE_ID, "title": "Полировка", "price_rub": 3000}]
+    markup = kb.kb_catalog(items)
+    assert markup.inline_keyboard[0][0].callback_data == f"svcopen:{SERVICE_ID}"
+
+
+def test_catalog_item_card_has_price_and_delete(webapp_configured):
+    markup = kb.kb_catalog_item(SERVICE_ID)
+    actions = [b.callback_data for row in markup.inline_keyboard for b in row]
+    assert f"svcprice:{SERVICE_ID}" in actions
+    assert f"svcdel:{SERVICE_ID}" in actions
+    assert "svclist" in actions

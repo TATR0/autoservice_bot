@@ -14,6 +14,7 @@ from aiogram.types import (
 )
 
 import config
+import render
 
 # ── Подписи кнопок (импортируются хендлерами, чтобы не расходились) ──────────
 BTN_BOOK           = "🚗 Записаться в автосервис"
@@ -184,11 +185,11 @@ def kb_select_admin(admins: list, owner_id: int, titles: dict[int, str]) -> Inli
 
 
 def kb_catalog(items: list) -> InlineKeyboardMarkup:
-    """Список услуг: тап по услуге ведёт к её удалению."""
+    """Список услуг: тап открывает карточку услуги."""
     rows = [
         [InlineKeyboardButton(
-            text=f"❌ {item['title']}",
-            callback_data=f"svcdel:{item['idcatalog']}",
+            text=f"{item['title']} — {render.price_label(item['price_rub'])}",
+            callback_data=f"svcopen:{item['idcatalog']}",
         )]
         for item in items
     ]
@@ -196,6 +197,15 @@ def kb_catalog(items: list) -> InlineKeyboardMarkup:
         text="➕ Добавить услугу", callback_data="svcadd"
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def kb_catalog_item(idcatalog: str) -> InlineKeyboardMarkup:
+    """Карточка услуги: правка цены, удаление, возврат к списку."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Изменить цену", callback_data=f"svcprice:{idcatalog}"),
+         InlineKeyboardButton(text="❌ Удалить услугу", callback_data=f"svcdel:{idcatalog}")],
+        [InlineKeyboardButton(text="⬅️ К списку", callback_data="svclist")],
+    ])
 
 
 def kb_confirm(action: str, payload: str) -> InlineKeyboardMarkup:

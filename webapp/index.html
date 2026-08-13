@@ -111,6 +111,16 @@
 
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
+  .catalog-list { display: flex; flex-direction: column; gap: 2px; }
+  .catalog-item { display: flex; align-items: center; gap: 8px;
+                  padding: 10px 8px; border-radius: var(--radius-sm); cursor: pointer; }
+  .catalog-item:active { background: rgba(255,255,255,0.05); }
+  .catalog-item input { width: 20px; height: 20px; flex-shrink: 0; accent-color: var(--accent); }
+  .catalog-title { flex: 1; }
+  .catalog-price { color: var(--muted); font-size: 13px; white-space: nowrap; }
+  .catalog-total { margin-top: 10px; font-weight: 600; }
+  .catalog-total small { color: var(--muted); font-weight: 400; }
+
   .consent { display: flex; gap: 10px; align-items: flex-start; font-size: 12px; color: var(--muted); line-height: 1.5; }
   .consent input { width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px; accent-color: var(--accent); }
 
@@ -246,6 +256,33 @@ function esc(str) {
   return String(str ?? "").replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
   );
+}
+
+function priceLabel(price) {
+  if (price === null || price === undefined) return "цена по запросу";
+  return "от " + String(price).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₽";
+}
+
+function selectedCatalogIds() {
+  return [...document.querySelectorAll(".catalog-cb:checked")].map(cb => cb.value);
+}
+
+function updateTotal() {
+  const chosen = selectedCatalogIds();
+  const catalog = state.selectedService?.catalog || [];
+  const picked = catalog.filter(s => chosen.includes(s.idcatalog));
+  const priced = picked.filter(s => s.price_rub !== null && s.price_rub !== undefined);
+  const box = document.getElementById("catalogTotal");
+  if (!box) return;
+
+  if (picked.length === 0) { box.innerHTML = ""; return; }
+  if (priced.length === 0) { box.innerHTML = "Итого: цена по запросу"; return; }
+
+  const total = priced.reduce((sum, s) => sum + s.price_rub, 0);
+  // Оговорка обязательна: без неё сумма выглядит полной, хотя часть работ
+  // в неё не вошла
+  const note = priced.length === picked.length ? "" : "<br><small>часть работ — по запросу</small>";
+  box.innerHTML = "Итого: " + priceLabel(total) + note;
 }
 
 function alertUser(text) {
@@ -474,10 +511,17 @@ function renderForm() {
     <div class="card">
       <div class="card-title">Услуга</div>
       <div class="field">
-        <label>Тип работы *</label>
-        <select id="f_catalog">
-          ${catalog.map(s => `<option value="${esc(s.idcatalog)}">${esc(s.title)}</option>`).join("")}
-        </select>
+        <label>Услуги *</label>
+        <div id="catalogList" class="catalog-list">
+          ${catalog.map(s => `
+            <label class="catalog-item">
+              <input type="checkbox" class="catalog-cb" value="${esc(s.idcatalog)}">
+              <span class="catalog-title">${esc(s.title)}</span>
+              <span class="catalog-price">${esc(priceLabel(s.price_rub))}</span>
+            </label>
+          `).join("")}
+        </div>
+        <div class="catalog-total" id="catalogTotal"></div>
       </div>
       <div class="field">
         <label>Срочность *</label>
@@ -516,6 +560,10 @@ function renderForm() {
     renderCityPicker();
   });
   document.getElementById("submitBtn").addEventListener("click", doSubmit);
+  document.querySelectorAll(".catalog-cb").forEach(cb =>
+    cb.addEventListener("change", updateTotal)
+  );
+  updateTotal();
 }
 
 // ── Отправка ─────────────────────────────────────────────────────────────────
@@ -535,6 +583,10 @@ async function doSubmit() {
   if (get("f_phone").replace(/\D/g, "").length < 10) {
     el("f_phone").classList.add("invalid");
     alertUser("Введите корректный номер телефона");
+    return;
+  }
+  if (selectedCatalogIds().length === 0) {
+    el("formError").innerHTML = `<div class="error-banner">Выберите хотя бы одну услугу.</div>`;
     return;
   }
   if (!el("f_consent").checked) {
@@ -560,7 +612,7 @@ async function doSubmit() {
         brand:        get("f_brand"),
         model:        get("f_model"),
         plate:        get("f_plate").toUpperCase(),
-        idcatalog:    get("f_catalog"),
+        idcatalogs:   selectedCatalogIds(),
         urgency:      get("f_urgency"),
         comment:      get("f_comment"),
         consent:      true,

@@ -249,7 +249,12 @@ async def api_service(request: Request, service_id: str):
         "city": svc["city"],
         "location_service": svc["location_service"],
         "catalog": [
-            {"idcatalog": str(c["idcatalog"]), "title": c["title"]} for c in items
+            {
+                "idcatalog": str(c["idcatalog"]),
+                "title": c["title"],
+                "price_rub": c["price_rub"],
+            }
+            for c in items
         ],
     }
 

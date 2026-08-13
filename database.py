@@ -374,12 +374,14 @@ class Database:
             )
 
     async def count_requests_by_catalog(self, idservice: str, idcatalog: str) -> int:
-        """Сколько заявок оформлено на эту услугу — для текста подтверждения."""
+        """Сколько заявок содержит эту услугу — для текста подтверждения."""
         async with self.pool.acquire() as conn:
             value = await conn.fetchval(
                 """
-                SELECT count(*) FROM requests
-                WHERE idservice=$1 AND idcatalog=$2 AND idrecstatus=0
+                SELECT count(DISTINCT rs.idrequests)
+                FROM request_services rs
+                JOIN requests r ON r.idrequests = rs.idrequests
+                WHERE r.idservice=$1 AND rs.idcatalog=$2 AND r.idrecstatus=0
                 """,
                 idservice, idcatalog,
             )
@@ -747,15 +749,19 @@ class Database:
         self, idservice: str, *, limit: int = 20, statuses: Iterable[str] | None = None
     ) -> list[asyncpg.Record]:
         query = """
-            SELECT * FROM requests
-            WHERE idservice=$1 AND idrecstatus=0
+            SELECT r.*
+                  ,(SELECT string_agg(rs.title, ', ' ORDER BY rs.position)
+                      FROM request_services rs
+                     WHERE rs.idrequests = r.idrequests) AS services_summary
+            FROM requests r
+            WHERE r.idservice=$1 AND r.idrecstatus=0
         """
         args: list[Any] = [idservice]
         if statuses:
             args.append(list(statuses))
-            query += f" AND status = ANY(${len(args)}::text[])"
+            query += f" AND r.status = ANY(${len(args)}::text[])"
         args.append(limit)
-        query += f" ORDER BY createdate DESC LIMIT ${len(args)}"
+        query += f" ORDER BY r.createdate DESC LIMIT ${len(args)}"
 
         async with self.pool.acquire() as conn:
             return await conn.fetch(query, *args)
@@ -766,7 +772,11 @@ class Database:
         async with self.pool.acquire() as conn:
             return await conn.fetch(
                 """
-                SELECT r.*, s.service_name FROM requests r
+                SELECT r.*, s.service_name
+                      ,(SELECT string_agg(rs.title, ', ' ORDER BY rs.position)
+                          FROM request_services rs
+                         WHERE rs.idrequests = r.idrequests) AS services_summary
+                FROM requests r
                 LEFT JOIN services s ON r.idservice=s.idservice
                 WHERE r.idclienttg=$1 AND r.idrecstatus=0
                 ORDER BY r.createdate DESC LIMIT $2
@@ -830,15 +840,20 @@ class Database:
             )
 
     async def get_service_breakdown(self, idservice: str) -> list[asyncpg.Record]:
-        """Сколько заявок по каждой услуге — группируем по снимку названия,
-        чтобы удалённые услуги не выпадали из статистики."""
+        """
+        Сколько раз заказывали каждую услугу. Считаем по позициям, а не по
+        заявкам: заявка с тремя работами — это три заказанные услуги.
+        Группировка по снимку названия оставляет в статистике и те услуги,
+        которые из каталога уже удалили.
+        """
         async with self.pool.acquire() as conn:
             return await conn.fetch(
                 """
-                SELECT service_title AS title, count(*) AS cnt
-                FROM requests
-                WHERE idservice=$1 AND idrecstatus=0 AND service_title <> ''
-                GROUP BY service_title ORDER BY cnt DESC
+                SELECT rs.title AS title, count(*) AS cnt
+                FROM request_services rs
+                JOIN requests r ON r.idrequests = rs.idrequests
+                WHERE r.idservice=$1 AND r.idrecstatus=0
+                GROUP BY rs.title ORDER BY cnt DESC
                 """,
                 idservice,
             )

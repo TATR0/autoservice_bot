@@ -79,8 +79,9 @@ async def request_status_cb(callback: CallbackQuery) -> None:
     handler_user = await db.get_user(callback.from_user.id)
     svc = await db.get_service(str(updated["idservice"]))
 
+    positions = await db.get_request_services(request_id)
     card = render.request_card_for_staff(
-        updated, tz=svc["timezone"] if svc else None
+        updated, positions, tz=svc["timezone"] if svc else None
     )
     card += f"\n👤 <b>Обработал:</b> {h(db.user_title(handler_user, callback.from_user.id))}"
 
@@ -133,9 +134,10 @@ async def service_requests(message: Message, state: FSMContext) -> None:
 
     # Новые заявки отправляем отдельными карточками с кнопками действий
     for req in [r for r in reqs if r["status"] == "new"][:5]:
+        positions = await db.get_request_services(str(req["idrequests"]))
         await message.answer(
             render.request_card_for_staff(
-                req, tz=svc["timezone"], title="🆕 <b>ТРЕБУЕТ РЕАКЦИИ</b>"
+                req, positions, tz=svc["timezone"], title="🆕 <b>ТРЕБУЕТ РЕАКЦИИ</b>"
             ),
             reply_markup=kb.kb_request_actions(str(req["idrequests"]), req["status"]),
         )

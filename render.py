@@ -54,7 +54,9 @@ def urgency_label(key: str) -> str:
 
 # ── Карточки заявок ──────────────────────────────────────────────────────────
 
-def request_card_for_staff(req, *, tz: str | None = None, title: str = "🚗 <b>НОВАЯ ЗАЯВКА</b>") -> str:
+def request_card_for_staff(
+    req, services, *, tz: str | None = None, title: str = "🚗 <b>НОВАЯ ЗАЯВКА</b>"
+) -> str:
     text = (
         f"{title} {request_number(req['seq'])}\n"
         "─────────────────────\n"
@@ -63,9 +65,24 @@ def request_card_for_staff(req, *, tz: str | None = None, title: str = "🚗 <b>
         f"💬 <b>Telegram ID:</b> <code>{req['idclienttg']}</code>\n\n"
         f"🚙 <b>Автомобиль:</b> {h(req['brand'])} {h(req['model'])}\n"
         f"🔢 <b>Гос. номер:</b> <code>{h(req['plate'])}</code>\n\n"
-        f"🔧 <b>Услуга:</b> {h(req['service_title'])}\n"
-        f"⚡ <b>Срочность:</b> {h(urgency_label(req['urgency']))}\n"
     )
+
+    priced = [item for item in services if item["price_rub"] is not None]
+    lines = "".join(
+        f"  • {h(item['title'])} — {price_label(item['price_rub'])}\n"
+        for item in services
+    )
+    text += f"🔧 <b>Услуги:</b>\n{lines}"
+
+    if priced:
+        total = sum(item["price_rub"] for item in priced)
+        # Оговорка обязательна: без неё сумма выглядит полной, хотя часть
+        # работ в неё не вошла
+        note = "" if len(priced) == len(services) else " <i>(часть работ — по запросу)</i>"
+        text += "💰 <b>Итого:</b> от " + f"{total:,}".replace(",", " ") + f" ₽{note}\n"
+
+    text += f"⚡ <b>Срочность:</b> {h(urgency_label(req['urgency']))}\n"
+
     if req["comment"]:
         text += f"\n💬 <b>Комментарий:</b>\n<i>{h(req['comment'])}</i>\n"
     text += (
@@ -87,7 +104,7 @@ def request_line_for_staff(req, tz: str | None = None) -> str:
         f"{status_label(req['status'])}{overdue}\n"
         f"  📞 <code>{h(format_phone(req['phone']))}</code> | "
         f"🚗 {h(req['brand'])} {h(req['model'])} ({h(req['plate'])})\n"
-        f"  🔧 {h(req['service_title'])} | "
+        f"  🔧 {h(req['services_summary'] or '—')} | "
         f"⚡ {h(urgency_label(req['urgency']))}\n"
         f"  🕒 {local_dt(req['createdate'], tz)}\n"
     )
@@ -97,7 +114,7 @@ def request_line_for_client(req) -> str:
     return (
         f"{request_number(req['seq'])} 🚗 <b>{h(req['brand'])} {h(req['model'])}</b>\n"
         f"   Сервис: {h(req['service_name'] or '—')}\n"
-        f"   Услуга: {h(req['service_title'])}\n"
+        f"   Услуги: {h(req['services_summary'] or '—')}\n"
         f"   Статус: {status_label(req['status'])}\n"
         f"   Дата: {local_dt(req['createdate'])}\n\n"
     )

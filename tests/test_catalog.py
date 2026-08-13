@@ -191,23 +191,11 @@ async def test_count_requests_by_catalog_counts_only_matching_item(service):
     """Проверяем реальный подсчёт, а не то, что запрос всегда возвращает 0:
     заявка привязана к одной услуге каталога — счётчик другой услуги того же
     сервиса должен остаться нулевым."""
-    target, other = (await db.get_catalog(service))[:2]
-    async with db.pool.acquire() as conn:
-        idrequest = await conn.fetchval(
-            """
-            INSERT INTO requests (idservice, client_name, phone, idcatalog, service_title)
-            VALUES ($1,$2,$3,$4,$5)
-            RETURNING idrequests
-            """,
-            service, "Тест Тестов", "+79990000003",
-            target["idcatalog"], target["title"],
-        )
-    try:
-        assert await db.count_requests_by_catalog(service, str(target["idcatalog"])) == 1
-        assert await db.count_requests_by_catalog(service, str(other["idcatalog"])) == 0
-    finally:
-        async with db.pool.acquire() as conn:
-            await conn.execute("DELETE FROM requests WHERE idrequests=$1", idrequest)
+    other = (await db.get_catalog(service))[0]
+    _, items = await _make_request_with(service, [("Работа для счётчика", None)])
+
+    assert await db.count_requests_by_catalog(service, str(items[0]["idcatalog"])) == 1
+    assert await db.count_requests_by_catalog(service, str(other["idcatalog"])) == 0
 
 
 # Снимок названия и цены теперь живёт в позициях заявки — см.
@@ -408,3 +396,27 @@ async def test_snapshot_survives_service_deletion(service):
     positions = await db.get_request_services(str(request["idrequests"]))
     assert positions[0]["title"] == "Полировка фар"
     assert positions[0]["price_rub"] == 1500
+
+
+async def test_breakdown_counts_every_service_of_request(service):
+    """Заявка с тремя услугами — это три строки в статистике, а не одна."""
+    await _make_request_with(
+        service, [("Работа А", None), ("Работа Б", None), ("Работа В", None)]
+    )
+    breakdown = await db.get_service_breakdown(service)
+    counted = {row["title"]: row["cnt"] for row in breakdown}
+    assert counted["Работа А"] == 1
+    assert counted["Работа Б"] == 1
+    assert counted["Работа В"] == 1
+
+
+async def test_count_requests_by_catalog_uses_positions(service):
+    request, items = await _make_request_with(service, [("Полировка кузова", 3000)])
+    used = await db.count_requests_by_catalog(service, str(items[0]["idcatalog"]))
+    assert used == 1
+
+
+async def test_request_list_carries_services_summary(service):
+    await _make_request_with(service, [("Работа А", None), ("Работа Б", None)])
+    rows = await db.get_service_requests(service, limit=5)
+    assert "Работа А, Работа Б" in rows[0]["services_summary"]

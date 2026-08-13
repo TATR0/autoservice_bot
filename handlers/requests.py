@@ -140,10 +140,11 @@ async def create_request_flow(
     await db.set_user_phone(client_tg_id, fields["phone"])
 
     # Карточка администраторам и владельцу
+    positions = await db.get_request_services(summary["request_id"])
     await notify_staff(
         bot,
         service_id,
-        render.request_card_for_staff(request, tz=service["timezone"]),
+        render.request_card_for_staff(request, positions, tz=service["timezone"]),
         reply_markup=kb.kb_request_actions(summary["request_id"], request["status"]),
         master_alert=(
             f"⚠️ <b>Заявка {summary['number']} никому не доставлена</b>\n"

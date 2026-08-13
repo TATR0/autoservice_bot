@@ -27,7 +27,9 @@ import render
 from database import ForeignClientUid, db
 from notifications import notify_staff, safe_send
 from handlers.common import require_active_service
-from validators import ValidationError, h, validate_request_fields, validate_uuid
+from validators import (
+    ValidationError, h, validate_catalog_ids, validate_request_fields, validate_uuid
+)
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -60,15 +62,35 @@ async def create_request_flow(
 
     try:
         fields = validate_request_fields(payload)
-        idcatalog = validate_uuid(payload.get("idcatalog"), field="Услуга")
+        idcatalogs = validate_catalog_ids(payload.get("idcatalogs"))
     except ValidationError as exc:
         raise RequestRejected(str(exc)) from exc
 
-    # Услуга обязана принадлежать этому сервису и быть активной: клиент мог
-    # держать форму открытой, пока управляющий убирал услугу из списка
-    item = await db.get_catalog_item(service_id, idcatalog)
-    if item is None:
-        raise RequestRejected("Эта услуга больше не оказывается — выберите другую.")
+    # Услуги обязаны принадлежать этому сервису и быть активными: клиент мог
+    # держать форму открытой, пока управляющий убирал что-то из списка
+    items = await db.get_catalog_items(service_id, idcatalogs)
+    if len(items) != len(idcatalogs):
+        found = {str(item["idcatalog"]) for item in items}
+        missing = [cid for cid in idcatalogs if cid not in found]
+        # Называем услугу по имени: «одна из услуг недоступна» не подсказывает,
+        # что именно переснимать в форме
+        gone = await db.get_catalog_items(service_id, missing, only_active=False)
+        names = ", ".join(f"«{row['title']}»" for row in gone)
+        raise RequestRejected(
+            f"Услуга {names} больше не оказывается — выберите заново."
+            if names
+            else "Одна из выбранных услуг недоступна. Откройте форму заново."
+        )
+
+    by_id = {str(item["idcatalog"]): item for item in items}
+    services = [
+        {
+            "idcatalog": cid,
+            "title": by_id[cid]["title"],
+            "price_rub": by_id[cid]["price_rub"],
+        }
+        for cid in idcatalogs
+    ]
 
     client_uid = str(payload.get("client_uid") or "").strip()[:64] or None
 
@@ -93,8 +115,7 @@ async def create_request_flow(
             idservice=service_id,
             client_tg_id=client_tg_id,
             client_uid=client_uid,
-            idcatalog=idcatalog,
-            service_title=item["title"],
+            services=services,
             **fields,
         )
     except ForeignClientUid:
@@ -133,12 +154,16 @@ async def create_request_flow(
     )
 
     # Подтверждение клиенту
+    services_line = "\n".join(
+        f"• {h(item['title'])} — {render.price_label(item['price_rub'])}"
+        for item in services
+    )
     await safe_send(
         bot,
         client_tg_id,
         f"✅ <b>Заявка {summary['number']} отправлена!</b>\n\n"
         f"<b>Сервис:</b> {h(service['service_name'])}\n"
-        f"<b>Услуга:</b> {h(item['title'])}\n"
+        f"<b>Услуги:</b>\n{services_line}\n"
         f"<b>Автомобиль:</b> {h(fields['brand'])} {h(fields['model'])}\n\n"
         "Администратор свяжется с вами в ближайшее время.",
         reply_markup=kb.kb_client_request_actions(summary["request_id"]),
@@ -162,7 +187,7 @@ async def handle_webapp_data(message: Message) -> None:
 
     # Старая форма присылала ключ service_type из общего справочника. Услуги
     # теперь свои у каждого сервиса, сопоставить их со старыми ключами нельзя.
-    if not payload.get("idcatalog"):
+    if not payload.get("idcatalogs"):
         await message.answer(
             "❌ Форма записи устарела — закройте её и откройте заново."
         )

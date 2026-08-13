@@ -621,8 +621,7 @@ class Database:
         brand: str,
         model: str,
         plate: str,
-        idcatalog: str,
-        service_title: str,
+        services: list[dict],
         urgency: str,
         comment: str,
         client_uid: str | None = None,
@@ -638,15 +637,14 @@ class Database:
                 """
                 INSERT INTO requests
                     (idrequests, idservice, idclienttg, client_name, phone,
-                     brand, model, plate, idcatalog, service_title, urgency,
-                     comment, client_uid, status, idrecstatus)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'new',0)
+                     brand, model, plate, urgency, comment, client_uid,
+                     status, idrecstatus)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'new',0)
                 ON CONFLICT (client_uid) WHERE client_uid IS NOT NULL DO NOTHING
                 RETURNING *
                 """,
                 _new_id(), idservice, client_tg_id, client_name, phone,
-                brand, model, plate, idcatalog, service_title, urgency,
-                comment, client_uid,
+                brand, model, plate, urgency, comment, client_uid,
             )
             if row is None:
                 # Фильтр по idclienttg обязателен: без него, подобрав чужой
@@ -659,6 +657,27 @@ class Database:
                     raise ForeignClientUid(client_uid)
                 return existing, True
 
+            # Позиции пишутся в той же транзакции: заявки без услуг
+            # существовать не должно даже мгновение
+            await conn.executemany(
+                """
+                INSERT INTO request_services
+                    (idrequestservice, idrequests, idcatalog, title, price_rub, position)
+                VALUES ($1,$2,$3,$4,$5,$6)
+                """,
+                [
+                    (
+                        _new_id(),
+                        row["idrequests"],
+                        item["idcatalog"],
+                        item["title"],
+                        item.get("price_rub"),
+                        index,
+                    )
+                    for index, item in enumerate(services)
+                ],
+            )
+
             await conn.execute(
                 """
                 INSERT INTO request_status_history (idrequests, status_from, status_to, changed_by)
@@ -667,6 +686,14 @@ class Database:
                 row["idrequests"], client_tg_id,
             )
         return row, False
+
+    async def get_request_services(self, idrequests: str) -> list[asyncpg.Record]:
+        """Позиции заявки в том порядке, в каком их выбирал клиент."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                "SELECT * FROM request_services WHERE idrequests=$1 ORDER BY position",
+                idrequests,
+            )
 
     async def get_request(self, idrequests: str) -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:

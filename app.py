@@ -263,7 +263,7 @@ class RequestPayload(BaseModel):
     brand: str = ""
     model: str = ""
     plate: str = ""
-    idcatalog: str = ""
+    idcatalogs: list[str] = Field(default_factory=list)
     urgency: str = ""
     comment: str = ""
     consent: bool = False

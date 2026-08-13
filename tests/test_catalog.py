@@ -49,7 +49,7 @@ async def test_create_request_flow_rejects_foreign_catalog_item(service, db_read
         foreign = (await db.get_catalog(other))[0]
         payload = {
             "service_id": service,
-            "idcatalog": str(foreign["idcatalog"]),
+            "idcatalogs": [str(foreign["idcatalog"])],
             "client_name": "Иван Тестов",
             "phone": "+79990000004",
             "brand": "Toyota",
@@ -74,7 +74,7 @@ async def test_create_request_flow_rejects_deleted_own_catalog_item(service):
 
     payload = {
         "service_id": service,
-        "idcatalog": str(item["idcatalog"]),
+        "idcatalogs": [str(item["idcatalog"])],
         "client_name": "Иван Тестов",
         "phone": "+79990000005",
         "brand": "Toyota",
@@ -210,30 +210,8 @@ async def test_count_requests_by_catalog_counts_only_matching_item(service):
             await conn.execute("DELETE FROM requests WHERE idrequests=$1", idrequest)
 
 
-async def test_request_stores_title_snapshot(service):
-    """Название услуги сохраняется в заявке — удаление услуги не ломает историю."""
-    item = (await db.get_catalog(service))[0]
-
-    request, is_duplicate = await db.create_request(
-        idservice=service,
-        client_tg_id=999_000_003,
-        client_name="Иван Тестов",
-        phone="+79990000003",
-        brand="Toyota",
-        model="Camry",
-        plate="А777АА777",
-        idcatalog=str(item["idcatalog"]),
-        service_title=item["title"],
-        urgency="low",
-        comment="",
-    )
-    assert not is_duplicate
-    assert request["service_title"] == item["title"]
-    assert str(request["idcatalog"]) == str(item["idcatalog"])
-
-    await db.delete_catalog_item(service, str(item["idcatalog"]))
-    again = await db.get_request(str(request["idrequests"]))
-    assert again["service_title"] == item["title"]
+# Снимок названия и цены теперь живёт в позициях заявки — см.
+# test_snapshot_survives_service_deletion ниже.
 
 
 # ── Безопасность ─────────────────────────────────────────────────────────────
@@ -246,7 +224,8 @@ async def test_foreign_client_uid_is_rejected(service):
     await db.create_request(
         idservice=service, client_tg_id=999_000_010, client_name="Первый клиент",
         phone="+79990000010", brand="Toyota", model="Camry", plate="А111АА11",
-        idcatalog=str(item["idcatalog"]), service_title=item["title"],
+        services=[{"idcatalog": str(item["idcatalog"]), "title": item["title"],
+                   "price_rub": item["price_rub"]}],
         urgency="low", comment="", client_uid=shared_uid,
     )
 
@@ -255,7 +234,8 @@ async def test_foreign_client_uid_is_rejected(service):
         await db.create_request(
             idservice=service, client_tg_id=999_000_011, client_name="Второй клиент",
             phone="+79990000011", brand="Kia", model="Rio", plate="В222ВВ22",
-            idcatalog=str(item["idcatalog"]), service_title=item["title"],
+            services=[{"idcatalog": str(item["idcatalog"]), "title": item["title"],
+                       "price_rub": item["price_rub"]}],
             urgency="low", comment="", client_uid=shared_uid,
         )
 
@@ -267,7 +247,8 @@ async def test_own_client_uid_still_deduplicates(service):
     fields = dict(
         idservice=service, client_tg_id=999_000_012, client_name="Клиент",
         phone="+79990000012", brand="Lada", model="Vesta", plate="С333СС33",
-        idcatalog=str(item["idcatalog"]), service_title=item["title"],
+        services=[{"idcatalog": str(item["idcatalog"]), "title": item["title"],
+                   "price_rub": item["price_rub"]}],
         urgency="low", comment="", client_uid=uid,
     )
     first, dup_first = await db.create_request(**fields)
@@ -364,3 +345,66 @@ async def test_get_catalog_items_rejects_foreign_service(service, db_ready):
     finally:
         async with db.pool.acquire() as conn:
             await conn.execute("DELETE FROM services WHERE idservice=$1", other)
+
+
+# ── Несколько услуг в заявке ─────────────────────────────────────────────────
+
+async def _make_request_with(service, titles_and_prices):
+    """Завести услуги и оформить на них заявку. Возвращает (заявка, услуги)."""
+    items = []
+    for title, price in titles_and_prices:
+        item = await db.add_catalog_item(service, title, price_rub=price)
+        items.append(item)
+
+    request, _ = await db.create_request(
+        idservice=service,
+        client_tg_id=999_000_030,
+        client_name="Клиент",
+        phone="+79990000030",
+        brand="Toyota",
+        model="Camry",
+        plate="А777АА77",
+        services=[
+            {"idcatalog": str(i["idcatalog"]), "title": i["title"], "price_rub": i["price_rub"]}
+            for i in items
+        ],
+        urgency="low",
+        comment="",
+    )
+    return request, items
+
+
+async def test_request_stores_every_service(service):
+    request, items = await _make_request_with(
+        service, [("Полировка кузова", 3000), ("Полировка фар", 1500)]
+    )
+    positions = await db.get_request_services(str(request["idrequests"]))
+    assert [p["title"] for p in positions] == ["Полировка кузова", "Полировка фар"]
+    assert [p["price_rub"] for p in positions] == [3000, 1500]
+
+
+async def test_request_keeps_order_of_selection(service):
+    request, _ = await _make_request_with(
+        service, [("Услуга Б", None), ("Услуга А", None)]
+    )
+    positions = await db.get_request_services(str(request["idrequests"]))
+    assert [p["position"] for p in positions] == [0, 1]
+    assert [p["title"] for p in positions] == ["Услуга Б", "Услуга А"]
+
+
+async def test_price_snapshot_survives_catalog_change(service):
+    """Цену подняли завтра — в уже оформленной заявке остаётся вчерашняя."""
+    request, items = await _make_request_with(service, [("Полировка кузова", 3000)])
+    await db.set_catalog_item_price(service, str(items[0]["idcatalog"]), 9000)
+
+    positions = await db.get_request_services(str(request["idrequests"]))
+    assert positions[0]["price_rub"] == 3000
+
+
+async def test_snapshot_survives_service_deletion(service):
+    request, items = await _make_request_with(service, [("Полировка фар", 1500)])
+    await db.delete_catalog_item(service, str(items[0]["idcatalog"]))
+
+    positions = await db.get_request_services(str(request["idrequests"]))
+    assert positions[0]["title"] == "Полировка фар"
+    assert positions[0]["price_rub"] == 1500

@@ -42,10 +42,23 @@ def status_label(status: str) -> str:
 
 
 def price_label(price_rub: int | None) -> str:
-    """Цена для показа. Всегда «от»: точную сервис назовёт после осмотра."""
+    """Цена для показа. Всегда «от»: точную сервис назовёт после осмотра.
+
+    Цены нет — пустая строка: пока управляющий её не задал, показывать нечего.
+    """
     if price_rub is None:
-        return "цена по запросу"
+        return ""
     return "от " + f"{price_rub:,}".replace(",", " ") + " ₽"
+
+
+def titled_price(title: str, price_rub: int | None) -> str:
+    """«Название — от 3 000 ₽» либо просто «Название», без висящего тире.
+
+    Название приходит уже подготовленным для своего места вывода
+    (экранированным для HTML или сырым для текста кнопки).
+    """
+    label = price_label(price_rub)
+    return f"{title} — {label}" if label else title
 
 
 def urgency_label(key: str) -> str:
@@ -69,7 +82,7 @@ def request_card_for_staff(
 
     priced = [item for item in services if item["price_rub"] is not None]
     lines = "".join(
-        f"  • {h(item['title'])} — {price_label(item['price_rub'])}\n"
+        f"  • {titled_price(h(item['title']), item['price_rub'])}\n"
         for item in services
     )
     text += f"🔧 <b>Услуги:</b>\n{lines}"

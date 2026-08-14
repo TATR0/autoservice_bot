@@ -156,7 +156,7 @@ async def create_request_flow(
 
     # Подтверждение клиенту
     services_line = "\n".join(
-        f"• {h(item['title'])} — {render.price_label(item['price_rub'])}"
+        f"• {render.titled_price(h(item['title']), item['price_rub'])}"
         for item in services
     )
     await safe_send(

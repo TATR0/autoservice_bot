@@ -55,7 +55,7 @@ async def _owner_service(
 
 def _catalog_text(svc, items) -> str:
     lines = "".join(
-        f"{i}. {h(item['title'])} — {render.price_label(item['price_rub'])}\n"
+        f"{i}. {render.titled_price(h(item['title']), item['price_rub'])}\n"
         for i, item in enumerate(items, 1)
     )
     return (
@@ -67,10 +67,12 @@ def _catalog_text(svc, items) -> str:
 
 
 def _item_text(item) -> str:
-    return (
-        f"🔧 <b>{h(item['title'])}</b>\n\n"
-        f"💰 Цена: {render.price_label(item['price_rub'])}"
-    )
+    """Без цены строку о ней не выводим — задать её можно кнопкой ниже."""
+    price = render.price_label(item["price_rub"])
+    text = f"🔧 <b>{h(item['title'])}</b>"
+    if price:
+        text += f"\n\n💰 Цена: {price}"
+    return text
 
 
 async def _show_catalog(message: Message, svc, *, edit: bool = False) -> None:
@@ -242,10 +244,11 @@ async def price_start(callback: CallbackQuery, state: FSMContext) -> None:
 
     await state.update_data(price_for=idcatalog)
     await state.set_state(ServicePrice.value)
+    current = render.price_label(item["price_rub"])
     await callback.message.answer(
         f"Услуга: <b>{h(item['title'])}</b>\n"
-        f"Сейчас: {render.price_label(item['price_rub'])}\n\n"
-        "Введите новую цену в рублях или <b>-</b>, чтобы убрать её.",
+        + (f"Сейчас: {current}\n" if current else "")
+        + "\nВведите новую цену в рублях или <b>-</b>, чтобы убрать её.",
         reply_markup=kb.kb_cancel(),
     )
     await callback.answer()
@@ -277,7 +280,7 @@ async def price_finish(message: Message, state: FSMContext) -> None:
         await show_main_menu(
             message,
             state,
-            greeting=f"✅ {h(item['title'])} — {render.price_label(item['price_rub'])}",
+            greeting="✅ " + render.titled_price(h(item["title"]), item["price_rub"]),
         )
     await _show_catalog(message, svc)
 

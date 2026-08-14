@@ -188,7 +188,7 @@ def kb_catalog(items: list) -> InlineKeyboardMarkup:
     """Список услуг: тап открывает карточку услуги."""
     rows = [
         [InlineKeyboardButton(
-            text=f"{item['title']} — {render.price_label(item['price_rub'])}",
+            text=render.titled_price(item["title"], item["price_rub"]),
             callback_data=f"svcopen:{item['idcatalog']}",
         )]
         for item in items

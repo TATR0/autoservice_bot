@@ -85,7 +85,9 @@
     text-transform: uppercase;
     color: var(--muted);
   }
-  .field input, .field select, .field textarea {
+  /* Только поля ввода: галочки внутри .field должны остаться нативными —
+     appearance:none стирает саму отметку, и выбор становится не виден */
+  .field input:not([type="checkbox"]), .field select, .field textarea {
     width: 100%;
     background: rgba(255,255,255,0.05);
     border: 1.5px solid var(--border);
@@ -99,7 +101,7 @@
   }
   .field select { cursor: pointer; }
   .field input::placeholder, .field textarea::placeholder { color: var(--muted); }
-  .field input:focus, .field select:focus, .field textarea:focus {
+  .field input:not([type="checkbox"]):focus, .field select:focus, .field textarea:focus {
     outline: none;
     border-color: var(--accent);
     background: rgba(240,192,64,.06);
@@ -111,15 +113,27 @@
 
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
-  .catalog-list { display: flex; flex-direction: column; gap: 2px; }
+  /* Свои display перебивают [hidden] из таблицы браузера — возвращаем ему силу */
+  [hidden] { display: none !important; }
+
+  /* Потолок каталога — 30 услуг. Без своей прокрутки такой список утащил бы
+     срочность, комментарий и кнопку отправки далеко за экран */
+  .catalog-list { display: flex; flex-direction: column; gap: 2px;
+                  max-height: 45vh; overflow-y: auto; overscroll-behavior: contain; }
   .catalog-item { display: flex; align-items: center; gap: 8px;
-                  padding: 10px 8px; border-radius: var(--radius-sm); cursor: pointer; }
+                  padding: 8px; border-radius: var(--radius-sm); cursor: pointer; }
   .catalog-item:active { background: rgba(255,255,255,0.05); }
+  .catalog-item:has(:checked) { background: rgba(240,192,64,.08); }
   .catalog-item input { width: 20px; height: 20px; flex-shrink: 0; accent-color: var(--accent); }
   .catalog-title { flex: 1; }
   .catalog-price { color: var(--muted); font-size: 13px; white-space: nowrap; }
-  .catalog-total { margin-top: 10px; font-weight: 600; }
-  .catalog-total small { color: var(--muted); font-weight: 400; }
+  .catalog-bar { display: flex; justify-content: space-between; align-items: center;
+                 font-size: 12px; color: var(--muted); }
+  .catalog-bar button {
+    background: none; border: none; padding: 0;
+    font: inherit; color: var(--accent); cursor: pointer;
+  }
+  .catalog-empty { padding: 14px 8px; text-align: center; font-size: 13px; color: var(--muted); }
 
   .consent { display: flex; gap: 10px; align-items: flex-start; font-size: 12px; color: var(--muted); line-height: 1.5; }
   .consent input { width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px; accent-color: var(--accent); }
@@ -258,8 +272,9 @@ function esc(str) {
   );
 }
 
+// Цены нет — не показываем ничего: заглушка только зашумляет список
 function priceLabel(price) {
-  if (price === null || price === undefined) return "цена по запросу";
+  if (price === null || price === undefined) return "";
   return "от " + String(price).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₽";
 }
 
@@ -267,22 +282,28 @@ function selectedCatalogIds() {
   return [...document.querySelectorAll(".catalog-cb:checked")].map(cb => cb.value);
 }
 
-function updateTotal() {
-  const chosen = selectedCatalogIds();
-  const catalog = state.selectedService?.catalog || [];
-  const picked = catalog.filter(s => chosen.includes(s.idcatalog));
-  const priced = picked.filter(s => s.price_rub !== null && s.price_rub !== undefined);
-  const box = document.getElementById("catalogTotal");
-  if (!box) return;
+// Короткий список читается целиком, поиск над ним — лишняя деталь
+const CATALOG_SEARCH_FROM = 8;
 
-  if (picked.length === 0) { box.innerHTML = ""; return; }
-  if (priced.length === 0) { box.innerHTML = "Итого: цена по запросу"; return; }
+function updateCatalogBar() {
+  const count = selectedCatalogIds().length;
+  const bar = document.getElementById("catalogBar");
+  if (!bar) return;
+  bar.hidden = count === 0;
+  document.getElementById("catalogCount").textContent = "Выбрано: " + count;
+}
 
-  const total = priced.reduce((sum, s) => sum + s.price_rub, 0);
-  // Оговорка обязательна: без неё сумма выглядит полной, хотя часть работ
-  // в неё не вошла
-  const note = priced.length === picked.length ? "" : "<br><small>часть работ — по запросу</small>";
-  box.innerHTML = "Итого: " + priceLabel(total) + note;
+// Прячем строки, а не перерисовываем список: перерисовка сбросила бы галочки,
+// уже проставленные до поиска
+function filterCatalog(query) {
+  const needle = query.trim().toLowerCase();
+  let shown = 0;
+  document.querySelectorAll(".catalog-item").forEach(item => {
+    const match = !needle || item.dataset.title.includes(needle);
+    item.hidden = !match;
+    if (match) shown += 1;
+  });
+  document.getElementById("catalogEmpty").hidden = shown > 0;
 }
 
 function alertUser(text) {
@@ -512,16 +533,25 @@ function renderForm() {
       <div class="card-title">Услуга</div>
       <div class="field">
         <label>Услуги *</label>
+        ${catalog.length > CATALOG_SEARCH_FROM ? `
+          <input id="catalogSearch" placeholder="Поиск услуги" autocomplete="off">
+        ` : ""}
+        <div class="catalog-bar" id="catalogBar" hidden>
+          <span id="catalogCount"></span>
+          <button type="button" id="catalogReset">Сбросить</button>
+        </div>
         <div id="catalogList" class="catalog-list">
-          ${catalog.map(s => `
-            <label class="catalog-item">
+          ${catalog.map(s => {
+            const price = priceLabel(s.price_rub);
+            return `
+            <label class="catalog-item" data-title="${esc(s.title.toLowerCase())}">
               <input type="checkbox" class="catalog-cb" value="${esc(s.idcatalog)}">
               <span class="catalog-title">${esc(s.title)}</span>
-              <span class="catalog-price">${esc(priceLabel(s.price_rub))}</span>
-            </label>
-          `).join("")}
+              ${price ? `<span class="catalog-price">${esc(price)}</span>` : ""}
+            </label>`;
+          }).join("")}
+          <div class="catalog-empty" id="catalogEmpty" hidden>Ничего не найдено</div>
         </div>
-        <div class="catalog-total" id="catalogTotal"></div>
       </div>
       <div class="field">
         <label>Срочность *</label>
@@ -560,10 +590,16 @@ function renderForm() {
     renderCityPicker();
   });
   document.getElementById("submitBtn").addEventListener("click", doSubmit);
+
+  const search = document.getElementById("catalogSearch");
+  search?.addEventListener("input", () => filterCatalog(search.value));
   document.querySelectorAll(".catalog-cb").forEach(cb =>
-    cb.addEventListener("change", updateTotal)
+    cb.addEventListener("change", updateCatalogBar)
   );
-  updateTotal();
+  document.getElementById("catalogReset").addEventListener("click", () => {
+    document.querySelectorAll(".catalog-cb").forEach(cb => { cb.checked = false; });
+    updateCatalogBar();
+  });
 }
 
 // ── Отправка ─────────────────────────────────────────────────────────────────

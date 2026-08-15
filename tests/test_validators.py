@@ -120,3 +120,82 @@ def test_catalog_ids_rejects_not_a_list():
 def test_catalog_ids_rejects_garbage_inside():
     with pytest.raises(ValidationError):
         validate_catalog_ids(["3f8b6c1e-9d2a-4b7c-8e1f-0a5b6c7d8e9f", "'; DROP TABLE--"])
+
+
+# ── Расписание ───────────────────────────────────────────────────────────────
+
+from datetime import time
+
+from validators import (
+    validate_capacity,
+    validate_horizon,
+    validate_lunch,
+    validate_time_range,
+)
+
+
+def test_time_range_accepts_short_form():
+    """«9-18» — то, как человек пишет часы работы в переписке."""
+    assert validate_time_range("9-18", field="Часы") == (time(9), time(18))
+
+
+def test_time_range_accepts_full_form():
+    assert validate_time_range("09:00-18:00", field="Часы") == (time(9), time(18))
+
+
+def test_time_range_tolerates_spaces_and_dashes():
+    assert validate_time_range(" 9:30 — 17:45 ", field="Часы") == (
+        time(9, 30), time(17, 45)
+    )
+
+
+def test_time_range_rejects_reversed():
+    with pytest.raises(ValidationError):
+        validate_time_range("18-9", field="Часы")
+
+
+def test_time_range_rejects_equal_bounds():
+    with pytest.raises(ValidationError):
+        validate_time_range("9-9", field="Часы")
+
+
+def test_time_range_rejects_garbage():
+    with pytest.raises(ValidationError):
+        validate_time_range("абв", field="Часы")
+
+
+def test_time_range_rejects_impossible_hour():
+    with pytest.raises(ValidationError):
+        validate_time_range("9-25", field="Часы")
+
+
+def test_lunch_dash_clears_it():
+    """«-» убирает обед — тот же жест, что и для цены."""
+    assert validate_lunch("-") is None
+
+
+def test_lunch_parses_range():
+    assert validate_lunch("13-14") == (time(13), time(14))
+
+
+def test_capacity_parses_number():
+    assert validate_capacity("3") == 3
+
+
+def test_capacity_rejects_zero():
+    with pytest.raises(ValidationError):
+        validate_capacity("0")
+
+
+def test_capacity_rejects_above_limit():
+    with pytest.raises(ValidationError):
+        validate_capacity("21")
+
+
+def test_horizon_parses_number():
+    assert validate_horizon("14") == 14
+
+
+def test_horizon_rejects_above_limit():
+    with pytest.raises(ValidationError):
+        validate_horizon("61")

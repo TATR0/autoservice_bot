@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import time
 
 import config
 
@@ -140,6 +141,75 @@ def validate_price(raw: object) -> int | None:
     if value > 10_000_000:
         raise ValidationError("Цена не может быть больше 10 000 000 ₽.")
     return value
+
+
+_TIME_RANGE_RE = re.compile(
+    r"^(\d{1,2})(?::(\d{2}))?\s*[-—–]\s*(\d{1,2})(?::(\d{2}))?$"
+)
+
+
+def _parse_time(hour: str, minute: str | None, *, field: str) -> time:
+    value_h, value_m = int(hour), int(minute or 0)
+    if value_h > 23 or value_m > 59:
+        raise ValidationError(f"«{field}»: такого времени не бывает.")
+    return time(value_h, value_m)
+
+
+def validate_time_range(raw: object, *, field: str) -> tuple[time, time]:
+    """
+    Диапазон времени: «9-18» или «09:00-18:00».
+
+    Короткая форма принимается намеренно: управляющий пишет часы работы так,
+    как сказал бы их вслух, и отказ из-за пропущенных нулей выглядит
+    придиркой, а не проверкой.
+    """
+    text = clean_text(raw, field=field, max_len=20)
+    match = _TIME_RANGE_RE.match(text.replace(" ", ""))
+    if not match:
+        raise ValidationError(
+            f"«{field}»: введите диапазон, например 9-18 или 09:00-18:00."
+        )
+
+    start = _parse_time(match.group(1), match.group(2), field=field)
+    end = _parse_time(match.group(3), match.group(4), field=field)
+    if start >= end:
+        raise ValidationError(f"«{field}»: начало должно быть раньше конца.")
+    return start, end
+
+
+def validate_lunch(raw: object) -> tuple[time, time] | None:
+    """Обед. None — обеда нет; «-» убирает его, как и у цены."""
+    text = clean_text(raw, field="Обед", max_len=20)
+    if text in {"-", "—", "–", ""}:
+        return None
+    return validate_time_range(text, field="Обед")
+
+
+def _validate_int(raw: object, *, field: str, low: int, high: int, hint: str) -> int:
+    text = clean_text(raw, field=field, max_len=10)
+    compact = re.sub(r"\s", "", text)
+    if not compact.isdecimal():
+        raise ValidationError(hint)
+    value = int(compact)
+    if not low <= value <= high:
+        raise ValidationError(hint)
+    return value
+
+
+def validate_capacity(raw: object) -> int:
+    """Сколько машин сервис принимает в одно время."""
+    return _validate_int(
+        raw, field="Машин за раз", low=1, high=20,
+        hint="Введите число от 1 до 20.",
+    )
+
+
+def validate_horizon(raw: object) -> int:
+    """На сколько дней вперёд открыта запись."""
+    return _validate_int(
+        raw, field="Горизонт", low=1, high=60,
+        hint="Введите число дней от 1 до 60.",
+    )
 
 
 def validate_catalog_ids(raw: object) -> list[str]:

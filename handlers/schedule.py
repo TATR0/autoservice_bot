@@ -265,6 +265,9 @@ async def days_ask(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("scheddaytoggle:"))
 async def days_toggle(callback: CallbackQuery, state: FSMContext) -> None:
+    svc = await require_owner_service(callback.message, state, callback.from_user.id)
+    if svc is None:
+        return
     day = int(callback.data.split(":", 1)[1])
     data = await state.get_data()
     chosen = set(data.get("weekdays", []))

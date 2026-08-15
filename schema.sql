@@ -96,6 +96,57 @@ ALTER TABLE service_catalog ADD  CONSTRAINT chk_catalog_price
     CHECK (price_rub IS NULL OR price_rub BETWEEN 0 AND 10000000);
 
 
+-- ── Расписание сервиса ───────────────────────────────────────────────────────
+-- Слоты записи нигде не хранятся: они вычисляются из этого шаблона, а занятость
+-- берётся из заявок. Так отмена заявки освобождает время сама собой, без
+-- отдельной логики возврата, которой было бы что ломать.
+
+CREATE TABLE IF NOT EXISTS service_schedule (
+    idservice    uuid        PRIMARY KEY REFERENCES services(idservice) ON DELETE CASCADE,
+    work_from    time        NOT NULL DEFAULT '09:00',
+    work_to      time        NOT NULL DEFAULT '18:00',
+    slot_minutes int         NOT NULL DEFAULT 60,
+    lunch_from   time,
+    lunch_to     time,
+    weekdays     smallint[]  NOT NULL DEFAULT '{1,2,3,4,5}',  -- ISO: 1=пн … 7=вс
+    horizon_days int         NOT NULL DEFAULT 14,
+    capacity     int         NOT NULL DEFAULT 1,
+    updatedate   timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE service_schedule DROP CONSTRAINT IF EXISTS chk_schedule_hours;
+ALTER TABLE service_schedule ADD  CONSTRAINT chk_schedule_hours
+    CHECK (work_from < work_to);
+
+ALTER TABLE service_schedule DROP CONSTRAINT IF EXISTS chk_schedule_step;
+ALTER TABLE service_schedule ADD  CONSTRAINT chk_schedule_step
+    CHECK (slot_minutes IN (30, 60, 90, 120));
+
+-- Обед либо не задан вовсе, либо задан целиком и лежит внутри рабочих часов:
+-- половинчатое состояние сделало бы нарезку неоднозначной
+ALTER TABLE service_schedule DROP CONSTRAINT IF EXISTS chk_schedule_lunch;
+ALTER TABLE service_schedule ADD  CONSTRAINT chk_schedule_lunch
+    CHECK ((lunch_from IS NULL AND lunch_to IS NULL)
+        OR (lunch_from IS NOT NULL AND lunch_to IS NOT NULL
+            AND lunch_from < lunch_to
+            AND lunch_from >= work_from AND lunch_to <= work_to));
+
+ALTER TABLE service_schedule DROP CONSTRAINT IF EXISTS chk_schedule_horizon;
+ALTER TABLE service_schedule ADD  CONSTRAINT chk_schedule_horizon
+    CHECK (horizon_days BETWEEN 1 AND 60);
+
+ALTER TABLE service_schedule DROP CONSTRAINT IF EXISTS chk_schedule_capacity;
+ALTER TABLE service_schedule ADD  CONSTRAINT chk_schedule_capacity
+    CHECK (capacity BETWEEN 1 AND 20);
+
+-- Хранятся рабочие дни, а не выходные: пустой список выходных двусмыслен
+-- («работаем всегда» или «не заполнили»), а пустой список рабочих дней запрещён
+ALTER TABLE service_schedule DROP CONSTRAINT IF EXISTS chk_schedule_weekdays;
+ALTER TABLE service_schedule ADD  CONSTRAINT chk_schedule_weekdays
+    CHECK (array_length(weekdays, 1) BETWEEN 1 AND 7
+       AND weekdays <@ ARRAY[1,2,3,4,5,6,7]::smallint[]);
+
+
 -- ── Заявки клиентов ──────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS requests (
     idrequests   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -119,7 +170,8 @@ ALTER TABLE requests
     ADD COLUMN IF NOT EXISTS handled_by bigint,
     ADD COLUMN IF NOT EXISTS updatedate timestamptz NOT NULL DEFAULT now(),
     ADD COLUMN IF NOT EXISTS idcatalog     uuid REFERENCES service_catalog(idcatalog) ON DELETE SET NULL,
-    ADD COLUMN IF NOT EXISTS service_title text NOT NULL DEFAULT '';
+    ADD COLUMN IF NOT EXISTS service_title text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS scheduled_at  timestamptz;
 
 -- Колонка пережила прошлую фичу как страховка на случай отката. Бэкфил
 -- проверен, приложение её не читает и не пишет — удаляем.
@@ -130,6 +182,11 @@ CREATE INDEX IF NOT EXISTS idx_requests_client  ON requests (idclienttg);
 CREATE INDEX IF NOT EXISTS idx_requests_status  ON requests (status);
 CREATE INDEX IF NOT EXISTS idx_requests_date    ON requests (createdate DESC);
 CREATE INDEX IF NOT EXISTS idx_requests_catalog ON requests (idcatalog);
+
+-- Занятость окна считается по этому индексу: (сервис, время) с отсечкой
+-- заявок без времени — их всего три, они из эпохи «срочности»
+CREATE INDEX IF NOT EXISTS idx_requests_scheduled
+    ON requests (idservice, scheduled_at) WHERE scheduled_at IS NOT NULL;
 
 -- человекочитаемый номер заявки: клиенту показываем #000142, а не uuid
 CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_seq ON requests (seq);
@@ -276,6 +333,13 @@ SELECT r.idrequests, r.idcatalog, r.service_title, 0
  WHERE r.service_title <> ''
    AND NOT EXISTS (
         SELECT 1 FROM request_services rs WHERE rs.idrequests = r.idrequests);
+
+-- Каждому существующему сервису — расписание по умолчанию. Альтернатива
+-- («нет строки — значит не настроено») означала бы, что после выката все живые
+-- сервисы перестают принимать заявки, пока управляющий не дойдёт до настроек.
+INSERT INTO service_schedule (idservice)
+SELECT idservice FROM services
+ON CONFLICT (idservice) DO NOTHING;
 
 
 -- ── Row Level Security ───────────────────────────────────────

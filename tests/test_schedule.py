@@ -2,6 +2,8 @@
 
 from datetime import datetime, time, timedelta, timezone
 
+import uuid
+
 import asyncpg
 import pytest
 
@@ -129,3 +131,12 @@ async def test_second_place_is_free_when_capacity_allows(service, make_request):
         service, moment - timedelta(hours=1), moment + timedelta(hours=1)
     )
     assert taken[moment] == 2
+
+
+async def test_repeat_tap_returns_the_same_request(service, make_request):
+    """Повторный тап «Отправить» не должен упираться в собственную же заявку."""
+    moment = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=4)
+    uid = str(uuid.uuid4())
+    first = await make_request(service, moment, client_uid=uid)
+    second = await make_request(service, moment, client_uid=uid)
+    assert second["idrequests"] == first["idrequests"]

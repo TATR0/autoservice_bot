@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import html
 import re
-from datetime import time
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 import config
 
@@ -230,6 +231,25 @@ def validate_catalog_ids(raw: object) -> list[str]:
     if not chosen:
         raise ValidationError("Выберите хотя бы одну услугу.")
     return chosen
+
+
+def validate_scheduled_at(raw: object, *, free: dict, tz: str) -> datetime:
+    """
+    Момент записи из формы: «2026-08-17 10:00» в зоне сервиса.
+
+    Проверяется не формат, а принадлежность реально свободному окну: payload
+    можно отправить в обход формы, поэтому список окон — единственный источник
+    истины, а не то, что прислал клиент.
+    """
+    text = clean_text(raw, field="Время записи", max_len=20)
+    try:
+        moment = datetime.strptime(text, "%Y-%m-%d %H:%M")
+    except ValueError:
+        raise ValidationError("Выберите время записи.") from None
+
+    if moment.time() not in free.get(moment.date(), []):
+        raise ValidationError("Это время только что заняли. Выберите другое.")
+    return moment.replace(tzinfo=ZoneInfo(tz))
 
 
 def validate_request_fields(payload: dict) -> dict:

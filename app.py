@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
@@ -26,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import config
+import slots
 from database import db
 from fsm_storage import build_storage
 from handlers import admin_actions, admin_mgmt, catalog, register, requests, schedule, start
@@ -243,12 +245,28 @@ async def api_service(request: Request, service_id: str):
         if not svc:
             raise HTTPException(status_code=404, detail="Сервис не найден")
         items = await db.get_catalog(service_id)
+
+        schedule = await db.get_schedule(service_id)
+        now = datetime.now(timezone.utc)
+        if schedule:
+            taken = await db.get_taken_slots(
+                service_id, now, now + timedelta(days=schedule["horizon_days"] + 1)
+            )
+            free = slots.free_slots(schedule, svc["timezone"], now, taken)
+        else:
+            free = {}
+
     return {
         "idservice": str(svc["idservice"]),
         "service_name": svc["service_name"],
         "service_number": svc["service_number"],
         "city": svc["city"],
         "location_service": svc["location_service"],
+        "timezone": svc["timezone"],
+        "slots": {
+            day.isoformat(): [moment.strftime("%H:%M") for moment in times]
+            for day, times in free.items()
+        },
         "catalog": [
             {
                 "idcatalog": str(c["idcatalog"]),
@@ -270,7 +288,8 @@ class RequestPayload(BaseModel):
     model: str = ""
     plate: str = ""
     idcatalogs: list[str] = Field(default_factory=list)
-    urgency: str = ""
+    scheduled_at: str = ""
+    urgency: str = "low"   # уходит в задаче 9, пока терпим отсутствие в payload
     comment: str = ""
     consent: bool = False
 

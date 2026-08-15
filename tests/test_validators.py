@@ -199,3 +199,34 @@ def test_horizon_parses_number():
 def test_horizon_rejects_above_limit():
     with pytest.raises(ValidationError):
         validate_horizon("61")
+
+
+# ── Время записи ─────────────────────────────────────────────────────────────
+
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+
+from validators import validate_scheduled_at
+
+FREE = {date(2026, 8, 17): [time(9), time(10)]}
+
+
+def test_scheduled_at_accepts_free_slot():
+    got = validate_scheduled_at("2026-08-17 10:00", free=FREE, tz="Europe/Moscow")
+    assert got == datetime(2026, 8, 17, 10, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+
+
+def test_scheduled_at_rejects_slot_outside_schedule():
+    """Payload можно прислать в обход формы — форма не защита."""
+    with pytest.raises(ValidationError):
+        validate_scheduled_at("2026-08-17 03:00", free=FREE, tz="Europe/Moscow")
+
+
+def test_scheduled_at_rejects_unknown_day():
+    with pytest.raises(ValidationError):
+        validate_scheduled_at("2026-08-18 09:00", free=FREE, tz="Europe/Moscow")
+
+
+def test_scheduled_at_rejects_garbage():
+    with pytest.raises(ValidationError):
+        validate_scheduled_at("завтра", free=FREE, tz="Europe/Moscow")

@@ -14,6 +14,7 @@ handlers/requests.py
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
@@ -24,11 +25,13 @@ from aiogram.types import CallbackQuery, Message
 import config
 import keyboards as kb
 import render
+import slots
 from database import ForeignClientUid, SlotTaken, db
 from notifications import notify_staff, safe_send
 from handlers.common import require_active_service
 from validators import (
-    ValidationError, h, validate_catalog_ids, validate_request_fields, validate_uuid
+    ValidationError, h, validate_catalog_ids, validate_request_fields,
+    validate_scheduled_at, validate_uuid,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,6 +62,30 @@ async def create_request_flow(
     service = await db.get_service(service_id)
     if not service:
         raise RequestRejected("Сервис не найден или больше не принимает заявки.")
+
+    # Время записи необязательно: старая форма его ещё не присылает (см. задачу 8),
+    # и такие заявки должны продолжать создаваться без времени, как раньше.
+    # А если момент прислан — это может быть прямой вызов API в обход формы,
+    # поэтому единственный источник истины для проверки — реально свободные
+    # окна, а не то, что заявлено в payload.
+    scheduled_at = None
+    raw_scheduled_at = str(payload.get("scheduled_at") or "").strip()
+    if raw_scheduled_at:
+        schedule = await db.get_schedule(service_id)
+        if schedule is None:
+            raise RequestRejected("Сервис пока не открыл время для записи.")
+
+        now = datetime.now(timezone.utc)
+        taken = await db.get_taken_slots(
+            service_id, now, now + timedelta(days=schedule["horizon_days"] + 1)
+        )
+        free = slots.free_slots(schedule, service["timezone"], now, taken)
+        try:
+            scheduled_at = validate_scheduled_at(
+                raw_scheduled_at, free=free, tz=service["timezone"]
+            )
+        except ValidationError as exc:
+            raise RequestRejected(str(exc)) from None
 
     try:
         fields = validate_request_fields(payload)
@@ -116,6 +143,7 @@ async def create_request_flow(
             client_tg_id=client_tg_id,
             client_uid=client_uid,
             services=services,
+            scheduled_at=scheduled_at,
             **fields,
         )
     except ForeignClientUid:

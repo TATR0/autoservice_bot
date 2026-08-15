@@ -135,6 +135,29 @@
   }
   .catalog-empty { padding: 14px 8px; text-align: center; font-size: 13px; color: var(--muted); }
 
+  .cal-head { display: flex; justify-content: space-between; align-items: center;
+              font-weight: 600; padding: 2px 0 10px; }
+  .cal-head button { background: none; border: none; color: var(--accent);
+                     font-size: 22px; line-height: 1; padding: 2px 12px; cursor: pointer; }
+  .cal-head button:disabled { color: var(--muted); opacity: .35; cursor: default; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  .cal-dow { text-align: center; font-size: 11px; color: var(--muted); padding-bottom: 4px; }
+  .cal-cell { aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+              border: none; background: none; color: var(--text);
+              font: inherit; border-radius: var(--radius-sm); }
+  .cal-day { cursor: pointer; background: rgba(255,255,255,0.05); }
+  /* Закрытый день должен читаться как закрытый, а не как «просто другой» */
+  .cal-off { color: var(--muted); opacity: .3; cursor: default; }
+  .cal-picked { background: linear-gradient(110deg, var(--accent), var(--accent2));
+                color: #111; font-weight: 700; }
+  .cal-times { margin-top: 16px; }
+  .cal-daylabel { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .cal-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(74px, 1fr)); gap: 8px; }
+  .cal-chip { padding: 11px 6px; border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+              background: rgba(255,255,255,0.05); color: var(--text);
+              font: inherit; cursor: pointer; }
+  .cal-tz { margin-top: 10px; font-size: 11px; color: var(--muted); }
+
   .consent { display: flex; gap: 10px; align-items: flex-start; font-size: 12px; color: var(--muted); line-height: 1.5; }
   .consent input { width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px; accent-color: var(--accent); }
 
@@ -241,12 +264,11 @@ if (tg) {
 // запросы идут на текущий origin. Настраивать ничего не нужно.
 const API_BASE = "";
 
-const URGENCY = [
-  { value: "low",    label: "Обычный — 7+ дней" },
-  { value: "medium", label: "Средний — 3–5 дней" },
-  { value: "high",   label: "Срочный — 1–2 дня" },
-  { value: "urgent", label: "Очень срочный — сегодня" },
-];
+const MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня",
+                    "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+const MONTHS_NOM = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+                    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+const WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
 
 const params = new URLSearchParams(location.search);
 const state = {
@@ -254,6 +276,11 @@ const state = {
   selectedService: null,
   city:            "",
   profile:         { name: "", phone: "" },
+  // Свободные окна с сервера: { "2026-08-17": ["09:00", "10:00"] }
+  slots:           {},
+  month:           null,   // Date, первое число показываемого месяца
+  pickedDay:       null,   // "2026-08-17"
+  pickedTime:      null,   // "10:00"
   // Один uid на попытку отправки: повторный тап не создаст дубль заявки
   clientUid:       newUid(),
 };
@@ -306,6 +333,105 @@ function filterCatalog(query) {
   document.getElementById("catalogEmpty").hidden = shown > 0;
 }
 
+// ── Календарь ────────────────────────────────────────────────────────────────
+
+function firstOfMonth(iso) {
+  const [y, m] = iso.split("-").map(Number);
+  return new Date(y, m - 1, 1);
+}
+
+function isoDay(date) {
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${m}-${d}`;
+}
+
+// Сетка начинается с понедельника, а getDay() отдаёт воскресенье нулём
+function mondayOffset(date) {
+  return (date.getDay() + 6) % 7;
+}
+
+function renderCalendar() {
+  const box = document.getElementById("calendar");
+  if (!box || !state.month) return;
+
+  const year = state.month.getFullYear();
+  const month = state.month.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const cells = [];
+  for (let i = 0; i < mondayOffset(new Date(year, month, 1)); i++) {
+    cells.push(`<span class="cal-cell"></span>`);
+  }
+  for (let day = 1; day <= daysInMonth; day++) {
+    const iso = isoDay(new Date(year, month, day));
+    const free = (state.slots[iso] || []).length > 0;
+    const picked = state.pickedDay === iso;
+    cells.push(
+      `<button type="button" class="cal-cell cal-day${free ? "" : " cal-off"}` +
+      `${picked ? " cal-picked" : ""}" ${free ? `data-day="${iso}"` : "disabled"}` +
+      `>${day}</button>`
+    );
+  }
+
+  // Листать в пустоту нельзя: границы задаёт горизонт, открытый сервисом
+  const months = Object.keys(state.slots).map(firstOfMonth);
+  const canPrev = months.some(m => m < state.month);
+  const canNext = months.some(m => m > state.month);
+
+  box.innerHTML = `
+    <div class="cal-head">
+      <button type="button" id="calPrev" ${canPrev ? "" : "disabled"}>‹</button>
+      <span>${MONTHS_NOM[month]} ${year}</span>
+      <button type="button" id="calNext" ${canNext ? "" : "disabled"}>›</button>
+    </div>
+    <div class="cal-grid">
+      ${WEEKDAYS.map(d => `<span class="cal-dow">${d}</span>`).join("")}
+      ${cells.join("")}
+    </div>
+    <div id="calTimes" class="cal-times"></div>`;
+
+  box.querySelector("#calPrev").addEventListener("click", () => shiftMonth(-1));
+  box.querySelector("#calNext").addEventListener("click", () => shiftMonth(1));
+  box.querySelectorAll("[data-day]").forEach(el =>
+    el.addEventListener("click", () => {
+      state.pickedDay = el.dataset.day;
+      state.pickedTime = null;
+      renderCalendar();
+    })
+  );
+  renderTimes();
+}
+
+function shiftMonth(delta) {
+  state.month = new Date(state.month.getFullYear(), state.month.getMonth() + delta, 1);
+  renderCalendar();
+}
+
+function renderTimes() {
+  const box = document.getElementById("calTimes");
+  if (!box) return;
+  if (!state.pickedDay) { box.innerHTML = ""; return; }
+
+  const [, month, day] = state.pickedDay.split("-").map(Number);
+  const times = state.slots[state.pickedDay] || [];
+  box.innerHTML = `
+    <div class="cal-daylabel">${day} ${MONTHS_GEN[month - 1]}</div>
+    <div class="cal-chips">
+      ${times.map(t => `
+        <button type="button" class="cal-chip${state.pickedTime === t ? " cal-picked" : ""}"
+                data-time="${esc(t)}">${esc(t)}</button>`).join("")}
+    </div>
+    <div class="cal-tz">время сервиса, ${esc(state.selectedService?.timezone || "")}</div>`;
+
+  box.querySelectorAll("[data-time]").forEach(el =>
+    el.addEventListener("click", () => {
+      state.pickedTime = el.dataset.time;
+      renderTimes();
+    })
+  );
+}
+
 function alertUser(text) {
   if (tg?.showAlert) tg.showAlert(text);
   else alert(text);
@@ -333,6 +459,12 @@ async function openService(serviceId) {
     state.selectedService = await api(`/api/service/${encodeURIComponent(serviceId)}`);
     state.serviceId = serviceId;
     document.title = state.selectedService.service_name + " — запись";
+    // Календарь открываем на первом месяце, где вообще есть свободное время
+    state.slots = state.selectedService.slots || {};
+    state.pickedDay = null;
+    state.pickedTime = null;
+    const days = Object.keys(state.slots).sort();
+    state.month = days.length ? firstOfMonth(days[0]) : null;
   } catch (e) {
     render(`
       <div class="header"><div class="logo">⚙ АВТОСЕРВИС</div></div>
@@ -491,6 +623,18 @@ function renderForm() {
     return;
   }
 
+  if (Object.keys(state.slots).length === 0) {
+    render(`
+      <div class="header"><div class="logo">${esc(svc.service_name || "Автосервис")}</div></div>
+      <div class="card">
+        <div class="error-banner">
+          Сервис пока не открыл время для записи.<br>Попробуйте позже.
+        </div>
+      </div>
+    `);
+    return;
+  }
+
   render(`
     <div class="header">
       <div class="logo">${svc.service_name ? esc(svc.service_name) : "⚙ АВТОСЕРВИС"}</div>
@@ -554,10 +698,8 @@ function renderForm() {
         </div>
       </div>
       <div class="field">
-        <label>Срочность *</label>
-        <select id="f_urgency">
-          ${URGENCY.map(u => `<option value="${u.value}">${u.label}</option>`).join("")}
-        </select>
+        <label>Когда приехать *</label>
+        <div id="calendar"></div>
       </div>
       <div class="field">
         <label>Комментарий</label>
@@ -600,6 +742,7 @@ function renderForm() {
     document.querySelectorAll(".catalog-cb").forEach(cb => { cb.checked = false; });
     updateCatalogBar();
   });
+  renderCalendar();
 }
 
 // ── Отправка ─────────────────────────────────────────────────────────────────
@@ -623,6 +766,10 @@ async function doSubmit() {
   }
   if (selectedCatalogIds().length === 0) {
     el("formError").innerHTML = `<div class="error-banner">Выберите хотя бы одну услугу.</div>`;
+    return;
+  }
+  if (!state.pickedDay || !state.pickedTime) {
+    el("formError").innerHTML = `<div class="error-banner">Выберите день и время записи.</div>`;
     return;
   }
   if (!el("f_consent").checked) {
@@ -649,7 +796,7 @@ async function doSubmit() {
         model:        get("f_model"),
         plate:        get("f_plate").toUpperCase(),
         idcatalogs:   selectedCatalogIds(),
-        urgency:      get("f_urgency"),
+        scheduled_at: `${state.pickedDay} ${state.pickedTime}`,
         comment:      get("f_comment"),
         consent:      true,
       }),
@@ -661,6 +808,19 @@ async function doSubmit() {
     btn.textContent = "Отправить заявку";
     // Новый uid: прошлая попытка не дошла, следующая — самостоятельная заявка
     state.clientUid = newUid();
+
+    // Окно могли занять, пока клиент заполнял форму. Перечитываем расписание,
+    // иначе он будет тыкать в час, которого в списке уже нет
+    try {
+      const fresh = await api(`/api/service/${encodeURIComponent(state.serviceId)}`);
+      state.slots = fresh.slots || {};
+      if (!(state.slots[state.pickedDay] || []).includes(state.pickedTime)) {
+        state.pickedTime = null;
+      }
+      renderCalendar();
+    } catch (ignored) {
+      // Не смогли обновить — форма и так показывает ошибку отправки
+    }
   }
 }
 

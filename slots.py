@@ -50,7 +50,7 @@ def free_slots(
     result: dict[date, list[time]] = {}
     for offset in range(schedule["horizon_days"]):
         day = today + timedelta(days=offset)
-        if offset > 0 and day.isoweekday() not in workdays:
+        if day.isoweekday() not in workdays:
             continue
 
         opens = datetime.combine(day, schedule["work_from"])

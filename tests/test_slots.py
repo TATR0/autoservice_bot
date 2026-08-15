@@ -88,7 +88,17 @@ def test_day_without_free_slots_is_absent():
 
 
 def test_day_is_computed_in_service_timezone():
-    """Во Владивостоке уже 15-е, когда в Москве ещё 14-е."""
-    now = datetime(2026, 8, 14, 20, 0, tzinfo=MSK)
-    result = free_slots(schedule(horizon_days=1), "Asia/Vladivostok", now, {})
-    assert list(result) == [date(2026, 8, 15)]
+    """В 20:00 по Москве во Владивостоке уже следующий день."""
+    now = datetime(2026, 8, 13, 20, 0, tzinfo=MSK)
+    # В Москве ещё 13-е, но все слоты (9-17) уже прошли
+    assert list(free_slots(schedule(horizon_days=1), "Europe/Moscow", now, {})) == []
+    # Во Владивостоке уже 14-е (сдвиг на 7 часов), и слоты (9-17) ещё впереди
+    assert list(free_slots(schedule(horizon_days=1), "Asia/Vladivostok", now, {})) == [
+        date(2026, 8, 14)
+    ]
+
+
+def test_today_is_skipped_when_it_is_not_a_working_day():
+    """Суббота закрыта и сегодня: закрытый день не должен выглядеть доступным."""
+    saturday = datetime(2026, 8, 15, 8, 0, tzinfo=MSK)
+    assert free_slots(schedule(), "Europe/Moscow", saturday, {}) == {}

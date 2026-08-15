@@ -18,7 +18,7 @@ from aiogram.types import CallbackQuery, Message
 import keyboards as kb
 import render
 from database import db
-from handlers.common import require_active_service, show_main_menu
+from handlers.common import require_owner_service, show_main_menu
 from validators import (
     ValidationError, h, validate_price, validate_service_title, validate_uuid
 )
@@ -37,20 +37,6 @@ class ServiceCatalog(StatesGroup):
 class ServicePrice(StatesGroup):
     """Правка цены уже заведённой услуги — отдельный поток, без ветвлений."""
     value = State()
-
-
-async def _owner_service(
-    message: Message, state: FSMContext, user_id: int | None = None
-):
-    """Активный сервис, если пользователь — его управляющий. Иначе None."""
-    user_id = user_id or message.from_user.id
-    svc = await require_active_service(message, state, user_id)
-    if svc is None:
-        return None
-    if svc["owner_id"] != user_id:
-        await message.answer("❌ Управлять услугами может только управляющий.")
-        return None
-    return svc
 
 
 def _catalog_text(svc, items) -> str:
@@ -97,7 +83,7 @@ def _parse_idcatalog(callback: CallbackQuery) -> str | None:
 
 @router.message(F.text == kb.BTN_SERVICES, StateFilter(default_state))
 async def show_services(message: Message, state: FSMContext) -> None:
-    svc = await _owner_service(message, state)
+    svc = await require_owner_service(message, state)
     if svc is None:
         return
     await _show_catalog(message, svc)
@@ -107,7 +93,7 @@ async def show_services(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "svcadd")
 async def add_start(callback: CallbackQuery, state: FSMContext) -> None:
-    svc = await _owner_service(callback.message, state, callback.from_user.id)
+    svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
         await callback.answer()
         return
@@ -137,7 +123,7 @@ async def add_cancel(message: Message, state: FSMContext) -> None:
 
 @router.message(ServiceCatalog.title)
 async def add_title(message: Message, state: FSMContext) -> None:
-    svc = await _owner_service(message, state)
+    svc = await require_owner_service(message, state)
     if svc is None:
         await state.set_state(None)
         await show_main_menu(message, state)
@@ -161,7 +147,7 @@ async def add_title(message: Message, state: FSMContext) -> None:
 
 @router.message(ServiceCatalog.price)
 async def add_price(message: Message, state: FSMContext) -> None:
-    svc = await _owner_service(message, state)
+    svc = await require_owner_service(message, state)
     if svc is None:
         await state.set_state(None)
         await show_main_menu(message, state)
@@ -192,7 +178,7 @@ async def add_price(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("svcopen:"))
 async def open_item(callback: CallbackQuery, state: FSMContext) -> None:
-    svc = await _owner_service(callback.message, state, callback.from_user.id)
+    svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
         await callback.answer()
         return
@@ -216,7 +202,7 @@ async def open_item(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "svclist")
 async def back_to_list(callback: CallbackQuery, state: FSMContext) -> None:
-    svc = await _owner_service(callback.message, state, callback.from_user.id)
+    svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
         await callback.answer()
         return
@@ -226,7 +212,7 @@ async def back_to_list(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("svcprice:"))
 async def price_start(callback: CallbackQuery, state: FSMContext) -> None:
-    svc = await _owner_service(callback.message, state, callback.from_user.id)
+    svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
         await callback.answer()
         return
@@ -256,7 +242,7 @@ async def price_start(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(ServicePrice.value)
 async def price_finish(message: Message, state: FSMContext) -> None:
-    svc = await _owner_service(message, state)
+    svc = await require_owner_service(message, state)
     if svc is None:
         await state.set_state(None)
         await show_main_menu(message, state)
@@ -289,7 +275,7 @@ async def price_finish(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("svcdel:"))
 async def delete_ask(callback: CallbackQuery, state: FSMContext) -> None:
-    svc = await _owner_service(callback.message, state, callback.from_user.id)
+    svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
         await callback.answer()
         return
@@ -321,7 +307,7 @@ async def delete_ask(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("svcdelok:"))
 async def delete_confirm(callback: CallbackQuery, state: FSMContext) -> None:
-    svc = await _owner_service(callback.message, state, callback.from_user.id)
+    svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
         await callback.answer()
         return

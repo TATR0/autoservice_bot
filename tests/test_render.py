@@ -1,6 +1,6 @@
 """Тесты сборки текстов. Базы не требуют."""
 
-from render import price_label, titled_price
+from render import price_label, titled_price, weekdays_label
 
 
 def test_price_label_shows_from_prefix():
@@ -28,3 +28,11 @@ def test_titled_price_appends_price():
 def test_titled_price_without_price_is_just_title():
     """Без цены не остаётся висящего тире."""
     assert titled_price("Полировка", None) == "Полировка"
+
+
+def test_weekdays_label_lists_days_in_order():
+    assert weekdays_label([1, 2, 3, 4, 5]) == "пн, вт, ср, чт, пт"
+
+
+def test_weekdays_label_sorts_input():
+    assert weekdays_label([5, 1]) == "пн, пт"

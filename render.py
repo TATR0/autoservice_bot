@@ -51,6 +51,40 @@ def price_label(price_rub: int | None) -> str:
     return "от " + f"{price_rub:,}".replace(",", " ") + " ₽"
 
 
+WEEKDAY_NAMES = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+
+
+def weekdays_label(weekdays) -> str:
+    """[1,2,3,4,5] → «пн, вт, ср, чт, пт». Порядок всегда недельный."""
+    return ", ".join(WEEKDAY_NAMES[day - 1] for day in sorted(weekdays))
+
+
+def _hm(value) -> str:
+    return value.strftime("%H:%M")
+
+
+def schedule_card(svc, schedule, free_count: int) -> str:
+    """
+    Карточка расписания. Счётчик свободных окон считается тем же генератором,
+    что и форма, — это единственный способ для управляющего сразу увидеть,
+    что он поставил обед на весь день.
+    """
+    lunch = (
+        f"{_hm(schedule['lunch_from'])} — {_hm(schedule['lunch_to'])}"
+        if schedule["lunch_from"] else "нет"
+    )
+    return (
+        f"🗓 <b>Расписание — {h(svc['service_name'])}</b>\n\n"
+        f"🕘 Часы работы: {_hm(schedule['work_from'])} — {_hm(schedule['work_to'])}\n"
+        f"⏱ Шаг записи: {schedule['slot_minutes']} минут\n"
+        f"🍽 Обед: {lunch}\n"
+        f"📅 Рабочие дни: {weekdays_label(schedule['weekdays'])}\n"
+        f"🚗 Машин за раз: {schedule['capacity']}\n"
+        f"📆 Открыто вперёд: {schedule['horizon_days']} дней\n\n"
+        f"Свободных окон на этот срок: {free_count}"
+    )
+
+
 def titled_price(title: str, price_rub: int | None) -> str:
     """«Название — от 3 000 ₽» либо просто «Название», без висящего тире.
 

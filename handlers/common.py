@@ -76,6 +76,20 @@ async def require_active_service(
     return svc
 
 
+async def require_owner_service(
+    message: Message, state: FSMContext, user_id: int | None = None
+) -> asyncpg.Record | None:
+    """Активный сервис, если пользователь — его управляющий. Иначе None."""
+    user_id = user_id or message.from_user.id
+    svc = await require_active_service(message, state, user_id)
+    if svc is None:
+        return None
+    if svc["owner_id"] != user_id:
+        await message.answer("❌ Это может только управляющий сервисом.")
+        return None
+    return svc
+
+
 def main_menu_markup(svc, role: str, many: bool):
     if role == "owner":
         return kb.kb_owner_main(str(svc["idservice"]), many_services=many)

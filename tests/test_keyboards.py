@@ -78,3 +78,21 @@ def test_catalog_item_card_has_price_and_delete(webapp_configured):
     assert f"svcprice:{SERVICE_ID}" in actions
     assert f"svcdel:{SERVICE_ID}" in actions
     assert "svclist" in actions
+
+
+def test_schedule_keyboard_has_all_fields(webapp_configured):
+    actions = [b.callback_data for row in kb.kb_schedule().inline_keyboard for b in row]
+    assert "schedhours" in actions
+    assert "schedstep" in actions
+    assert "schedlunch" in actions
+    assert "scheddays" in actions
+    assert "schedcap" in actions
+    assert "schedhorizon" in actions
+
+
+def test_schedule_days_marks_selected(webapp_configured):
+    markup = kb.kb_schedule_days([1, 2])
+    labels = [b.text for row in markup.inline_keyboard for b in row]
+    assert "✅ пн" in labels
+    assert "вт" in " ".join(labels)
+    assert "✅ сб" not in labels

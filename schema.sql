@@ -183,8 +183,8 @@ CREATE INDEX IF NOT EXISTS idx_requests_status  ON requests (status);
 CREATE INDEX IF NOT EXISTS idx_requests_date    ON requests (createdate DESC);
 CREATE INDEX IF NOT EXISTS idx_requests_catalog ON requests (idcatalog);
 
--- Занятость окна считается по этому индексу: (сервис, время) с отсечкой
--- заявок без времени — их всего три, они из эпохи «срочности»
+-- Занятость окна считается по этому индексу. Заявки без времени отсечены:
+-- они остались с тех пор, когда клиент выбирал срочность, а не час
 CREATE INDEX IF NOT EXISTS idx_requests_scheduled
     ON requests (idservice, scheduled_at) WHERE scheduled_at IS NOT NULL;
 
@@ -350,6 +350,7 @@ ALTER TABLE users                  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE services               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admins                 ENABLE ROW LEVEL SECURITY;
 ALTER TABLE service_catalog        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE service_schedule       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE requests               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE request_status_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE request_services        ENABLE ROW LEVEL SECURITY;

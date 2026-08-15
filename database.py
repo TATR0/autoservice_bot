@@ -31,6 +31,10 @@ class ForeignClientUid(Exception):
     """
 
 
+class SlotTaken(Exception):
+    """Все места на выбранное время разобраны."""
+
+
 def _new_id() -> str:
     return str(uuid4())
 
@@ -681,6 +685,7 @@ class Database:
         brand: str,
         model: str,
         plate: str,
+        scheduled_at: datetime | None = None,
         services: list[dict],
         urgency: str,
         comment: str,
@@ -693,18 +698,43 @@ class Database:
         (повторный тап «Отправить»), возвращается существующая.
         """
         async with self.pool.acquire() as conn, conn.transaction():
+            # Блокировка строки расписания делает проверку и вставку неделимыми.
+            # Без неё два одновременных клиента оба проходят проверку до того,
+            # как любой из них вставит строку, и одно место уходит дважды.
+            if scheduled_at is not None:
+                schedule = await conn.fetchrow(
+                    "SELECT capacity FROM service_schedule WHERE idservice=$1 FOR UPDATE",
+                    idservice,
+                )
+                if schedule is None:
+                    raise SlotTaken(scheduled_at)
+
+                # Повторный тап не должен занимать второе место: заявка с этим
+                # client_uid уже существует и своё место уже держит
+                already = await conn.fetchval(
+                    "SELECT count(*) FROM requests "
+                    " WHERE idservice=$1 AND scheduled_at=$2 AND idrecstatus=0 "
+                    "   AND status = ANY($3::text[]) "
+                    "   AND ($4::text IS NULL OR client_uid IS DISTINCT FROM $4)",
+                    idservice, scheduled_at,
+                    list(config.SLOT_HOLDING_STATUSES), client_uid,
+                )
+                if already >= schedule["capacity"]:
+                    raise SlotTaken(scheduled_at)
+
             row = await conn.fetchrow(
                 """
                 INSERT INTO requests
                     (idrequests, idservice, idclienttg, client_name, phone,
                      brand, model, plate, urgency, comment, client_uid,
-                     status, idrecstatus)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'new',0)
+                     scheduled_at, status, idrecstatus)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'new',0)
                 ON CONFLICT (client_uid) WHERE client_uid IS NOT NULL DO NOTHING
                 RETURNING *
                 """,
                 _new_id(), idservice, client_tg_id, client_name, phone,
                 brand, model, plate, urgency, comment, client_uid,
+                scheduled_at,
             )
             if row is None:
                 # Фильтр по idclienttg обязателен: без него, подобрав чужой

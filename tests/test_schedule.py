@@ -45,15 +45,16 @@ async def test_update_schedule_rejects_reversed_hours(service):
         await db.update_schedule(service, work_from=time(20), work_to=time(8))
 
 
-async def test_taken_slots_counts_live_requests(service, make_request):
+async def test_taken_slots_groups_by_moment(service, make_request):
+    """Занятость привязана к своему моменту и не приписывается соседнему окну."""
     moment = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=1)
-    await make_request(service, moment)
     await make_request(service, moment)
 
     taken = await db.get_taken_slots(
-        service, moment - timedelta(hours=1), moment + timedelta(hours=1)
+        service, moment - timedelta(hours=2), moment + timedelta(hours=2)
     )
-    assert taken[moment] == 2
+    assert taken[moment] == 1
+    assert moment + timedelta(hours=1) not in taken
 
 
 async def test_cancelled_request_frees_the_slot(service, make_request):
@@ -85,3 +86,46 @@ async def test_done_request_keeps_the_slot(service, make_request):
         service, moment - timedelta(hours=1), moment + timedelta(hours=1)
     )
     assert taken[moment] == 1
+
+
+import asyncio
+
+from database import SlotTaken
+
+
+async def test_slot_capacity_is_enforced(service, make_request):
+    moment = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=1)
+    await make_request(service, moment)
+    with pytest.raises(SlotTaken):
+        await make_request(service, moment)
+
+
+async def test_parallel_booking_gives_one_request(service, make_request):
+    """
+    Двое жмут «Отправить» на одно окно одновременно.
+
+    Без блокировки оба проходят проверку занятости до того, как любой вставит
+    строку, и одно место продаётся дважды.
+    """
+    moment = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=2)
+    results = await asyncio.gather(
+        make_request(service, moment),
+        make_request(service, moment),
+        return_exceptions=True,
+    )
+    rejected = [r for r in results if isinstance(r, SlotTaken)]
+    created = [r for r in results if not isinstance(r, Exception)]
+    assert len(created) == 1
+    assert len(rejected) == 1
+
+
+async def test_second_place_is_free_when_capacity_allows(service, make_request):
+    await db.update_schedule(service, capacity=2)
+    moment = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=3)
+    await make_request(service, moment)
+    await make_request(service, moment)  # не бросает
+
+    taken = await db.get_taken_slots(
+        service, moment - timedelta(hours=1), moment + timedelta(hours=1)
+    )
+    assert taken[moment] == 2

@@ -24,7 +24,7 @@ from aiogram.types import CallbackQuery, Message
 import config
 import keyboards as kb
 import render
-from database import ForeignClientUid, db
+from database import ForeignClientUid, SlotTaken, db
 from notifications import notify_staff, safe_send
 from handlers.common import require_active_service
 from validators import (
@@ -124,6 +124,10 @@ async def create_request_flow(
         )
         raise RequestRejected(
             "Не удалось распознать отправку. Закройте форму, откройте заново и повторите."
+        ) from None
+    except SlotTaken:
+        raise RequestRejected(
+            "Это время только что заняли. Выберите другое — список обновится."
         ) from None
 
     summary = {

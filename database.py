@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
+from datetime import datetime
 from typing import Any, Iterable, Sequence
 from uuid import uuid4
 
@@ -179,6 +180,13 @@ class Database:
             # Сервис без услуг не должен существовать даже мгновение:
             # в форме записи клиенту было бы нечего выбрать.
             await self._seed_catalog(conn, idservice)
+            # Расписание по умолчанию — часть создания сервиса, а не отдельный
+            # шаг: сервис без расписания не может принять ни одной заявки
+            await conn.execute(
+                "INSERT INTO service_schedule (idservice) VALUES ($1) "
+                "ON CONFLICT (idservice) DO NOTHING",
+                idservice,
+            )
         return idservice
 
     async def get_service(self, idservice: str) -> asyncpg.Record | None:
@@ -484,6 +492,56 @@ class Database:
 
     def invite_link(self, token: str) -> str:
         return f"https://t.me/{config.BOT_USERNAME}?start=ADM_{token}"
+
+    # ── schedule ─────────────────────────────────────────────────────────────
+
+    _SCHEDULE_FIELDS = (
+        "work_from", "work_to", "slot_minutes",
+        "lunch_from", "lunch_to", "weekdays", "horizon_days", "capacity",
+    )
+
+    async def get_schedule(self, idservice: str) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                "SELECT * FROM service_schedule WHERE idservice=$1", idservice
+            )
+
+    async def update_schedule(self, idservice: str, **fields) -> asyncpg.Record | None:
+        """
+        Правка расписания. Имена полей сверяются с белым списком: они приходят
+        из хендлеров, и подстановка их в SQL без проверки — дыра.
+        """
+        unknown = set(fields) - set(self._SCHEDULE_FIELDS)
+        if unknown:
+            raise ValueError(f"Неизвестные поля расписания: {sorted(unknown)}")
+        if not fields:
+            return await self.get_schedule(idservice)
+
+        columns = list(fields)
+        assignments = ", ".join(f"{name}=${i}" for i, name in enumerate(columns, 2))
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                f"UPDATE service_schedule SET {assignments}, updatedate=now() "
+                "WHERE idservice=$1 RETURNING *",
+                idservice, *(fields[name] for name in columns),
+            )
+
+    async def get_taken_slots(
+        self, idservice: str, since: datetime, until: datetime
+    ) -> dict[datetime, int]:
+        """Сколько живых заявок на каждый момент времени в окне."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT scheduled_at, count(*) AS taken FROM requests
+                 WHERE idservice=$1 AND idrecstatus=0
+                   AND scheduled_at BETWEEN $2 AND $3
+                   AND status = ANY($4::text[])
+                 GROUP BY scheduled_at
+                """,
+                idservice, since, until, list(config.SLOT_HOLDING_STATUSES),
+            )
+        return {row["scheduled_at"]: row["taken"] for row in rows}
 
     # ── admins ───────────────────────────────────────────────────────────────
 

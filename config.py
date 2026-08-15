@@ -91,6 +91,12 @@ REQUEST_STATUSES: tuple[str, ...] = (
 # Заявка «живая»: её ещё можно обрабатывать, она учитывается в лимитах клиента
 ACTIVE_STATUSES: tuple[str, ...] = ("new", "accepted", "called", "in_progress")
 
+# Статусы, при которых заявка держит своё окно записи. Отказ, отмена и закрытие
+# сервиса окно освобождают; «выполнена» держит навсегда — это уже история.
+SLOT_HOLDING_STATUSES: tuple[str, ...] = (
+    "new", "accepted", "called", "in_progress", "done",
+)
+
 REQUEST_STATUS_LABELS: dict[str, str] = {
     "new":            "🆕 Новая",
     "accepted":       "✅ Принята",

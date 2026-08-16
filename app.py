@@ -289,7 +289,6 @@ class RequestPayload(BaseModel):
     plate: str = ""
     idcatalogs: list[str] = Field(default_factory=list)
     scheduled_at: str = ""
-    urgency: str = "low"   # уходит в задаче 9, пока терпим отсутствие в payload
     comment: str = ""
     consent: bool = False
 

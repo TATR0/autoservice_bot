@@ -12,7 +12,6 @@ import re
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
-import config
 
 
 class ValidationError(ValueError):
@@ -93,13 +92,6 @@ def normalize_city(raw: object) -> str:
         "-".join(p[:1].upper() + p[1:].lower() for p in word.split("-"))
         for word in city.split(" ")
     )
-
-
-def validate_urgency(raw: object) -> str:
-    value = str(raw or "").strip()
-    if value not in config.URGENCY_LABELS:
-        raise ValidationError("Неизвестная срочность.")
-    return value
 
 
 def validate_uuid(raw: object, *, field: str) -> str:
@@ -260,7 +252,6 @@ def validate_request_fields(payload: dict) -> dict:
         "brand":        clean_text(payload.get("brand"), field="Марка", min_len=1, max_len=40),
         "model":        clean_text(payload.get("model"), field="Модель", min_len=1, max_len=40),
         "plate":        normalize_plate(payload.get("plate")),
-        "urgency":      validate_urgency(payload.get("urgency")),
         "comment":      clean_text(
             payload.get("comment"), field="Комментарий", max_len=500, multiline=True
         ),

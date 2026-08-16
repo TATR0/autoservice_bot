@@ -75,13 +75,6 @@ DEFAULT_SERVICE_TITLES: tuple[str, ...] = (
     "Другое",
 )
 
-URGENCY_LABELS: dict[str, str] = {
-    "low":    "Обычный (7+ дней)",
-    "medium": "Средний (3–5 дней)",
-    "high":   "Срочный (1–2 дня)",
-    "urgent": "Очень срочный (сегодня)",
-}
-
 # Полный набор статусов заявки — синхронизирован с CHECK-констрейнтом в schema.sql
 REQUEST_STATUSES: tuple[str, ...] = (
     "new", "accepted", "called", "in_progress",

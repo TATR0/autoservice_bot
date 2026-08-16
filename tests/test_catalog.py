@@ -55,7 +55,6 @@ async def test_create_request_flow_rejects_foreign_catalog_item(service, db_read
             "brand": "Toyota",
             "model": "Camry",
             "plate": "А777АА777",
-            "urgency": "low",
             "comment": "",
             "consent": True,
         }
@@ -80,7 +79,6 @@ async def test_create_request_flow_rejects_deleted_own_catalog_item(service):
         "brand": "Toyota",
         "model": "Camry",
         "plate": "А777АА777",
-        "urgency": "low",
         "comment": "",
         "consent": True,
     }
@@ -214,7 +212,7 @@ async def test_foreign_client_uid_is_rejected(service):
         phone="+79990000010", brand="Toyota", model="Camry", plate="А111АА11",
         services=[{"idcatalog": str(item["idcatalog"]), "title": item["title"],
                    "price_rub": item["price_rub"]}],
-        urgency="low", comment="", client_uid=shared_uid,
+        comment="", client_uid=shared_uid,
     )
 
     # Второй клиент подставляет чужой client_uid
@@ -224,7 +222,7 @@ async def test_foreign_client_uid_is_rejected(service):
             phone="+79990000011", brand="Kia", model="Rio", plate="В222ВВ22",
             services=[{"idcatalog": str(item["idcatalog"]), "title": item["title"],
                        "price_rub": item["price_rub"]}],
-            urgency="low", comment="", client_uid=shared_uid,
+            comment="", client_uid=shared_uid,
         )
 
 
@@ -237,7 +235,7 @@ async def test_own_client_uid_still_deduplicates(service):
         phone="+79990000012", brand="Lada", model="Vesta", plate="С333СС33",
         services=[{"idcatalog": str(item["idcatalog"]), "title": item["title"],
                    "price_rub": item["price_rub"]}],
-        urgency="low", comment="", client_uid=uid,
+        comment="", client_uid=uid,
     )
     first, dup_first = await db.create_request(**fields)
     second, dup_second = await db.create_request(**fields)
@@ -356,7 +354,6 @@ async def _make_request_with(service, titles_and_prices):
             {"idcatalog": str(i["idcatalog"]), "title": i["title"], "price_rub": i["price_rub"]}
             for i in items
         ],
-        urgency="low",
         comment="",
     )
     return request, items

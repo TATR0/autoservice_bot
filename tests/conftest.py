@@ -63,7 +63,6 @@ async def make_request(db_ready):
                 "price_rub": item["price_rub"],
             }],
             comment="",
-            urgency="low",     # уходит в задаче 9 вместе с колонкой
             scheduled_at=moment,
             client_uid=client_uid or str(uuid.uuid4()),
         )

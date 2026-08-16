@@ -422,7 +422,9 @@ function renderTimes() {
         <button type="button" class="cal-chip${state.pickedTime === t ? " cal-picked" : ""}"
                 data-time="${esc(t)}">${esc(t)}</button>`).join("")}
     </div>
-    <div class="cal-tz">время сервиса, ${esc(state.selectedService?.timezone || "")}</div>`;
+    ${state.selectedService?.timezone
+      ? `<div class="cal-tz">время сервиса, ${esc(state.selectedService.timezone)}</div>`
+      : ""}`;
 
   box.querySelectorAll("[data-time]").forEach(el =>
     el.addEventListener("click", () => {
@@ -814,7 +816,14 @@ async function doSubmit() {
     try {
       const fresh = await api(`/api/service/${encodeURIComponent(state.serviceId)}`);
       state.slots = fresh.slots || {};
-      if (!(state.slots[state.pickedDay] || []).includes(state.pickedTime)) {
+      // Сбрасываем и день, если он опустел целиком: иначе клетка останется
+      // подсвеченной как выбранная, но нажать её будет нельзя, а под сеткой
+      // повиснет заголовок дня без единой плитки времени
+      const stillFree = state.slots[state.pickedDay] || [];
+      if (stillFree.length === 0) {
+        state.pickedDay = null;
+        state.pickedTime = null;
+      } else if (!stillFree.includes(state.pickedTime)) {
         state.pickedTime = null;
       }
       renderCalendar();

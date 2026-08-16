@@ -36,3 +36,45 @@ def test_weekdays_label_lists_days_in_order():
 
 def test_weekdays_label_sorts_input():
     assert weekdays_label([5, 1]) == "пн, пт"
+
+
+# ── Время записи в карточке заявки ───────────────────────────────────────────
+
+from datetime import datetime, timezone
+
+from render import request_card_for_staff
+
+
+def _req(**overrides):
+    """Заявка словарём: request_card_for_staff читает её по ключам."""
+    base = {
+        "seq": 42,
+        "client_name": "Иван",
+        "phone": "+79991234567",
+        "idclienttg": 111,
+        "brand": "Toyota",
+        "model": "Camry",
+        "plate": "А777АА777",
+        "comment": "",
+        "status": "new",
+        "createdate": datetime(2026, 8, 14, 9, 0, tzinfo=timezone.utc),
+        "scheduled_at": datetime(2026, 8, 17, 7, 0, tzinfo=timezone.utc),
+    }
+    base.update(overrides)
+    return base
+
+
+SERVICES = [{"title": "Замена масла", "price_rub": 1200}]
+
+
+def test_request_card_shows_scheduled_time():
+    """Время записи заменило срочность."""
+    text = request_card_for_staff(_req(), SERVICES, tz="Europe/Moscow")
+    assert "Срочность" not in text
+    assert "17.08.2026 10:00" in text
+
+
+def test_request_card_without_time_omits_the_line():
+    """Заявки из эпохи срочности времени не имеют — строки просто нет."""
+    text = request_card_for_staff(_req(scheduled_at=None), SERVICES, tz="Europe/Moscow")
+    assert "Запись" not in text

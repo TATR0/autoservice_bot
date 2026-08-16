@@ -95,10 +95,6 @@ def titled_price(title: str, price_rub: int | None) -> str:
     return f"{title} — {label}" if label else title
 
 
-def urgency_label(key: str) -> str:
-    return config.URGENCY_LABELS.get(key, key)
-
-
 # ── Карточки заявок ──────────────────────────────────────────────────────────
 
 def request_card_for_staff(
@@ -128,7 +124,10 @@ def request_card_for_staff(
         note = "" if len(priced) == len(services) else " <i>(часть работ — по запросу)</i>"
         text += "💰 <b>Итого:</b> от " + f"{total:,}".replace(",", " ") + f" ₽{note}\n"
 
-    text += f"⚡ <b>Срочность:</b> {h(urgency_label(req['urgency']))}\n"
+    # Заявки, оформленные до появления записи на время, его не имеют —
+    # тогда строки просто нет, выдумывать нечего
+    if req["scheduled_at"]:
+        text += f"🗓 <b>Запись:</b> {local_dt(req['scheduled_at'], tz)}\n"
 
     if req["comment"]:
         text += f"\n💬 <b>Комментарий:</b>\n<i>{h(req['comment'])}</i>\n"
@@ -151,9 +150,9 @@ def request_line_for_staff(req, tz: str | None = None) -> str:
         f"{status_label(req['status'])}{overdue}\n"
         f"  📞 <code>{h(format_phone(req['phone']))}</code> | "
         f"🚗 {h(req['brand'])} {h(req['model'])} ({h(req['plate'])})\n"
-        f"  🔧 {h(req['services_summary'] or '—')} | "
-        f"⚡ {h(urgency_label(req['urgency']))}\n"
-        f"  🕒 {local_dt(req['createdate'], tz)}\n"
+        f"  🔧 {h(req['services_summary'] or '—')}\n"
+        + (f"  🗓 {local_dt(req['scheduled_at'], tz)}\n" if req["scheduled_at"] else "")
+        + f"  🕒 {local_dt(req['createdate'], tz)}\n"
     )
 
 

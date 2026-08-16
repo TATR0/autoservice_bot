@@ -687,7 +687,6 @@ class Database:
         plate: str,
         scheduled_at: datetime | None = None,
         services: list[dict],
-        urgency: str,
         comment: str,
         client_uid: str | None = None,
     ) -> tuple[asyncpg.Record, bool]:
@@ -726,14 +725,14 @@ class Database:
                 """
                 INSERT INTO requests
                     (idrequests, idservice, idclienttg, client_name, phone,
-                     brand, model, plate, urgency, comment, client_uid,
+                     brand, model, plate, comment, client_uid,
                      scheduled_at, status, idrecstatus)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'new',0)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'new',0)
                 ON CONFLICT (client_uid) WHERE client_uid IS NOT NULL DO NOTHING
                 RETURNING *
                 """,
                 _new_id(), idservice, client_tg_id, client_name, phone,
-                brand, model, plate, urgency, comment, client_uid,
+                brand, model, plate, comment, client_uid,
                 scheduled_at,
             )
             if row is None:

@@ -21,9 +21,11 @@ from database import db
 from handlers.common import require_owner_service, show_main_menu
 from validators import (
     ValidationError,
+    snap_lunch_to_grid,
     validate_capacity,
     validate_horizon,
     validate_lunch,
+    validate_lunch_on_grid,
     validate_time_range,
 )
 
@@ -117,9 +119,11 @@ async def lunch_ask(callback: CallbackQuery, state: FSMContext) -> None:
     svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
         return
+    schedule = await db.get_schedule(str(svc["idservice"]))
     await state.set_state(ScheduleEdit.lunch)
     await callback.message.answer(
-        "Введите обед: 13-14, или <b>-</b>, чтобы убрать",
+        "Введите обед: <b>13-14</b>, или <b>-</b>, чтобы убрать.\n"
+        f"Обед занимает целое число окон по {schedule['slot_minutes']} мин.",
         reply_markup=kb.kb_cancel(),
     )
     await callback.answer()
@@ -132,8 +136,16 @@ async def lunch_finish(message: Message, state: FSMContext) -> None:
         await state.set_state(None)
         await show_main_menu(message, state)
         return
+    schedule = await db.get_schedule(str(svc["idservice"]))
     try:
         lunch = validate_lunch(message.text)
+        # Обед меряется окнами, а не минутами: 45 минут при часовом шаге всё
+        # равно убрали бы целый час, только незаметно для управляющего
+        lunch = validate_lunch_on_grid(
+            lunch,
+            work_from=schedule["work_from"],
+            slot_minutes=schedule["slot_minutes"],
+        )
     except ValidationError as exc:
         await message.answer(f"❌ {exc}")
         return
@@ -233,9 +245,26 @@ async def step_set(callback: CallbackQuery, state: FSMContext) -> None:
     if svc is None:
         return
     minutes = int(callback.data.split(":", 1)[1])
-    await db.update_schedule(str(svc["idservice"]), slot_minutes=minutes)
+    idservice = str(svc["idservice"])
+    schedule = await db.get_schedule(idservice)
+
+    # Новый шаг может не поделить уже заданный обед. Раздвигаем обед до целого
+    # числа окон здесь же: иначе правило «обед меряется окнами» держалось бы
+    # только на вводе и тихо ломалось при смене шага
+    fields = {"slot_minutes": minutes}
+    note = ""
+    if schedule["lunch_from"]:
+        lunch = (schedule["lunch_from"], schedule["lunch_to"])
+        aligned = snap_lunch_to_grid(
+            lunch, work_from=schedule["work_from"], slot_minutes=minutes
+        )
+        if aligned != lunch:
+            fields["lunch_from"], fields["lunch_to"] = aligned
+            note = f", обед раздвинут до {aligned[0]:%H:%M}-{aligned[1]:%H:%M}"
+
+    await db.update_schedule(idservice, **fields)
     await _show_schedule(callback.message, svc, edit=True)
-    await callback.answer(f"Шаг записи: {minutes} минут")
+    await callback.answer(f"Шаг записи: {minutes} минут{note}", show_alert=bool(note))
 
 
 @router.callback_query(F.data == "schedback")

@@ -178,6 +178,66 @@ def validate_lunch(raw: object) -> tuple[time, time] | None:
     return validate_time_range(text, field="Обед")
 
 
+def _minutes(value: time) -> int:
+    return value.hour * 60 + value.minute
+
+
+def validate_lunch_on_grid(
+    lunch: tuple[time, time] | None, *, work_from: time, slot_minutes: int
+) -> tuple[time, time] | None:
+    """
+    Обед обязан занимать целое число окон записи.
+
+    Иначе он всё равно съедает окно целиком — окно, задетое обедом хотя бы
+    краем, продать нельзя, — но управляющий об этом не догадывается: он ввёл
+    45 минут, а из расписания пропал час. Расхождение между тем, что человек
+    задал, и тем, что случилось, дороже гибкости в четверть часа.
+
+    Ошибка называет ближайший подходящий диапазон: считать за управляющего
+    дешевле, чем заставлять его делить в уме.
+    """
+    if lunch is None:
+        return None
+
+    start, end = lunch
+    opens = _minutes(work_from)
+    offset_start = _minutes(start) - opens
+    offset_end = _minutes(end) - opens
+
+    if offset_start % slot_minutes == 0 and offset_end % slot_minutes == 0:
+        return lunch
+
+    start_aligned, end_aligned = snap_lunch_to_grid(
+        lunch, work_from=work_from, slot_minutes=slot_minutes
+    )
+    raise ValidationError(
+        f"Обед должен занимать целое число окон по {slot_minutes} мин. "
+        f"Ближайший подходящий: {start_aligned:%H:%M}-{end_aligned:%H:%M}"
+    )
+
+
+def snap_lunch_to_grid(
+    lunch: tuple[time, time], *, work_from: time, slot_minutes: int
+) -> tuple[time, time]:
+    """
+    Растянуть обед до целого числа окон.
+
+    Наружу, а не внутрь: обед, ставший короче задуманного, отправил бы клиента
+    на время, когда сервис ещё обедает.
+    """
+    start, end = lunch
+    opens = _minutes(work_from)
+    offset_start = _minutes(start) - opens
+    offset_end = _minutes(end) - opens
+
+    aligned_start = offset_start - offset_start % slot_minutes
+    aligned_end = -(-offset_end // slot_minutes) * slot_minutes
+    return (
+        time((opens + aligned_start) // 60, (opens + aligned_start) % 60),
+        time((opens + aligned_end) // 60, (opens + aligned_end) % 60),
+    )
+
+
 def _validate_int(raw: object, *, field: str, low: int, high: int, hint: str) -> int:
     text = clean_text(raw, field=field, max_len=10)
     compact = re.sub(r"\s", "", text)

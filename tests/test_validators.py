@@ -230,3 +230,77 @@ def test_scheduled_at_rejects_unknown_day():
 def test_scheduled_at_rejects_garbage():
     with pytest.raises(ValidationError):
         validate_scheduled_at("завтра", free=FREE, tz="Europe/Moscow")
+
+
+# ── Обед должен ложиться на сетку записи ─────────────────────────────────────
+
+from validators import validate_lunch_on_grid
+
+
+def test_lunch_on_grid_accepts_whole_slot():
+    """13-14 при часовом шаге — ровно одно окно."""
+    lunch = (time(13), time(14))
+    assert validate_lunch_on_grid(lunch, work_from=time(9), slot_minutes=60) == lunch
+
+
+def test_lunch_on_grid_accepts_several_whole_slots():
+    lunch = (time(13), time(15))
+    assert validate_lunch_on_grid(lunch, work_from=time(9), slot_minutes=60) == lunch
+
+
+def test_lunch_on_grid_accepts_none():
+    assert validate_lunch_on_grid(None, work_from=time(9), slot_minutes=60) is None
+
+
+def test_lunch_on_grid_rejects_partial_slot():
+    """45 минут при часовом шаге всё равно съедали бы целый час."""
+    with pytest.raises(ValidationError):
+        validate_lunch_on_grid((time(13), time(13, 45)), work_from=time(9), slot_minutes=60)
+
+
+def test_lunch_on_grid_rejects_offset_start():
+    """Начало обеда обязано совпасть с началом окна, а не резать его."""
+    with pytest.raises(ValidationError):
+        validate_lunch_on_grid((time(13, 30), time(14, 30)), work_from=time(9), slot_minutes=60)
+
+
+def test_lunch_on_grid_error_suggests_nearest_range():
+    """Ошибка должна считать за управляющего, а не заставлять его считать."""
+    with pytest.raises(ValidationError) as exc:
+        validate_lunch_on_grid((time(13), time(13, 45)), work_from=time(9), slot_minutes=60)
+    assert "13:00" in str(exc.value) and "14:00" in str(exc.value)
+
+
+def test_lunch_on_grid_half_hour_step_allows_half_hour_lunch():
+    """При шаге 30 обед в полчаса — законное целое окно."""
+    lunch = (time(13), time(13, 30))
+    assert validate_lunch_on_grid(lunch, work_from=time(9), slot_minutes=30) == lunch
+
+
+def test_lunch_on_grid_counts_from_work_start():
+    """Сетка начинается в 9:20, значит окна 9:20, 10:20 — обед обязан лечь на них."""
+    lunch = (time(10, 20), time(11, 20))
+    assert validate_lunch_on_grid(lunch, work_from=time(9, 20), slot_minutes=60) == lunch
+    with pytest.raises(ValidationError):
+        validate_lunch_on_grid((time(10), time(11)), work_from=time(9, 20), slot_minutes=60)
+
+
+def test_snap_lunch_widens_to_whole_slots():
+    """Раздвигаем наружу: обед короче задуманного отправил бы клиента на обед."""
+    from validators import snap_lunch_to_grid
+    assert snap_lunch_to_grid(
+        (time(13), time(13, 45)), work_from=time(9), slot_minutes=60
+    ) == (time(13), time(14))
+
+
+def test_snap_lunch_widens_both_ends():
+    from validators import snap_lunch_to_grid
+    assert snap_lunch_to_grid(
+        (time(13, 20), time(13, 40)), work_from=time(9), slot_minutes=60
+    ) == (time(13), time(14))
+
+
+def test_snap_lunch_leaves_aligned_alone():
+    from validators import snap_lunch_to_grid
+    lunch = (time(13), time(14))
+    assert snap_lunch_to_grid(lunch, work_from=time(9), slot_minutes=60) == lunch

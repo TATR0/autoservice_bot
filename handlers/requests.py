@@ -14,7 +14,6 @@ handlers/requests.py
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
@@ -25,7 +24,6 @@ from aiogram.types import CallbackQuery, Message
 import config
 import keyboards as kb
 import render
-import slots
 from database import ForeignClientUid, SlotTaken, db
 from notifications import notify_staff, safe_send
 from handlers.common import require_active_service
@@ -63,30 +61,6 @@ async def create_request_flow(
     if not service:
         raise RequestRejected("Сервис не найден или больше не принимает заявки.")
 
-    # Время записи необязательно: старая форма его ещё не присылает (см. задачу 8),
-    # и такие заявки должны продолжать создаваться без времени, как раньше.
-    # А если момент прислан — это может быть прямой вызов API в обход формы,
-    # поэтому единственный источник истины для проверки — реально свободные
-    # окна, а не то, что заявлено в payload.
-    scheduled_at = None
-    raw_scheduled_at = str(payload.get("scheduled_at") or "").strip()
-    if raw_scheduled_at:
-        schedule = await db.get_schedule(service_id)
-        if schedule is None:
-            raise RequestRejected("Сервис пока не открыл время для записи.")
-
-        now = datetime.now(timezone.utc)
-        taken = await db.get_taken_slots(
-            service_id, now, now + timedelta(days=schedule["horizon_days"] + 1)
-        )
-        free = slots.free_slots(schedule, service["timezone"], now, taken)
-        try:
-            scheduled_at = validate_scheduled_at(
-                raw_scheduled_at, free=free, tz=service["timezone"]
-            )
-        except ValidationError as exc:
-            raise RequestRejected(str(exc)) from None
-
     try:
         fields = validate_request_fields(payload)
         idcatalogs = validate_catalog_ids(payload.get("idcatalogs"))
@@ -118,6 +92,21 @@ async def create_request_flow(
         }
         for cid in idcatalogs
     ]
+
+    # Время записи обязательно. Проверяется не формат, а принадлежность реально
+    # свободному окну: payload можно отправить в обход формы, поэтому список
+    # окон — единственный источник истины, а не то, что заявлено в теле.
+    # Считается последним из проверок: это два запроса к базе, и платить за них
+    # стоит только когда всё остальное в заявке уже сошлось.
+    free = await db.free_slots(service)
+    if not free:
+        raise RequestRejected("Сейчас нет свободного времени для записи.")
+    try:
+        scheduled_at = validate_scheduled_at(
+            payload.get("scheduled_at"), free=free, tz=service["timezone"]
+        )
+    except ValidationError as exc:
+        raise RequestRejected(str(exc)) from None
 
     client_uid = str(payload.get("client_uid") or "").strip()[:64] or None
 
@@ -197,7 +186,10 @@ async def create_request_flow(
         f"✅ <b>Заявка {summary['number']} отправлена!</b>\n\n"
         f"<b>Сервис:</b> {h(service['service_name'])}\n"
         f"<b>Услуги:</b>\n{services_line}\n"
-        f"<b>Автомобиль:</b> {h(fields['brand'])} {h(fields['model'])}\n\n"
+        f"<b>Автомобиль:</b> {h(fields['brand'])} {h(fields['model'])}\n"
+        # Время клиент выбирал сам, но нигде его после отправки не видел:
+        # подтверждение записи без времени записи подтверждает половину
+        f"<b>Запись:</b> {render.local_dt(scheduled_at, service['timezone'])}\n\n"
         "Администратор свяжется с вами в ближайшее время.",
         reply_markup=kb.kb_client_request_actions(summary["request_id"]),
     )

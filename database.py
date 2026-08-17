@@ -11,13 +11,15 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
-from datetime import datetime
+from collections.abc import Mapping
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Iterable, Sequence
 from uuid import uuid4
 
 import asyncpg
 
 import config
+import slots
 
 logger = logging.getLogger(__name__)
 
@@ -547,6 +549,29 @@ class Database:
             )
         return {row["scheduled_at"]: row["taken"] for row in rows}
 
+    async def free_slots(self, service: Mapping) -> dict[date, list[time]]:
+        """
+        Свободные окна сервиса на весь горизонт записи.
+
+        Один расчёт на три места: форма, приём заявки и карточка расписания.
+        Разъехавшись, они показывали бы клиенту одни окна, принимали другие,
+        а управляющему считали третьи.
+
+        Расписания нет — окон нет: сервис ещё не открыл запись. Такой строки
+        не должно существовать (она заводится вместе с сервисом), но политика
+        на этот случай обязана быть одна, а не три разные.
+        """
+        idservice = str(service["idservice"])
+        schedule = await self.get_schedule(idservice)
+        if schedule is None:
+            return {}
+
+        now = datetime.now(timezone.utc)
+        taken = await self.get_taken_slots(
+            idservice, now, now + timedelta(days=schedule["horizon_days"] + 1)
+        )
+        return slots.free_slots(schedule, service["timezone"], now, taken)
+
     # ── admins ───────────────────────────────────────────────────────────────
 
     async def add_admin(self, idservice: str, admin_tg_id: int) -> None:
@@ -701,10 +726,23 @@ class Database:
             # Без неё два одновременных клиента оба проходят проверку до того,
             # как любой из них вставит строку, и одно место уходит дважды.
             if scheduled_at is not None:
-                schedule = await conn.fetchrow(
-                    "SELECT capacity FROM service_schedule WHERE idservice=$1 FOR UPDATE",
-                    idservice,
-                )
+                # Ждать блокировку дольше нескольких секунд бессмысленно: клиент
+                # сидит перед формой. Без своего таймаута ожидание упирается в
+                # command_timeout соединения, а тот бросает CancelledError —
+                # клиент получает 500 вместо «время только что заняли».
+                await conn.execute("SET LOCAL lock_timeout = '3s'")
+                try:
+                    schedule = await conn.fetchrow(
+                        "SELECT capacity FROM service_schedule WHERE idservice=$1 FOR UPDATE",
+                        idservice,
+                    )
+                except asyncpg.exceptions.LockNotAvailableError:
+                    # Строку три секунды держит другая запись на этот же сервис.
+                    # Для клиента это неотличимо от занятого места, и ответ тот же
+                    logger.info(
+                        "Не дождались блокировки расписания сервиса %s", idservice
+                    )
+                    raise SlotTaken(scheduled_at) from None
                 if schedule is None:
                     raise SlotTaken(scheduled_at)
 

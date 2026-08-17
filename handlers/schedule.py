@@ -6,21 +6,17 @@ handlers/schedule.py — расписание сервиса.
 разбирать опечатки незачем.
 """
 
-from datetime import datetime, timedelta, timezone
-
 from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup, default_state
 from aiogram.types import CallbackQuery, Message
+from asyncpg.exceptions import CheckViolationError
 
 import keyboards as kb
 import render
-import slots
 from database import db
 from handlers.common import require_owner_service, show_main_menu
-from asyncpg.exceptions import CheckViolationError
-
 from validators import (
     ValidationError,
     lunch_fits_hours,
@@ -50,13 +46,9 @@ class ScheduleEdit(StatesGroup):
     horizon = State()
 
 
-async def _free_count(idservice: str, schedule, tz: str) -> int:
-    """Сколько окон увидит клиент прямо сейчас."""
-    now = datetime.now(timezone.utc)
-    taken = await db.get_taken_slots(
-        idservice, now, now + timedelta(days=schedule["horizon_days"] + 1)
-    )
-    free = slots.free_slots(schedule, tz, now, taken)
+async def _free_count(svc) -> int:
+    """Сколько окон увидит клиент прямо сейчас — считаем ровно тем же расчётом."""
+    free = await db.free_slots(svc)
     return sum(len(times) for times in free.values())
 
 
@@ -79,9 +71,7 @@ async def _save(idservice: str, **fields) -> bool:
 async def _show_schedule(message: Message, svc, *, edit: bool = False) -> None:
     idservice = str(svc["idservice"])
     schedule = await db.get_schedule(idservice)
-    text = render.schedule_card(
-        svc, schedule, await _free_count(idservice, schedule, svc["timezone"])
-    )
+    text = render.schedule_card(svc, schedule, await _free_count(svc))
     if edit:
         await message.edit_text(text, reply_markup=kb.kb_schedule())
     else:

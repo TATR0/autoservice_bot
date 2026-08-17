@@ -151,3 +151,75 @@ async def test_repeat_tap_returns_the_same_request(service, make_request):
     first = await make_request(service, moment, client_uid=uid)
     second = await make_request(service, moment, client_uid=uid)
     assert second["idrequests"] == first["idrequests"]
+
+
+# ── Путь записи целиком ──────────────────────────────────────────────────────
+# Звенья проверены по отдельности: нарезка окон — в test_slots, занятость и
+# блокировка — выше, валидация времени — в test_validators. Соединяются они
+# только здесь, и разойтись могут только здесь же.
+
+from handlers.requests import RequestRejected, create_request_flow
+
+CLIENT_ID = 999_000_007
+
+
+def _payload(service_id: str, item, **extra) -> dict:
+    return {
+        "service_id": service_id,
+        "idcatalogs": [str(item["idcatalog"])],
+        "client_name": "Иван Тестов",
+        "phone": "+79990000007",
+        "brand": "Toyota",
+        "model": "Camry",
+        "plate": "А777АА777",
+        "comment": "",
+        "consent": True,
+        "client_uid": str(uuid.uuid4()),
+        **extra,
+    }
+
+
+async def test_booking_flow_takes_the_chosen_slot(service):
+    """Клиент берёт окно из того же списка, который ему показали, — и оно уходит."""
+    svc = await db.get_service(service)
+    item = (await db.get_catalog(service))[0]
+
+    free = await db.free_slots(svc)
+    day = sorted(free)[0]
+    moment = free[day][0]
+
+    summary, is_duplicate = await create_request_flow(
+        None,
+        client_tg_id=CLIENT_ID,
+        payload=_payload(service, item, scheduled_at=f"{day} {moment:%H:%M}"),
+    )
+    assert not is_duplicate
+    assert summary["number"]
+
+    again = await db.free_slots(svc)
+    assert moment not in again.get(day, []), "занятое окно осталось в свободных"
+
+
+async def test_booking_flow_requires_a_time(service):
+    """
+    Время обязательно и вне формы.
+
+    Форма его всегда присылает, поэтому пустое поле означает отправку в обход
+    формы — а заявка без времени в расписании ничего не занимает и теряется.
+    """
+    item = (await db.get_catalog(service))[0]
+    with pytest.raises(RequestRejected):
+        await create_request_flow(
+            None, client_tg_id=CLIENT_ID, payload=_payload(service, item)
+        )
+
+
+async def test_booking_flow_rejects_time_outside_free_slots(service):
+    """Прошедшее время в свободных окнах не значится — значит, и в заявке ему не место."""
+    item = (await db.get_catalog(service))[0]
+    with pytest.raises(RequestRejected):
+        await create_request_flow(
+            None,
+            client_tg_id=CLIENT_ID,
+            payload=_payload(service, item, scheduled_at="2020-01-01 10:00"),
+        )

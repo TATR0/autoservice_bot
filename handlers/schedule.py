@@ -19,8 +19,11 @@ import render
 import slots
 from database import db
 from handlers.common import require_owner_service, show_main_menu
+from asyncpg.exceptions import CheckViolationError
+
 from validators import (
     ValidationError,
+    lunch_fits_hours,
     snap_lunch_to_grid,
     validate_capacity,
     validate_horizon,
@@ -30,6 +33,14 @@ from validators import (
 )
 
 router = Router()
+
+# Часы, обед и шаг связаны: обед лежит внутри часов и занимает целое число окон.
+# Правится каждое поле по отдельности, поэтому согласованность держит не одна
+# проверка на вводе, а каждый редактор — и снизу их страхует констрейнт базы.
+SAVE_FAILED = (
+    "❌ Не получилось сохранить: часы, обед и шаг противоречат друг другу. "
+    "Проверьте обед — он должен лежать внутри рабочих часов."
+)
 
 
 class ScheduleEdit(StatesGroup):
@@ -47,6 +58,22 @@ async def _free_count(idservice: str, schedule, tz: str) -> int:
     )
     free = slots.free_slots(schedule, tz, now, taken)
     return sum(len(times) for times in free.values())
+
+
+async def _save(idservice: str, **fields) -> bool:
+    """
+    Записать поля расписания. False — база отвергла набор.
+
+    Констрейнты задуманы последней линией обороны, но говорят они языком
+    драйвера: без этого перехвата управляющий увидел бы текст asyncpg про
+    chk_schedule_lunch. Сюда попадать не должны — каждый редактор проверяет
+    связку сам, — но если проверка и база разойдутся, разойдутся они молча.
+    """
+    try:
+        await db.update_schedule(idservice, **fields)
+    except CheckViolationError:
+        return False
+    return True
 
 
 async def _show_schedule(message: Message, svc, *, edit: bool = False) -> None:
@@ -84,6 +111,9 @@ async def edit_cancel(message: Message, state: FSMContext) -> None:
 async def hours_ask(callback: CallbackQuery, state: FSMContext) -> None:
     svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
+        # Без ответа спиннер на кнопке крутится до таймаута Telegram, и отказ
+        # выглядит зависанием, а не отказом
+        await callback.answer()
         return
     await state.set_state(ScheduleEdit.hours)
     await callback.message.answer(
@@ -106,9 +136,39 @@ async def hours_finish(message: Message, state: FSMContext) -> None:
         await message.answer(f"❌ {exc}")
         return
 
-    await db.update_schedule(str(svc["idservice"]), work_from=work_from, work_to=work_to)
+    idservice = str(svc["idservice"])
+    schedule = await db.get_schedule(idservice)
+    fields = {"work_from": work_from, "work_to": work_to}
+    note = ""
+    lunch = (
+        (schedule["lunch_from"], schedule["lunch_to"]) if schedule["lunch_from"] else None
+    )
+    if lunch:
+        # Новые часы могут не вместить обед. Убрать его молча нельзя: управляющий
+        # просил сменить часы, а не отменить обед, и пропажу он заметит нескоро
+        if not lunch_fits_hours(lunch, work_from=work_from, work_to=work_to):
+            await message.answer(
+                f"❌ В такие часы не помещается обед {lunch[0]:%H:%M}-{lunch[1]:%H:%M}. "
+                "Сначала измените или уберите обед."
+            )
+            return
+        # Сетка окон отсчитывается от начала дня, так что сдвиг часов сдвигает и её
+        aligned = snap_lunch_to_grid(
+            lunch,
+            work_from=work_from,
+            work_to=work_to,
+            slot_minutes=schedule["slot_minutes"],
+        )
+        if aligned != lunch:
+            fields["lunch_from"], fields["lunch_to"] = aligned
+            note = f" Обед сдвинут на {aligned[0]:%H:%M}-{aligned[1]:%H:%M}."
+
+    if not await _save(idservice, **fields):
+        await message.answer(SAVE_FAILED)
+        return
+
     await state.set_state(None)
-    await show_main_menu(message, state, greeting="✅ Часы работы обновлены.")
+    await show_main_menu(message, state, greeting=f"✅ Часы работы обновлены.{note}")
     await _show_schedule(message, svc)
 
 
@@ -118,6 +178,9 @@ async def hours_finish(message: Message, state: FSMContext) -> None:
 async def lunch_ask(callback: CallbackQuery, state: FSMContext) -> None:
     svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
+        # Без ответа спиннер на кнопке крутится до таймаута Telegram, и отказ
+        # выглядит зависанием, а не отказом
+        await callback.answer()
         return
     schedule = await db.get_schedule(str(svc["idservice"]))
     await state.set_state(ScheduleEdit.lunch)
@@ -144,17 +207,22 @@ async def lunch_finish(message: Message, state: FSMContext) -> None:
         lunch = validate_lunch_on_grid(
             lunch,
             work_from=schedule["work_from"],
+            work_to=schedule["work_to"],
             slot_minutes=schedule["slot_minutes"],
         )
     except ValidationError as exc:
         await message.answer(f"❌ {exc}")
         return
 
-    await db.update_schedule(
+    saved = await _save(
         str(svc["idservice"]),
         lunch_from=lunch[0] if lunch else None,
         lunch_to=lunch[1] if lunch else None,
     )
+    if not saved:
+        await message.answer(SAVE_FAILED)
+        return
+
     await state.set_state(None)
     await show_main_menu(message, state, greeting="✅ Обед обновлён.")
     await _show_schedule(message, svc)
@@ -166,6 +234,9 @@ async def lunch_finish(message: Message, state: FSMContext) -> None:
 async def capacity_ask(callback: CallbackQuery, state: FSMContext) -> None:
     svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
+        # Без ответа спиннер на кнопке крутится до таймаута Telegram, и отказ
+        # выглядит зависанием, а не отказом
+        await callback.answer()
         return
     await state.set_state(ScheduleEdit.capacity)
     await callback.message.answer(
@@ -200,6 +271,9 @@ async def capacity_finish(message: Message, state: FSMContext) -> None:
 async def horizon_ask(callback: CallbackQuery, state: FSMContext) -> None:
     svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
+        # Без ответа спиннер на кнопке крутится до таймаута Telegram, и отказ
+        # выглядит зависанием, а не отказом
+        await callback.answer()
         return
     await state.set_state(ScheduleEdit.horizon)
     await callback.message.answer(
@@ -234,6 +308,9 @@ async def horizon_finish(message: Message, state: FSMContext) -> None:
 async def step_ask(callback: CallbackQuery, state: FSMContext) -> None:
     svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
+        # Без ответа спиннер на кнопке крутится до таймаута Telegram, и отказ
+        # выглядит зависанием, а не отказом
+        await callback.answer()
         return
     await callback.message.edit_reply_markup(reply_markup=kb.kb_schedule_step())
     await callback.answer()
@@ -243,6 +320,9 @@ async def step_ask(callback: CallbackQuery, state: FSMContext) -> None:
 async def step_set(callback: CallbackQuery, state: FSMContext) -> None:
     svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
+        # Без ответа спиннер на кнопке крутится до таймаута Telegram, и отказ
+        # выглядит зависанием, а не отказом
+        await callback.answer()
         return
     minutes = int(callback.data.split(":", 1)[1])
     idservice = str(svc["idservice"])
@@ -256,13 +336,19 @@ async def step_set(callback: CallbackQuery, state: FSMContext) -> None:
     if schedule["lunch_from"]:
         lunch = (schedule["lunch_from"], schedule["lunch_to"])
         aligned = snap_lunch_to_grid(
-            lunch, work_from=schedule["work_from"], slot_minutes=minutes
+            lunch,
+            work_from=schedule["work_from"],
+            work_to=schedule["work_to"],
+            slot_minutes=minutes,
         )
         if aligned != lunch:
             fields["lunch_from"], fields["lunch_to"] = aligned
             note = f", обед раздвинут до {aligned[0]:%H:%M}-{aligned[1]:%H:%M}"
 
-    await db.update_schedule(idservice, **fields)
+    if not await _save(idservice, **fields):
+        await callback.answer(SAVE_FAILED, show_alert=True)
+        return
+
     await _show_schedule(callback.message, svc, edit=True)
     await callback.answer(f"Шаг записи: {minutes} минут{note}", show_alert=bool(note))
 
@@ -271,6 +357,9 @@ async def step_set(callback: CallbackQuery, state: FSMContext) -> None:
 async def step_back(callback: CallbackQuery, state: FSMContext) -> None:
     svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
+        # Без ответа спиннер на кнопке крутится до таймаута Telegram, и отказ
+        # выглядит зависанием, а не отказом
+        await callback.answer()
         return
     await _show_schedule(callback.message, svc, edit=True)
     await callback.answer()
@@ -284,6 +373,9 @@ async def step_back(callback: CallbackQuery, state: FSMContext) -> None:
 async def days_ask(callback: CallbackQuery, state: FSMContext) -> None:
     svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
+        # Без ответа спиннер на кнопке крутится до таймаута Telegram, и отказ
+        # выглядит зависанием, а не отказом
+        await callback.answer()
         return
     schedule = await db.get_schedule(str(svc["idservice"]))
     chosen = list(schedule["weekdays"])
@@ -296,6 +388,9 @@ async def days_ask(callback: CallbackQuery, state: FSMContext) -> None:
 async def days_toggle(callback: CallbackQuery, state: FSMContext) -> None:
     svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
+        # Без ответа спиннер на кнопке крутится до таймаута Telegram, и отказ
+        # выглядит зависанием, а не отказом
+        await callback.answer()
         return
     day = int(callback.data.split(":", 1)[1])
     data = await state.get_data()
@@ -312,6 +407,9 @@ async def days_toggle(callback: CallbackQuery, state: FSMContext) -> None:
 async def days_save(callback: CallbackQuery, state: FSMContext) -> None:
     svc = await require_owner_service(callback.message, state, callback.from_user.id)
     if svc is None:
+        # Без ответа спиннер на кнопке крутится до таймаута Telegram, и отказ
+        # выглядит зависанием, а не отказом
+        await callback.answer()
         return
     data = await state.get_data()
     chosen = sorted(data.get("weekdays", []))

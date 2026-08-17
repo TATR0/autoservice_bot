@@ -182,22 +182,43 @@ def _minutes(value: time) -> int:
     return value.hour * 60 + value.minute
 
 
+def lunch_fits_hours(
+    lunch: tuple[time, time] | None, *, work_from: time, work_to: time
+) -> bool:
+    """Помещается ли обед в рабочие часы — то же, что требует chk_schedule_lunch."""
+    return lunch is None or (work_from <= lunch[0] and lunch[1] <= work_to)
+
+
 def validate_lunch_on_grid(
-    lunch: tuple[time, time] | None, *, work_from: time, slot_minutes: int
+    lunch: tuple[time, time] | None,
+    *,
+    work_from: time,
+    work_to: time,
+    slot_minutes: int,
 ) -> tuple[time, time] | None:
     """
-    Обед обязан занимать целое число окон записи.
+    Обед обязан лежать внутри рабочих часов и занимать целое число окон записи.
 
-    Иначе он всё равно съедает окно целиком — окно, задетое обедом хотя бы
-    краем, продать нельзя, — но управляющий об этом не догадывается: он ввёл
-    45 минут, а из расписания пропал час. Расхождение между тем, что человек
-    задал, и тем, что случилось, дороже гибкости в четверть часа.
+    Про окна: иначе обед всё равно съедает окно целиком — окно, задетое обедом
+    хотя бы краем, продать нельзя, — но управляющий об этом не догадывается: он
+    ввёл 45 минут, а из расписания пропал час. Расхождение между тем, что
+    человек задал, и тем, что случилось, дороже гибкости в четверть часа.
+
+    Про часы: это же условие стоит констрейнтом в базе, и без проверки здесь
+    обед вида 20-21 при рабочем дне до 18:00 доходил бы до неё — управляющий
+    получал бы ошибку драйвера вместо предложения.
 
     Ошибка называет ближайший подходящий диапазон: считать за управляющего
     дешевле, чем заставлять его делить в уме.
     """
     if lunch is None:
         return None
+
+    if not lunch_fits_hours(lunch, work_from=work_from, work_to=work_to):
+        raise ValidationError(
+            f"Обед должен помещаться в рабочие часы "
+            f"{work_from:%H:%M}-{work_to:%H:%M}."
+        )
 
     start, end = lunch
     opens = _minutes(work_from)
@@ -208,8 +229,12 @@ def validate_lunch_on_grid(
         return lunch
 
     start_aligned, end_aligned = snap_lunch_to_grid(
-        lunch, work_from=work_from, slot_minutes=slot_minutes
+        lunch, work_from=work_from, work_to=work_to, slot_minutes=slot_minutes
     )
+    if (start_aligned, end_aligned) == lunch:
+        # Растягивать некуда: обед упёрся в конец рабочего дня и остался
+        # частью последнего окна, которого всё равно не существует
+        return lunch
     raise ValidationError(
         f"Обед должен занимать целое число окон по {slot_minutes} мин. "
         f"Ближайший подходящий: {start_aligned:%H:%M}-{end_aligned:%H:%M}"
@@ -217,21 +242,26 @@ def validate_lunch_on_grid(
 
 
 def snap_lunch_to_grid(
-    lunch: tuple[time, time], *, work_from: time, slot_minutes: int
+    lunch: tuple[time, time], *, work_from: time, work_to: time, slot_minutes: int
 ) -> tuple[time, time]:
     """
-    Растянуть обед до целого числа окон.
+    Растянуть обед до целого числа окон, не выходя за рабочий день.
 
     Наружу, а не внутрь: обед, ставший короче задуманного, отправил бы клиента
     на время, когда сервис ещё обедает.
+
+    Конец упирается в work_to: без упора обед 17:30-18:00 при шаге 60 и начале
+    дня в 9:30 растянулся бы до 18:30 — а это и нарушение констрейнта, и, при
+    рабочем дне до полуночи, time(24, 0) с ValueError.
     """
     start, end = lunch
     opens = _minutes(work_from)
     offset_start = _minutes(start) - opens
     offset_end = _minutes(end) - opens
+    closes = _minutes(work_to) - opens
 
-    aligned_start = offset_start - offset_start % slot_minutes
-    aligned_end = -(-offset_end // slot_minutes) * slot_minutes
+    aligned_start = max(0, offset_start - offset_start % slot_minutes)
+    aligned_end = min(closes, -(-offset_end // slot_minutes) * slot_minutes)
     return (
         time((opens + aligned_start) // 60, (opens + aligned_start) % 60),
         time((opens + aligned_end) // 60, (opens + aligned_end) % 60),

@@ -47,6 +47,17 @@ async def test_update_schedule_rejects_reversed_hours(service):
         await db.update_schedule(service, work_from=time(20), work_to=time(8))
 
 
+async def test_narrowing_hours_under_lunch_hits_the_constraint(service):
+    """
+    Ради чего hours_finish сверяется с обедом: часы и обед правятся порознь, и
+    сужение часов оставляет обед снаружи. База это ловит — но текстом драйвера,
+    поэтому решение принимается выше, а сюда доходить не должно.
+    """
+    await db.update_schedule(service, lunch_from=time(13), lunch_to=time(14))
+    with pytest.raises(asyncpg.exceptions.CheckViolationError):
+        await db.update_schedule(service, work_from=time(9), work_to=time(12))
+
+
 async def test_taken_slots_groups_by_moment(service, make_request):
     """Занятость привязана к своему моменту и не приписывается соседнему окну."""
     moment = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=1)

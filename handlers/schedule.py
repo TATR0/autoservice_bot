@@ -20,7 +20,6 @@ from handlers.common import require_owner_service, show_main_menu
 from validators import (
     ValidationError,
     lunch_fits_hours,
-    snap_lunch_to_grid,
     validate_capacity,
     validate_horizon,
     validate_lunch,
@@ -128,37 +127,40 @@ async def hours_finish(message: Message, state: FSMContext) -> None:
 
     idservice = str(svc["idservice"])
     schedule = await db.get_schedule(idservice)
-    fields = {"work_from": work_from, "work_to": work_to}
-    note = ""
     lunch = (
         (schedule["lunch_from"], schedule["lunch_to"]) if schedule["lunch_from"] else None
     )
     if lunch:
-        # Новые часы могут не вместить обед. Убрать его молча нельзя: управляющий
-        # просил сменить часы, а не отменить обед, и пропажу он заметит нескоро
         if not lunch_fits_hours(lunch, work_from=work_from, work_to=work_to):
             await message.answer(
                 f"❌ В такие часы не помещается обед {lunch[0]:%H:%M}-{lunch[1]:%H:%M}. "
                 "Сначала измените или уберите обед."
             )
             return
-        # Сетка окон отсчитывается от начала дня, так что сдвиг часов сдвигает и её
-        aligned = snap_lunch_to_grid(
-            lunch,
-            work_from=work_from,
-            work_to=work_to,
-            slot_minutes=schedule["slot_minutes"],
-        )
-        if aligned != lunch:
-            fields["lunch_from"], fields["lunch_to"] = aligned
-            note = f" Обед сдвинут на {aligned[0]:%H:%M}-{aligned[1]:%H:%M}."
+        # Сетка окон отсчитывается от начала дня, поэтому сдвиг часов может увести
+        # из-под обеда окна. Двигать за это обед нельзя: его поставил управляющий,
+        # и он должен остаться там, куда его поставили
+        try:
+            validate_lunch_on_grid(
+                lunch,
+                work_from=work_from,
+                work_to=work_to,
+                slot_minutes=schedule["slot_minutes"],
+            )
+        except ValidationError as exc:
+            await message.answer(
+                f"❌ С такими часами обед {lunch[0]:%H:%M}-{lunch[1]:%H:%M} перестанет "
+                f"попадать в окна записи.\n{exc}\n"
+                "Измените обед или шаг записи, потом часы."
+            )
+            return
 
-    if not await _save(idservice, **fields):
+    if not await _save(idservice, work_from=work_from, work_to=work_to):
         await message.answer(SAVE_FAILED)
         return
 
     await state.set_state(None)
-    await show_main_menu(message, state, greeting=f"✅ Часы работы обновлены.{note}")
+    await show_main_menu(message, state, greeting="✅ Часы работы обновлены.")
     await _show_schedule(message, svc)
 
 
@@ -318,29 +320,31 @@ async def step_set(callback: CallbackQuery, state: FSMContext) -> None:
     idservice = str(svc["idservice"])
     schedule = await db.get_schedule(idservice)
 
-    # Новый шаг может не поделить уже заданный обед. Раздвигаем обед до целого
-    # числа окон здесь же: иначе правило «обед меряется окнами» держалось бы
-    # только на вводе и тихо ломалось при смене шага
-    fields = {"slot_minutes": minutes}
-    note = ""
+    # Новый шаг может не поделить уже заданный обед. Тогда отказываем: обед
+    # стоит там, где его поставил управляющий, и подвинуть его — не наше дело
     if schedule["lunch_from"]:
         lunch = (schedule["lunch_from"], schedule["lunch_to"])
-        aligned = snap_lunch_to_grid(
-            lunch,
-            work_from=schedule["work_from"],
-            work_to=schedule["work_to"],
-            slot_minutes=minutes,
-        )
-        if aligned != lunch:
-            fields["lunch_from"], fields["lunch_to"] = aligned
-            note = f", обед раздвинут до {aligned[0]:%H:%M}-{aligned[1]:%H:%M}"
+        try:
+            validate_lunch_on_grid(
+                lunch,
+                work_from=schedule["work_from"],
+                work_to=schedule["work_to"],
+                slot_minutes=minutes,
+            )
+        except ValidationError as exc:
+            await callback.answer(
+                f"Обед {lunch[0]:%H:%M}-{lunch[1]:%H:%M} не делится на окна "
+                f"по {minutes} мин.\n{exc}\nИзмените обед, потом шаг.",
+                show_alert=True,
+            )
+            return
 
-    if not await _save(idservice, **fields):
+    if not await _save(idservice, slot_minutes=minutes):
         await callback.answer(SAVE_FAILED, show_alert=True)
         return
 
     await _show_schedule(callback.message, svc, edit=True)
-    await callback.answer(f"Шаг записи: {minutes} минут{note}", show_alert=bool(note))
+    await callback.answer(f"Шаг записи: {minutes} минут")
 
 
 @router.callback_query(F.data == "schedback")

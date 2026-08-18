@@ -19,6 +19,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.types import BotCommand, BotCommandScopeDefault, Update
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -84,12 +85,38 @@ for observer in (dp.message, dp.callback_query):
     observer.middleware(UserMiddleware())
 
 
+async def _telegram_retry(what: str, call, *args, attempts: int = 4, **kwargs):
+    """
+    Вызов к Telegram с повтором на сетевых обрывах.
+
+    Соединение до api.telegram.org рвётся и без всякой вины сервиса
+    (ServerDisconnectedError на живом keep-alive). Один такой обрыв на старте
+    ронял весь процесс: на Render это провалившийся деплой, локально — старт,
+    который надо повторять руками. Ошибки самого Telegram (неверный токен,
+    нерезолвимый вебхук) повторять бессмысленно, их пропускаем наверх.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return await call(*args, **kwargs)
+        except TelegramNetworkError as exc:
+            if attempt == attempts:
+                raise
+            delay = 2 ** (attempt - 1)
+            logger.warning(
+                "%s: сеть недоступна (%s), повтор через %d с (%d/%d)",
+                what, exc, delay, attempt, attempts - 1,
+            )
+            await asyncio.sleep(delay)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config.validate()
     await db.connect()
 
-    await bot.set_my_commands(
+    await _telegram_retry(
+        "Список команд",
+        bot.set_my_commands,
         [
             BotCommand(command="start", description="Главное меню"),
             BotCommand(command="menu", description="Выбрать активный сервис"),
@@ -99,7 +126,9 @@ async def lifespan(app: FastAPI):
 
     if config.BASE_URL:
         webhook_url = f"{config.BASE_URL}/webhook/{config.WEBHOOK_SECRET}"
-        await bot.set_webhook(
+        await _telegram_retry(
+            "Установка вебхука",
+            bot.set_webhook,
             webhook_url,
             secret_token=config.WEBHOOK_SECRET,
             drop_pending_updates=True,

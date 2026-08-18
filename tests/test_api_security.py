@@ -169,3 +169,55 @@ async def test_background_processing_passes_update_through(monkeypatch):
     sentinel = object()
     await app_module._process_update(sentinel)
     assert seen == [sentinel]
+
+
+# ── Старт переживает обрыв связи с Telegram ─────────────────────────────────
+# Соединение до api.telegram.org рвётся само по себе; один такой обрыв ронял
+# весь старт, а на Render это провалившийся деплой.
+
+async def test_telegram_retry_survives_a_dropped_connection(monkeypatch):
+    from aiogram.exceptions import TelegramNetworkError
+
+    monkeypatch.setattr(app_module.asyncio, "sleep", lambda _: _noop())
+    calls = []
+
+    async def flaky(*args, **kwargs):
+        calls.append(args)
+        if len(calls) < 3:
+            raise TelegramNetworkError(method=None, message="ServerDisconnectedError")
+        return "готово"
+
+    assert await app_module._telegram_retry("Тест", flaky, 1, key=2) == "готово"
+    assert len(calls) == 3
+
+
+async def test_telegram_retry_gives_up_and_reports(monkeypatch):
+    """Повторы не бесконечны: если Telegram недоступен совсем, старт обязан упасть."""
+    from aiogram.exceptions import TelegramNetworkError
+
+    monkeypatch.setattr(app_module.asyncio, "sleep", lambda _: _noop())
+
+    async def always_down(*args, **kwargs):
+        raise TelegramNetworkError(method=None, message="ServerDisconnectedError")
+
+    with pytest.raises(TelegramNetworkError):
+        await app_module._telegram_retry("Тест", always_down, attempts=2)
+
+
+async def test_telegram_retry_does_not_repeat_telegram_refusals(monkeypatch):
+    """Неверный токен или нерезолвимый вебхук повторять бессмысленно."""
+    from aiogram.exceptions import TelegramBadRequest
+
+    calls = []
+
+    async def refused(*args, **kwargs):
+        calls.append(1)
+        raise TelegramBadRequest(method=None, message="bad webhook")
+
+    with pytest.raises(TelegramBadRequest):
+        await app_module._telegram_retry("Тест", refused)
+    assert len(calls) == 1
+
+
+async def _noop():
+    return None

@@ -339,6 +339,16 @@ function filterCatalog(query) {
 
 // ── Календарь ────────────────────────────────────────────────────────────────
 
+// День без единого окна для клиента ничего не значит: он не кликается, не
+// открывает месяц и не делает сервис «открытым для записи». Сервер такой день
+// не отдаёт, но проверки ниже считают дни, а не окна, — отсеиваем один раз
+// здесь, чтобы каждой из них не приходилось помнить про этот случай
+function withFreeTimes(slots) {
+  return Object.fromEntries(
+    Object.entries(slots || {}).filter(([, times]) => (times || []).length > 0)
+  );
+}
+
 function firstOfMonth(iso) {
   const [y, m] = iso.split("-").map(Number);
   return new Date(y, m - 1, 1);
@@ -466,7 +476,7 @@ async function openService(serviceId) {
     state.serviceId = serviceId;
     document.title = state.selectedService.service_name + " — запись";
     // Календарь открываем на первом месяце, где вообще есть свободное время
-    state.slots = state.selectedService.slots || {};
+    state.slots = withFreeTimes(state.selectedService.slots);
     state.pickedDay = null;
     state.pickedTime = null;
     const days = Object.keys(state.slots).sort();
@@ -819,7 +829,7 @@ async function doSubmit() {
     // иначе он будет тыкать в час, которого в списке уже нет
     try {
       const fresh = await api(`/api/service/${encodeURIComponent(state.serviceId)}`);
-      state.slots = fresh.slots || {};
+      state.slots = withFreeTimes(fresh.slots);
       // Сбрасываем и день, если он опустел целиком: иначе клетка останется
       // подсвеченной как выбранная, но нажать её будет нельзя, а под сеткой
       // повиснет заголовок дня без единой плитки времени

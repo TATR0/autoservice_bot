@@ -12,6 +12,7 @@ import hashlib
 import logging
 import secrets
 from collections.abc import Mapping
+import datetime as dt
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Iterable, Sequence
 from uuid import uuid4
@@ -183,6 +184,31 @@ class Database:
                 ON CONFLICT (idservice, idusertg) DO UPDATE SET idrecstatus = 0
                 """,
                 _new_id(), idservice, owner_tg_id,
+            )
+            # Пробный период — это просто срок, проставленный при регистрации:
+            # отдельной сущности «триал» нет и заводить её незачем
+            paid_until = subscription.extend(
+                None, dt.datetime.now(dt.timezone.utc), config.TRIAL_DAYS
+            )
+            await conn.execute(
+                "UPDATE services SET paid_until=$2 WHERE idservice=$1",
+                idservice, paid_until,
+            )
+            await conn.execute(
+                """
+                INSERT INTO subscription_payments (idservice, days, paid_until, source)
+                VALUES ($1,$2,$3,'trial')
+                """,
+                idservice, config.TRIAL_DAYS, paid_until,
+            )
+            # Триал длится ровно столько, за сколько предупреждаем, поэтому
+            # стадия «5d» подошла бы прямо сейчас. Дату называет приветствие
+            await conn.execute(
+                """
+                INSERT INTO subscription_reminders (idservice, paid_until, stage)
+                VALUES ($1,$2,$3)
+                """,
+                idservice, paid_until, subscription.STAGE_5D,
             )
             # Сервис без услуг не должен существовать даже мгновение:
             # в форме записи клиенту было бы нечего выбрать.

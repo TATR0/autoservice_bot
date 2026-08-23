@@ -143,3 +143,41 @@ async def test_second_extension_counts_from_the_first(service):
 
 async def test_extension_of_a_missing_service_changes_nothing(service):
     assert await db.extend_subscription(str(uuid.uuid4()), days=30) is None
+
+
+# ── Пробный период ───────────────────────────────────────────────────────────
+
+import config
+import subscription
+
+
+async def test_new_service_starts_with_a_trial(service):
+    """Управляющий должен увидеть, как это работает, прежде чем платить."""
+    svc = await db.get_service(service)
+    now = datetime.now(timezone.utc)
+    assert subscription.is_active(svc["paid_until"], now)
+    left = svc["paid_until"] - now
+    assert timedelta(days=config.TRIAL_DAYS - 1) < left <= timedelta(days=config.TRIAL_DAYS)
+
+
+async def test_trial_is_written_to_the_journal(service):
+    """Журнал отвечает на «почему у сервиса такой срок» — в том числе про триал."""
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM subscription_payments WHERE idservice=$1", service
+        )
+    assert row["source"] == "trial"
+    assert row["days"] == config.TRIAL_DAYS
+
+
+@pytest.mark.xfail(reason="claim_reminder — задача 7", strict=True)
+async def test_trial_does_not_trigger_the_five_day_reminder(service):
+    """
+    Триал длится ровно столько, за сколько мы предупреждаем.
+
+    Без предзанятой отметки управляющий получил бы «осталось 5 дней» в секунду
+    регистрации, сразу после приветствия, где эта дата уже названа.
+    """
+    svc = await db.get_service(service)
+    claimed = await db.claim_reminder(service, svc["paid_until"], subscription.STAGE_5D)
+    assert claimed is False

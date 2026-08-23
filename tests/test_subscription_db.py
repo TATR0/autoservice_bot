@@ -106,3 +106,40 @@ async def test_manual_payments_do_not_collide(service):
                 " VALUES ($1, 30, $2)",
                 service, LATER,
             )
+
+
+# ── Продление ────────────────────────────────────────────────────────────────
+
+import uuid
+
+
+async def test_extension_sets_the_deadline_and_logs_it(service):
+    """Срок и журнал меняются вместе — иначе на «почему» отвечать нечем."""
+    paid_until = await db.extend_subscription(service, days=30, granted_by=42)
+    assert paid_until is not None
+
+    async with db.pool.acquire() as conn:
+        stored = await conn.fetchval(
+            "SELECT paid_until FROM services WHERE idservice=$1", service
+        )
+        logged = await conn.fetchrow(
+            "SELECT * FROM subscription_payments WHERE idservice=$1"
+            " ORDER BY createdate DESC LIMIT 1",
+            service,
+        )
+    assert stored == paid_until
+    assert logged["days"] == 30
+    assert logged["paid_until"] == paid_until
+    assert logged["source"] == "manual"
+    assert logged["granted_by"] == 42
+
+
+async def test_second_extension_counts_from_the_first(service):
+    """Два продления подряд не должны считать от одного и того же остатка."""
+    first = await db.extend_subscription(service, days=30)
+    second = await db.extend_subscription(service, days=30)
+    assert second == first + timedelta(days=30)
+
+
+async def test_extension_of_a_missing_service_changes_nothing(service):
+    assert await db.extend_subscription(str(uuid.uuid4()), days=30) is None

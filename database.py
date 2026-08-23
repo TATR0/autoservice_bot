@@ -20,6 +20,7 @@ import asyncpg
 
 import config
 import slots
+import subscription
 
 logger = logging.getLogger(__name__)
 
@@ -492,6 +493,50 @@ class Database:
                 idservice,
             )
         return affected
+
+    # ── Подписка ─────────────────────────────────────────────────────────────
+
+    async def extend_subscription(
+        self,
+        idservice: str,
+        *,
+        days: int,
+        source: str = "manual",
+        external_id: str | None = None,
+        granted_by: int | None = None,
+    ) -> datetime | None:
+        """
+        Продлить подписку и записать продление в журнал — одной транзакцией.
+
+        Порознь нельзя: однажды появится либо срок без следа в журнале, либо
+        запись о платеже, который ничего не продлил.
+
+        Строка сервиса блокируется на время расчёта: два продления подряд не
+        должны посчитать новый срок от одного и того же остатка.
+        """
+        now = datetime.now(timezone.utc)
+        async with self.pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT paid_until FROM services"
+                " WHERE idservice=$1 AND idrecstatus=0 FOR UPDATE",
+                idservice,
+            )
+            if row is None:
+                return None
+            paid_until = subscription.extend(row["paid_until"], now, days)
+            await conn.execute(
+                "UPDATE services SET paid_until=$2 WHERE idservice=$1",
+                idservice, paid_until,
+            )
+            await conn.execute(
+                """
+                INSERT INTO subscription_payments
+                    (idservice, days, paid_until, source, external_id, granted_by)
+                VALUES ($1,$2,$3,$4,$5,$6)
+                """,
+                idservice, days, paid_until, source, external_id, granted_by,
+            )
+        return paid_until
 
     def service_link(self, idservice: str) -> str:
         return f"https://t.me/{config.BOT_USERNAME}?start=SVC_{idservice}"

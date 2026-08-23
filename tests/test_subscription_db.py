@@ -217,4 +217,5 @@ async def test_expired_service_is_still_available_to_its_owner(service):
     """
     await _expire(service)
     assert await db.get_service(service) is not None
-    assert await db.get_owned_services(999_000_001)
+    owned = await db.get_owned_services(999_000_001)
+    assert any(str(row["idservice"]) == service for row in owned)

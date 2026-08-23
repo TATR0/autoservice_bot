@@ -181,3 +181,40 @@ async def test_trial_does_not_trigger_the_five_day_reminder(service):
     svc = await db.get_service(service)
     claimed = await db.claim_reminder(service, svc["paid_until"], subscription.STAGE_5D)
     assert claimed is False
+
+
+# ── Поиск ────────────────────────────────────────────────────────────────────
+
+
+async def _expire(idservice: str) -> None:
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE services SET paid_until=now() - interval '1 day' WHERE idservice=$1",
+            idservice,
+        )
+
+
+async def test_paid_service_is_found_by_city(service):
+    svc = await db.get_service(service)
+    found = await db.get_services_by_city(svc["city"])
+    assert any(str(row["idservice"]) == service for row in found)
+
+
+async def test_expired_service_disappears_from_search(service):
+    svc = await db.get_service(service)
+    await _expire(service)
+    found = await db.get_services_by_city(svc["city"])
+    assert all(str(row["idservice"]) != service for row in found)
+
+
+async def test_expired_service_is_still_available_to_its_owner(service):
+    """
+    Гейт стоит на продаже времени, а не на существовании сервиса.
+
+    Спрячь сервис от get_service — и управляющий потеряет кабинет вместе с
+    возможностью заплатить. Ровно та ошибка, из-за которой отвергнут вариант
+    с idrecstatus = -1.
+    """
+    await _expire(service)
+    assert await db.get_service(service) is not None
+    assert await db.get_owned_services(999_000_001)

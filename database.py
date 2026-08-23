@@ -235,6 +235,9 @@ class Database:
                 """
                 SELECT * FROM services
                 WHERE LOWER(TRIM(city))=LOWER(TRIM($1)) AND idrecstatus=0
+                  -- Не оплатил — не продаёт новое время. Кабинет управляющего
+                  -- при этом открыт: get_service такого фильтра не получает
+                  AND paid_until > now()
                 ORDER BY service_name
                 """,
                 city,

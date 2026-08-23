@@ -567,6 +567,47 @@ class Database:
             )
         return paid_until
 
+    async def services_for_reminders(self) -> list[asyncpg.Record]:
+        """
+        Сервисы, которым может причитаться напоминание о подписке.
+
+        Стадию считает subscription.due_stage: здесь только сужаем выборку.
+        Нижняя граница отсекает давно истёкших — своё они получили, а
+        перебирать их каждый час незачем.
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                f"""
+                SELECT idservice, service_name, owner_id, timezone, paid_until
+                FROM services
+                WHERE idrecstatus = 0
+                  AND paid_until IS NOT NULL
+                  AND paid_until > now() - interval '30 days'
+                  AND paid_until < now() + interval '{subscription.REMIND_LEAD_DAYS} days'
+                """
+            )
+
+    async def claim_reminder(
+        self, idservice: str, paid_until: datetime, stage: str
+    ) -> bool:
+        """
+        Занять право отправить напоминание. False — его уже отправляли.
+
+        Отметка ставится до отправки: при сбое теряется одно письмо, а не
+        управляющий получает его заново на каждом тике.
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO subscription_reminders (idservice, paid_until, stage)
+                VALUES ($1,$2,$3)
+                ON CONFLICT DO NOTHING
+                RETURNING idreminder
+                """,
+                idservice, paid_until, stage,
+            )
+        return row is not None
+
     def service_link(self, idservice: str) -> str:
         return f"https://t.me/{config.BOT_USERNAME}?start=SVC_{idservice}"
 

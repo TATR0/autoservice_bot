@@ -170,7 +170,6 @@ async def test_trial_is_written_to_the_journal(service):
     assert row["days"] == config.TRIAL_DAYS
 
 
-@pytest.mark.xfail(reason="claim_reminder — задача 7", strict=True)
 async def test_trial_does_not_trigger_the_five_day_reminder(service):
     """
     Триал длится ровно столько, за сколько мы предупреждаем.
@@ -219,3 +218,54 @@ async def test_expired_service_is_still_available_to_its_owner(service):
     assert await db.get_service(service) is not None
     owned = await db.get_owned_services(999_000_001)
     assert any(str(row["idservice"]) == service for row in owned)
+
+
+# ── Напоминания ──────────────────────────────────────────────────────────────
+
+
+async def test_service_close_to_expiry_becomes_a_candidate(service):
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE services SET paid_until=now() + interval '2 days' WHERE idservice=$1",
+            service,
+        )
+    candidates = await db.services_for_reminders()
+    assert any(str(row["idservice"]) == service for row in candidates)
+
+
+async def test_service_with_a_distant_deadline_is_not_a_candidate(service):
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE services SET paid_until=now() + interval '90 days' WHERE idservice=$1",
+            service,
+        )
+    candidates = await db.services_for_reminders()
+    assert all(str(row["idservice"]) != service for row in candidates)
+
+
+async def test_long_expired_service_is_not_a_candidate(service):
+    """Своё он уже получил, перебирать его каждый час незачем."""
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE services SET paid_until=now() - interval '60 days' WHERE idservice=$1",
+            service,
+        )
+    candidates = await db.services_for_reminders()
+    assert all(str(row["idservice"]) != service for row in candidates)
+
+
+async def test_reminder_is_claimed_by_the_first_caller_only(service):
+    """
+    Главное свойство всей конструкции: повторный тик, два тика внахлёст и
+    перезапуск посреди рассылки дают одно письмо.
+    """
+    moment = datetime.now(timezone.utc) + timedelta(days=1)
+    assert await db.claim_reminder(service, moment, "24h") is True
+    assert await db.claim_reminder(service, moment, "24h") is False
+
+
+async def test_new_deadline_can_be_claimed_again(service):
+    """После продления срок другой — напоминания по нему свои."""
+    moment = datetime.now(timezone.utc) + timedelta(days=1)
+    await db.claim_reminder(service, moment, "24h")
+    assert await db.claim_reminder(service, moment + timedelta(days=30), "24h") is True

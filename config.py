@@ -132,6 +132,13 @@ STATUS_TRANSITIONS: dict[str, tuple[str, ...]] = {
     "cancelled":   ("new", "accepted", "called", "in_progress"),
 }
 
+# Клиент не должен знать, что у сервиса с оплатой: это не его дело и для
+# сервиса унизительно. Телефон подставляется на месте
+CLOSED_FOR_BOOKING = (
+    "Сервис сейчас не принимает онлайн-запись. "
+    "Позвоните, пожалуйста, по телефону: {phone}"
+)
+
 # Уведомления клиенту при смене статуса
 CLIENT_NOTIFICATIONS: dict[str, str] = {
     "accepted": (

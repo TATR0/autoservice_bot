@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
@@ -27,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import config
+import subscription
 from database import db
 from fsm_storage import build_storage
 from handlers import admin_actions, admin_mgmt, catalog, register, requests, schedule, start
@@ -271,6 +273,15 @@ async def api_service(request: Request, service_id: str):
         svc = await db.get_service(service_id)
         if not svc:
             raise HTTPException(status_code=404, detail="Сервис не найден")
+
+        # Просрочка отключает продажу нового времени, а не сам сервис.
+        # 403, а не 404: «не найден» — неправда, а неправда стоит вечера отладки
+        if not subscription.is_active(svc["paid_until"], datetime.now(timezone.utc)):
+            raise HTTPException(
+                status_code=403,
+                detail=config.CLOSED_FOR_BOOKING.format(phone=svc["service_number"]),
+            )
+
         items = await db.get_catalog(service_id)
 
         free = await db.free_slots(svc)

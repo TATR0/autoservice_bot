@@ -14,6 +14,7 @@ handlers/requests.py
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
@@ -24,6 +25,7 @@ from aiogram.types import CallbackQuery, Message
 import config
 import keyboards as kb
 import render
+import subscription
 from database import ForeignClientUid, SlotTaken, db
 from notifications import notify_staff, safe_send
 from handlers.common import require_active_service
@@ -60,6 +62,14 @@ async def create_request_flow(
     service = await db.get_service(service_id)
     if not service:
         raise RequestRejected("Сервис не найден или больше не принимает заявки.")
+
+    # Та же линия обороны, что проверка услуг и проверка окна: форму можно
+    # отправить в обход интерфейса, поэтому решает сервер. Заодно закрывает
+    # клиента, у которого форма была открыта в момент истечения срока
+    if not subscription.is_active(service["paid_until"], datetime.now(timezone.utc)):
+        raise RequestRejected(
+            config.CLOSED_FOR_BOOKING.format(phone=service["service_number"])
+        )
 
     try:
         fields = validate_request_fields(payload)

@@ -269,3 +269,49 @@ async def test_new_deadline_can_be_claimed_again(service):
     moment = datetime.now(timezone.utc) + timedelta(days=1)
     await db.claim_reminder(service, moment, "24h")
     assert await db.claim_reminder(service, moment + timedelta(days=30), "24h") is True
+
+
+# ── Гейт приёма заявки ───────────────────────────────────────────────────────
+
+import uuid as _uuid
+
+from handlers.requests import RequestRejected, create_request_flow
+
+CLIENT_ID = 999_000_008
+
+
+def _payload(service_id: str, item, **extra) -> dict:
+    """Свой, а не импортированный из test_schedule: тестовые файлы друг друга
+    не импортируют — в tests нет пакета, и порядок сборки sys.path не наш."""
+    return {
+        "service_id": service_id,
+        "idcatalogs": [str(item["idcatalog"])],
+        "client_name": "Иван Тестов",
+        "phone": "+79990000008",
+        "brand": "Toyota",
+        "model": "Camry",
+        "plate": "А777АА777",
+        "comment": "",
+        "consent": True,
+        "client_uid": str(_uuid.uuid4()),
+        **extra,
+    }
+
+
+async def test_expired_service_does_not_take_requests(service):
+    """Форму можно отправить в обход интерфейса — решает сервер."""
+    item = (await db.get_catalog(service))[0]
+    svc = await db.get_service(service)
+    free = await db.free_slots(svc)
+    day = sorted(free)[0]
+    moment = free[day][0]
+    await _expire(service)
+
+    with pytest.raises(RequestRejected) as exc:
+        await create_request_flow(
+            None,
+            client_tg_id=CLIENT_ID,
+            payload=_payload(service, item, scheduled_at=f"{day} {moment:%H:%M}"),
+        )
+    text = str(exc.value).lower()
+    assert "подписк" not in text and "оплат" not in text, "клиенту про оплату не говорим"

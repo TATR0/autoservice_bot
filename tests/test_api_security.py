@@ -48,6 +48,32 @@ def test_csp_allows_telegram_sdk(client):
     assert "https://telegram.org" in csp
 
 
+def test_expired_service_gets_no_slots(client, monkeypatch):
+    """Форма просроченного сервиса не отдаётся: отказ, а не пустой календарь."""
+    from datetime import datetime, timedelta, timezone
+
+    service_id = "11111111-1111-1111-1111-111111111111"
+
+    async def _expired(_id):
+        return {
+            "idservice": service_id,
+            "service_name": "Тест",
+            "service_number": "+79990000000",
+            "city": "Тестоград",
+            "location_service": "ул. Тестовая, 1",
+            "timezone": "Europe/Moscow",
+            "paid_until": datetime.now(timezone.utc) - timedelta(days=1),
+        }
+
+    monkeypatch.setattr(app_module.db, "get_service", _expired)
+    response = client.get(f"/api/service/{service_id}")
+    # 403, а не 404: «сервис не найден» — неправда, а неправда стоит отладки
+    assert response.status_code == 403
+    # Ключ "error", а не "detail": так формирует общий http_exception_handler
+    # приложения, единый конверт ошибок для всего API
+    assert "подписк" not in response.json()["error"].lower()
+
+
 def test_lookup_endpoint_rate_limited(client):
     limit = app_module._lookup_limiter.limit
     codes = [

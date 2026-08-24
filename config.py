@@ -49,6 +49,26 @@ REDIS_URL: str = os.getenv("REDIS_URL", "").strip()
 MASTER_CHAT_ID: int = int(os.getenv("MASTER_CHAT_ID") or 0)
 DEFAULT_TIMEZONE: str = os.getenv("DEFAULT_TIMEZONE", "Europe/Moscow")
 
+
+def _int_list(raw: str) -> tuple[int, ...]:
+    """«1, 2 ,» → (1, 2). Пустые куски пропускаются: .env правят руками."""
+    return tuple(int(part) for part in raw.split(",") if part.strip())
+
+
+# Кому доступна команда /extend. Не MASTER_CHAT_ID: тот — чат для
+# недоставленных уведомлений и вполне может оказаться группой, а у группы id
+# отрицательный и с user id не совпадёт никогда
+BOT_OWNER_IDS: tuple[int, ...] = _int_list(os.getenv("BOT_OWNER_IDS", ""))
+
+# Секрет эндпоинта напоминаний. Пусто — эндпоинт закрыт совсем
+TICK_SECRET: str = os.getenv("TICK_SECRET", "").strip()
+
+# Куда управляющему писать за продлением. Пусто — строку не показываем
+SUPPORT_CONTACT: str = os.getenv("SUPPORT_CONTACT", "").strip()
+
+# Пробный период нового сервиса, дней
+TRIAL_DAYS: int = int(os.getenv("TRIAL_DAYS") or 5)
+
 # ── Лимиты и антиспам ────────────────────────────────────────────────────────
 FREE_PLAN_SERVICE_LIMIT: int = int(os.getenv("FREE_PLAN_SERVICE_LIMIT") or 1)
 REQUEST_COOLDOWN_SECONDS: int = int(os.getenv("REQUEST_COOLDOWN_SECONDS") or 60)
@@ -111,6 +131,13 @@ STATUS_TRANSITIONS: dict[str, tuple[str, ...]] = {
     "rejected":    ("new", "accepted", "called"),
     "cancelled":   ("new", "accepted", "called", "in_progress"),
 }
+
+# Клиент не должен знать, что у сервиса с оплатой: это не его дело и для
+# сервиса унизительно. Телефон подставляется на месте
+CLOSED_FOR_BOOKING = (
+    "Сервис сейчас не принимает онлайн-запись. "
+    "Позвоните, пожалуйста, по телефону: {phone}"
+)
 
 # Уведомления клиенту при смене статуса
 CLIENT_NOTIFICATIONS: dict[str, str] = {

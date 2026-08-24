@@ -12,7 +12,7 @@ import hashlib
 import logging
 import secrets
 from collections.abc import Mapping
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import Any, Iterable, Sequence
 from uuid import uuid4
 
@@ -20,6 +20,7 @@ import asyncpg
 
 import config
 import slots
+import subscription
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,34 @@ class Database:
                 """,
                 _new_id(), idservice, owner_tg_id,
             )
+            # Пробный период — это просто срок, проставленный при регистрации:
+            # отдельной сущности «триал» нет и заводить её незачем
+            # datetime.now(UTC), а не now(timezone.utc): параметр timezone
+            # этой функции затеняет одноимённый модуль
+            paid_until = subscription.extend(None, datetime.now(UTC), config.TRIAL_DAYS)
+            await conn.execute(
+                "UPDATE services SET paid_until=$2 WHERE idservice=$1",
+                idservice, paid_until,
+            )
+            await conn.execute(
+                """
+                INSERT INTO subscription_payments (idservice, days, paid_until, source)
+                VALUES ($1,$2,$3,'trial')
+                """,
+                idservice, config.TRIAL_DAYS, paid_until,
+            )
+            # Пока триал не длиннее окна предупреждения, стадия «5d» подошла бы
+            # прямо в секунду регистрации — гасим её заранее занятой отметкой.
+            # Дату называет приветствие. Если триал удлинить, гасить нечего:
+            # due_stage сам вернёт None, а заглушка съела бы настоящее письмо
+            if config.TRIAL_DAYS <= subscription.REMIND_LEAD_DAYS:
+                await conn.execute(
+                    """
+                    INSERT INTO subscription_reminders (idservice, paid_until, stage)
+                    VALUES ($1,$2,$3)
+                    """,
+                    idservice, paid_until, subscription.STAGE_5D,
+                )
             # Сервис без услуг не должен существовать даже мгновение:
             # в форме записи клиенту было бы нечего выбрать.
             await self._seed_catalog(conn, idservice)
@@ -208,6 +237,9 @@ class Database:
                 """
                 SELECT * FROM services
                 WHERE LOWER(TRIM(city))=LOWER(TRIM($1)) AND idrecstatus=0
+                  -- Не оплатил — не продаёт новое время. Кабинет управляющего
+                  -- при этом открыт: get_service такого фильтра не получает
+                  AND paid_until > now()
                 ORDER BY service_name
                 """,
                 city,
@@ -492,6 +524,91 @@ class Database:
                 idservice,
             )
         return affected
+
+    # ── Подписка ─────────────────────────────────────────────────────────────
+
+    async def extend_subscription(
+        self,
+        idservice: str,
+        *,
+        days: int,
+        source: str = "manual",
+        external_id: str | None = None,
+        granted_by: int | None = None,
+    ) -> datetime | None:
+        """
+        Продлить подписку и записать продление в журнал — одной транзакцией.
+
+        Порознь нельзя: однажды появится либо срок без следа в журнале, либо
+        запись о платеже, который ничего не продлил.
+
+        Строка сервиса блокируется на время расчёта: два продления подряд не
+        должны посчитать новый срок от одного и того же остатка.
+        """
+        now = datetime.now(timezone.utc)
+        async with self.pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT paid_until FROM services"
+                " WHERE idservice=$1 AND idrecstatus=0 FOR UPDATE",
+                idservice,
+            )
+            if row is None:
+                return None
+            paid_until = subscription.extend(row["paid_until"], now, days)
+            await conn.execute(
+                "UPDATE services SET paid_until=$2 WHERE idservice=$1",
+                idservice, paid_until,
+            )
+            await conn.execute(
+                """
+                INSERT INTO subscription_payments
+                    (idservice, days, paid_until, source, external_id, granted_by)
+                VALUES ($1,$2,$3,$4,$5,$6)
+                """,
+                idservice, days, paid_until, source, external_id, granted_by,
+            )
+        return paid_until
+
+    async def services_for_reminders(self) -> list[asyncpg.Record]:
+        """
+        Сервисы, которым может причитаться напоминание о подписке.
+
+        Стадию считает subscription.due_stage: здесь только сужаем выборку.
+        Нижняя граница отсекает давно истёкших — своё они получили, а
+        перебирать их каждый час незачем.
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                f"""
+                SELECT idservice, service_name, owner_id, timezone, paid_until
+                FROM services
+                WHERE idrecstatus = 0
+                  AND paid_until IS NOT NULL
+                  AND paid_until > now() - interval '30 days'
+                  AND paid_until < now() + interval '{subscription.REMIND_LEAD_DAYS} days'
+                """
+            )
+
+    async def claim_reminder(
+        self, idservice: str, paid_until: datetime, stage: str
+    ) -> bool:
+        """
+        Занять право отправить напоминание. False — его уже отправляли.
+
+        Отметка ставится до отправки: при сбое теряется одно письмо, а не
+        управляющий получает его заново на каждом тике.
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO subscription_reminders (idservice, paid_until, stage)
+                VALUES ($1,$2,$3)
+                ON CONFLICT DO NOTHING
+                RETURNING idreminder
+                """,
+                idservice, paid_until, stage,
+            )
+        return row is not None
 
     def service_link(self, idservice: str) -> str:
         return f"https://t.me/{config.BOT_USERNAME}?start=SVC_{idservice}"

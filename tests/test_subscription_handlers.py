@@ -1,0 +1,138 @@
+"""Команда /extend. Базы не требуют — слой БД подменён."""
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+import handlers.subscription as handler
+
+pytestmark = pytest.mark.asyncio
+
+OWNER_ID = 999_000_100
+STRANGER_ID = 999_000_200
+SERVICE_ID = "11111111-1111-1111-1111-111111111111"
+
+
+class FakeMessage:
+    def __init__(self, text: str, user_id: int):
+        self.text = text
+        self.from_user = type("User", (), {"id": user_id})()
+        self.answers = []
+
+    async def answer(self, text, **kwargs):
+        self.answers.append(text)
+
+
+@pytest.fixture
+def extended(monkeypatch):
+    """Слой БД подменён: проверяем разбор команды и права, а не SQL."""
+    calls = []
+
+    async def _extend(idservice, *, days, granted_by=None, **kwargs):
+        calls.append((idservice, days, granted_by))
+        return datetime.now(timezone.utc) + timedelta(days=days)
+
+    async def _service(_id):
+        return {"service_name": "Тест", "timezone": "Europe/Moscow"}
+
+    monkeypatch.setattr(handler.config, "BOT_OWNER_IDS", (OWNER_ID,))
+    monkeypatch.setattr(handler.db, "extend_subscription", _extend)
+    monkeypatch.setattr(handler.db, "get_service", _service)
+    return calls
+
+
+async def test_owner_extends_a_service(extended):
+    message = FakeMessage(f"/extend {SERVICE_ID} 30", OWNER_ID)
+    await handler.extend_command(message)
+    assert extended == [(SERVICE_ID, 30, OWNER_ID)]
+    assert message.answers
+
+
+async def test_stranger_gets_no_answer_at_all(extended):
+    """
+    Молча: рассказывать постороннему, что такая команда существует, незачем.
+    """
+    message = FakeMessage(f"/extend {SERVICE_ID} 30", STRANGER_ID)
+    await handler.extend_command(message)
+    assert extended == []
+    assert message.answers == []
+
+
+async def test_broken_arguments_are_explained(extended):
+    message = FakeMessage("/extend 30", OWNER_ID)
+    await handler.extend_command(message)
+    assert extended == []
+    assert message.answers, "владельцу бота нужен текст, а не молчание"
+
+
+async def test_zero_days_is_rejected_before_the_database(extended):
+    """Констрейнт это тоже поймает, но ответит языком драйвера."""
+    message = FakeMessage(f"/extend {SERVICE_ID} 0", OWNER_ID)
+    await handler.extend_command(message)
+    assert extended == []
+    assert message.answers == [handler.USAGE]
+
+
+async def test_non_ascii_digits_do_not_crash(extended):
+    """isdigit() истинно для «²», а int() его не парсит — хендлер падал."""
+    message = FakeMessage(f"/extend {SERVICE_ID} ²", OWNER_ID)
+    await handler.extend_command(message)
+    assert extended == []
+    assert message.answers == [handler.USAGE]
+
+
+async def test_missing_service_is_reported(extended, monkeypatch):
+    async def _none(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(handler.db, "extend_subscription", _none)
+    message = FakeMessage(f"/extend {SERVICE_ID} 30", OWNER_ID)
+    await handler.extend_command(message)
+    assert "не найден" in " ".join(message.answers).lower()
+
+
+# ── «Записаться в свой сервис» ───────────────────────────────────────────────
+# Пятый вход в форму, и единственный, который открывает её сотрудник. Гейты
+# ниже его поймают, но покажут клиентский текст: предложат позвонить самому
+# себе, ни словом не объяснив причину.
+
+import handlers.requests as requests_handler  # noqa: E402
+import keyboards as kb  # noqa: E402
+
+
+def _own_service(paid_until):
+    return {
+        "idservice": SERVICE_ID,
+        "service_name": "Тест",
+        "service_number": "+79990000000",
+        "timezone": "Europe/Moscow",
+        "paid_until": paid_until,
+    }
+
+
+@pytest.fixture
+def own_service(monkeypatch):
+    """Подменяем поиск своего сервиса: проверяется гейт, а не права."""
+    box = {}
+
+    async def _require(_message, _state):
+        return box.get("svc")
+
+    monkeypatch.setattr(requests_handler, "require_active_service", _require)
+    return box
+
+
+async def test_own_form_is_refused_when_the_subscription_expired(own_service):
+    own_service["svc"] = _own_service(datetime.now(timezone.utc) - timedelta(days=1))
+    message = FakeMessage(kb.BTN_BOOK_OWN, OWNER_ID)
+    await requests_handler.open_booking_form(message, None)
+    answer = " ".join(message.answers)
+    assert "истекла" in answer, "сотруднику называем причину, а не «позвоните»"
+    assert "Позвоните" not in answer, "клиентский текст сотруднику не показываем"
+
+
+async def test_own_form_opens_while_the_subscription_holds(own_service):
+    own_service["svc"] = _own_service(datetime.now(timezone.utc) + timedelta(days=10))
+    message = FakeMessage(kb.BTN_BOOK_OWN, OWNER_ID)
+    await requests_handler.open_booking_form(message, None)
+    assert "истекла" not in " ".join(message.answers)

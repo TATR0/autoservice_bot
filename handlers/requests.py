@@ -14,6 +14,7 @@ handlers/requests.py
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
@@ -24,12 +25,13 @@ from aiogram.types import CallbackQuery, Message
 import config
 import keyboards as kb
 import render
+import subscription
 from database import ForeignClientUid, SlotTaken, db
 from notifications import notify_staff, safe_send
 from handlers.common import require_active_service
 from validators import (
-    ValidationError, h, validate_catalog_ids, validate_request_fields,
-    validate_scheduled_at, validate_uuid,
+    ValidationError, format_phone, h, validate_catalog_ids,
+    validate_request_fields, validate_scheduled_at, validate_uuid,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,16 @@ async def create_request_flow(
     service = await db.get_service(service_id)
     if not service:
         raise RequestRejected("Сервис не найден или больше не принимает заявки.")
+
+    # Та же линия обороны, что проверка услуг и проверка окна: форму можно
+    # отправить в обход интерфейса, поэтому решает сервер. Заодно закрывает
+    # клиента, у которого форма была открыта в момент истечения срока
+    if not subscription.is_active(service["paid_until"], datetime.now(timezone.utc)):
+        raise RequestRejected(
+            config.CLOSED_FOR_BOOKING.format(
+                phone=format_phone(service["service_number"])
+            )
+        )
 
     try:
         fields = validate_request_fields(payload)
@@ -240,6 +252,12 @@ async def open_booking_form(message: Message, state: FSMContext) -> None:
     if message.text == kb.BTN_BOOK_OWN:
         svc = await require_active_service(message, state)
         if svc is None:
+            return
+        # Форма просроченного сервиса откроется и упрётся в тот же гейт, но
+        # покажет сотруднику клиентский текст — предложит позвонить самому себе.
+        # Свой человек заслуживает знать настоящую причину
+        if not subscription.is_active(svc["paid_until"], datetime.now(timezone.utc)):
+            await message.answer(render.subscription_line(svc))
             return
         service_id = str(svc["idservice"])
 

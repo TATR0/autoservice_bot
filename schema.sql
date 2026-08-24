@@ -204,6 +204,77 @@ ALTER TABLE requests ADD  CONSTRAINT chk_requests_urgency CHECK (urgency IN
     ('low','medium','high','urgent'));
 
 
+-- ── Подписка сервиса ─────────────────────────────────────────
+-- Состояние подписки нигде не хранится: активна ⇔ paid_until > now().
+-- Переключать нечего, поэтому нечему и разъехаться с реальностью.
+
+-- Срок — момент, а не дата: «за 24 часа» иначе превратилось бы в «в полночь
+-- накануне по серверному времени», а у сервисов свои зоны. Колонка пуста во
+-- всех строках, поэтому смена типа сегодня бесплатна
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'services' AND column_name = 'paid_until'
+                  AND data_type = 'date') THEN
+        ALTER TABLE services ALTER COLUMN paid_until TYPE timestamptz;
+    END IF;
+END $$;
+
+-- Журнал продлений: единственное место, где меняется paid_until.
+-- Источник — открытый набор: 'trial', 'backfill', 'manual', завтра провайдер
+CREATE TABLE IF NOT EXISTS subscription_payments (
+    idpayment   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    idservice   uuid        NOT NULL REFERENCES services(idservice) ON DELETE CASCADE,
+    days        integer     NOT NULL,
+    paid_until  timestamptz NOT NULL,   -- каким срок стал после этого продления
+    source      text        NOT NULL DEFAULT 'manual',
+    external_id text,                   -- id платежа у провайдера, NULL для ручных
+    granted_by  bigint,                 -- Telegram id продлившего вручную
+    createdate  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_payments_service
+    ON subscription_payments (idservice, createdate DESC);
+
+-- Повторная доставка того же платежа упрётся сюда и не продлит подписку
+-- дважды. Вебхуки повторяются всегда, это не редкий случай
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_payments_external
+    ON subscription_payments (source, external_id) WHERE external_id IS NOT NULL;
+
+ALTER TABLE subscription_payments DROP CONSTRAINT IF EXISTS chk_subscription_payments_days;
+ALTER TABLE subscription_payments ADD  CONSTRAINT chk_subscription_payments_days
+    CHECK (days > 0);
+
+-- Отметки об отправленных напоминаниях. В ключ входит сам срок: после
+-- продления новый срок получает свои напоминания, а напомнить повторно про
+-- старый невозможно
+CREATE TABLE IF NOT EXISTS subscription_reminders (
+    idreminder uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    idservice  uuid        NOT NULL REFERENCES services(idservice) ON DELETE CASCADE,
+    paid_until timestamptz NOT NULL,
+    stage      text        NOT NULL,
+    createdate timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_reminders_once
+    ON subscription_reminders (idservice, paid_until, stage);
+
+ALTER TABLE subscription_reminders DROP CONSTRAINT IF EXISTS chk_subscription_reminders_stage;
+ALTER TABLE subscription_reminders ADD  CONSTRAINT chk_subscription_reminders_stage
+    CHECK (stage IN ('5d','24h','expired'));
+
+-- Бэкфил. Без него в момент выката каждый живой сервис окажется просроченным:
+-- пропадёт из поиска и перестанет принимать заявки, тихо, среди рабочего дня.
+-- WHERE paid_until IS NULL — повторный прогон схемы никому ничего не перепишет
+WITH granted AS (
+    UPDATE services SET paid_until = now() + interval '30 days'
+     WHERE idrecstatus = 0 AND paid_until IS NULL
+ RETURNING idservice, paid_until
+)
+INSERT INTO subscription_payments (idservice, days, paid_until, source)
+SELECT idservice, 30, paid_until, 'backfill' FROM granted;
+
+
 -- ── История смены статусов ───────────────────────────────────
 CREATE TABLE IF NOT EXISTS request_status_history (
     id          bigserial   PRIMARY KEY,

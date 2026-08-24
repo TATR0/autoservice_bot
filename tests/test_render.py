@@ -78,3 +78,57 @@ def test_request_card_without_time_omits_the_line():
     """Заявки из эпохи срочности времени не имеют — строки просто нет."""
     text = request_card_for_staff(_req(scheduled_at=None), SERVICES, tz="Europe/Moscow")
     assert "Запись" not in text
+
+
+# ── Подписка ─────────────────────────────────────────────────────────────────
+
+from datetime import datetime, timedelta, timezone
+
+import render
+import subscription
+
+
+def _svc(paid_until):
+    return {
+        "service_name": "Тест",
+        "service_number": "+79990000000",
+        "timezone": "Europe/Moscow",
+        "paid_until": paid_until,
+    }
+
+
+def test_no_subscription_line_while_the_deadline_is_far():
+    """Лишняя строка в меню тратит внимание на то, что не требует действий."""
+    assert render.subscription_line(_svc(datetime.now(timezone.utc) + timedelta(days=90))) == ""
+
+
+def test_subscription_line_warns_before_the_deadline():
+    """Строка обязана назвать дату: «что-то с подпиской» не повод к действию."""
+    deadline = datetime.now(timezone.utc) + timedelta(days=2)
+    line = render.subscription_line(_svc(deadline))
+    assert "действует до" in line
+    assert render.local_dt(deadline, "Europe/Moscow") in line
+
+
+def test_expired_line_says_what_stopped_and_what_did_not():
+    """
+    Без второй половины управляющий решит, что теряет всю запись на неделю
+    вперёд, — и будет спасать несуществующую беду.
+    """
+    line = render.subscription_line(_svc(datetime.now(timezone.utc) - timedelta(days=1)))
+    assert "скрыт из поиска" in line
+    assert "уже записанные" in line.lower()
+
+
+def test_reminder_mentions_the_deadline_and_the_survivors():
+    svc = _svc(datetime.now(timezone.utc) + timedelta(hours=20))
+    text = render.subscription_reminder(subscription.STAGE_24H, svc)
+    assert "уже записанные" in text.lower()
+    assert svc["service_name"] in text
+
+
+def test_support_contact_is_omitted_when_unset(monkeypatch):
+    """Пустое поле — пустое место, а не «обратитесь в поддержку: »."""
+    monkeypatch.setattr(render.config, "SUPPORT_CONTACT", "")
+    line = render.subscription_line(_svc(datetime.now(timezone.utc) - timedelta(days=1)))
+    assert "Продлить" not in line

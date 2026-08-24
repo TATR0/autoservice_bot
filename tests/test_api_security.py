@@ -48,6 +48,35 @@ def test_csp_allows_telegram_sdk(client):
     assert "https://telegram.org" in csp
 
 
+def test_expired_service_gets_no_slots(client, monkeypatch):
+    """Форма просроченного сервиса не отдаётся: отказ, а не пустой календарь."""
+    from datetime import datetime, timedelta, timezone
+
+    service_id = "11111111-1111-1111-1111-111111111111"
+
+    async def _expired(_id):
+        return {
+            "idservice": service_id,
+            "service_name": "Тест",
+            "service_number": "+79990000000",
+            "city": "Тестоград",
+            "location_service": "ул. Тестовая, 1",
+            "timezone": "Europe/Moscow",
+            "paid_until": datetime.now(timezone.utc) - timedelta(days=1),
+        }
+
+    monkeypatch.setattr(app_module.db, "get_service", _expired)
+    response = client.get(f"/api/service/{service_id}")
+    # 403, а не 404: «сервис не найден» — неправда, а неправда стоит отладки
+    assert response.status_code == 403
+    # Ключ "error", а не "detail": так формирует общий http_exception_handler
+    # приложения, единый конверт ошибок для всего API
+    assert "подписк" not in response.json()["error"].lower()
+    # Телефон читается так же, как везде в боте: клиент по одной и той же
+    # ссылке не должен видеть «+79990000000» в форме и человеческий номер в чате
+    assert "+7 (999) 000-00-00" in response.json()["error"]
+
+
 def test_lookup_endpoint_rate_limited(client):
     limit = app_module._lookup_limiter.limit
     codes = [
@@ -221,3 +250,85 @@ async def test_telegram_retry_does_not_repeat_telegram_refusals(monkeypatch):
 
 async def _noop():
     return None
+
+
+# ── Тик напоминаний ──────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def tick(monkeypatch):
+    """Секрет задан, рассылка подменена: проверяется дверь, а не письма."""
+    calls = []
+
+    async def _send(_bot):
+        calls.append(1)
+        return 3
+
+    monkeypatch.setattr(app_module.config, "TICK_SECRET", "s3cret")
+    monkeypatch.setattr(app_module, "send_subscription_reminders", _send)
+    return calls
+
+
+def test_tick_runs_with_the_right_secret(client, tick):
+    response = client.post(
+        "/internal/subscriptions/tick", headers={"X-Tick-Secret": "s3cret"}
+    )
+    assert response.status_code == 200
+    assert response.json()["sent"] == 3
+    assert tick == [1]
+
+
+def test_tick_without_a_secret_is_rejected(client, tick):
+    assert client.post("/internal/subscriptions/tick").status_code == 401
+    assert tick == []
+
+
+def test_tick_with_a_wrong_secret_is_rejected(client, tick):
+    response = client.post(
+        "/internal/subscriptions/tick", headers={"X-Tick-Secret": "guess"}
+    )
+    assert response.status_code == 401
+    assert tick == []
+
+
+def test_tick_is_closed_when_no_secret_is_configured(client, monkeypatch):
+    """
+    Иначе стенд с незаполненной переменной оказался бы открыт всем: пустой
+    секрет совпал бы с пустым заголовком.
+    """
+    monkeypatch.setattr(app_module.config, "TICK_SECRET", "")
+    response = client.post(
+        "/internal/subscriptions/tick", headers={"X-Tick-Secret": ""}
+    )
+    assert response.status_code == 401
+
+
+def test_tick_survives_a_non_ascii_secret(client, monkeypatch):
+    """
+    Секрет выбирает человек в день выката. Возьми он пароль с кириллицей —
+    compare_digest на строках бросил бы TypeError, и эндпоинт отвечал бы 500
+    на любой запрос, включая правильный: письма не ушли бы никогда.
+    """
+    calls = []
+
+    async def _send(_bot):
+        calls.append(1)
+        return 0
+
+    monkeypatch.setattr(app_module.config, "TICK_SECRET", "пароль")
+    monkeypatch.setattr(app_module, "send_subscription_reminders", _send)
+
+    wrong = client.post(
+        "/internal/subscriptions/tick", headers={"X-Tick-Secret": "guess"}
+    )
+    assert wrong.status_code == 401, "чужой секрет — отказ, а не падение"
+    assert calls == []
+
+    # Заголовок байтами — ровно то, что кладёт в запрос curl: HTTP переносит
+    # байты, а не строки, и str с кириллицей клиент вообще не примет
+    right = client.post(
+        "/internal/subscriptions/tick",
+        headers={"X-Tick-Secret": "пароль".encode()},
+    )
+    assert right.status_code == 200, "правильный секрет обязан открывать дверь"
+    assert calls == [1]

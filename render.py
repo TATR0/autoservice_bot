@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import config
+import subscription
 from validators import format_phone, h
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,60 @@ def schedule_card(svc, schedule, free_count: int) -> str:
         f"📆 Открыто вперёд: {schedule['horizon_days']} дней\n\n"
         f"Свободных окон на этот срок: {free_count}"
     )
+
+
+# ── Подписка ─────────────────────────────────────────────────────────────────
+# Тексты видит только управляющий: клиенту про оплату не говорим ни слова.
+
+_SURVIVORS = "Уже записанные клиенты придут в своё время — их заявки на месте."
+
+
+def _renew_hint() -> str:
+    """Пустой контакт — пустое место, а не «Продлить: »."""
+    return f"\nПродлить: {h(config.SUPPORT_CONTACT)}" if config.SUPPORT_CONTACT else ""
+
+
+def subscription_line(svc) -> str:
+    """
+    Строка о подписке для главного меню. Пустая, пока до конца срока далеко:
+    напоминать не о чем, а лишняя строка тратит внимание.
+    """
+    now = datetime.now(timezone.utc)
+    paid_until = svc["paid_until"]
+    if subscription.is_active(paid_until, now):
+        if subscription.due_stage(paid_until, now) is None:
+            return ""
+        return (
+            f"💳 Подписка действует до {local_dt(paid_until, svc['timezone'])}."
+            + _renew_hint()
+        )
+    return (
+        "⛔️ <b>Подписка истекла.</b> Сервис скрыт из поиска, "
+        "новые записи не принимаются.\n"
+        f"{_SURVIVORS}" + _renew_hint()
+    )
+
+
+def subscription_reminder(stage: str, svc) -> str:
+    """Письмо владельцу сервиса. Стадию считает subscription.due_stage."""
+    name = h(svc["service_name"])
+    until = local_dt(svc["paid_until"], svc["timezone"])
+    if stage == subscription.STAGE_EXPIRED:
+        head = (
+            f"⛔️ <b>Подписка сервиса «{name}» истекла.</b>\n"
+            "Сервис скрыт из поиска, новые записи не принимаются."
+        )
+    elif stage == subscription.STAGE_24H:
+        head = (
+            f"⏳ <b>Подписка сервиса «{name}» заканчивается завтра</b> — {until}.\n"
+            "После этого сервис пропадёт из поиска и перестанет принимать записи."
+        )
+    else:
+        head = (
+            f"💳 <b>Подписка сервиса «{name}» действует до {until}.</b>\n"
+            "Дальше сервис пропадёт из поиска и перестанет принимать записи."
+        )
+    return f"{head}\n{_SURVIVORS}" + _renew_hint()
 
 
 def titled_price(title: str, price_rub: int | None) -> str:
@@ -192,6 +247,7 @@ def registration_summary(svc, link: str) -> str:
         f"<b>Адрес:</b> {h(svc['location_service'])}\n"
         f"<b>Управляющий:</b> вы (и первый администратор)\n\n"
         f"<b>ID сервиса:</b> <code>{svc['idservice']}</code>\n\n"
+        f"<b>Пробный период:</b> до {local_dt(svc['paid_until'], svc['timezone'])}\n\n"
         "🔗 <b>Ссылка для клиентов</b> — разместите её там, где вас найдут:\n"
         f"{h(link)}\n\n"
         "Чтобы подключить сотрудников, нажмите «➕ Пригласить админа»."

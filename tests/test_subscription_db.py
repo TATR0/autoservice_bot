@@ -315,3 +315,57 @@ async def test_expired_service_does_not_take_requests(service):
         )
     text = str(exc.value).lower()
     assert "подписк" not in text and "оплат" not in text, "клиенту про оплату не говорим"
+
+
+# ── Путь подписки целиком ────────────────────────────────────────────────────
+
+
+async def test_expiry_and_renewal_round_trip(service, make_request):
+    """
+    Полный круг: истёк → пропал из поиска и не принимает записи → продлён →
+    вернулся. И записанный клиент всё это время остаётся записанным.
+    """
+    svc = await db.get_service(service)
+    moment = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=1)
+    booked = await make_request(service, moment)
+
+    await _expire(service)
+    assert all(
+        str(row["idservice"]) != service
+        for row in await db.get_services_by_city(svc["city"])
+    )
+    # Заявка на месте: просрочка отключает продажу нового времени, а не сервис
+    taken = await db.get_taken_slots(
+        service, moment - timedelta(hours=1), moment + timedelta(hours=1)
+    )
+    assert taken[moment] == 1
+
+    await db.extend_subscription(service, days=30)
+    assert any(
+        str(row["idservice"]) == service
+        for row in await db.get_services_by_city(svc["city"])
+    )
+    assert booked["idrequests"]
+
+
+async def test_two_ticks_send_one_letter(service, monkeypatch):
+    """Главное свойство конструкции, проверенное на настоящей базе."""
+    import notifications
+
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE services SET paid_until=now() + interval '20 hours'"
+            " WHERE idservice=$1",
+            service,
+        )
+
+    sent = []
+
+    async def _fake_send(bot, chat_id, text, **kwargs):
+        sent.append(chat_id)
+        return True
+
+    monkeypatch.setattr(notifications, "safe_send", _fake_send)
+    await notifications.send_subscription_reminders(None)
+    await notifications.send_subscription_reminders(None)
+    assert sent.count(999_000_001) == 1

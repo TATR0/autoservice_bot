@@ -32,6 +32,7 @@ import subscription
 from database import db
 from fsm_storage import build_storage
 from handlers import admin_actions, admin_mgmt, catalog, register, requests, schedule, start
+from handlers import subscription as subscription_handlers
 from handlers.requests import RequestRejected, create_request_flow
 from middlewares import ErrorLoggingMiddleware, UserMiddleware
 from ratelimit import DatabaseGate, RateLimiter, enforce
@@ -78,6 +79,7 @@ dp.include_routers(
     register.router,
     catalog.router,
     schedule.router,
+    subscription_handlers.router,
     admin_mgmt.router,
     admin_actions.router,
 )

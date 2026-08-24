@@ -182,6 +182,33 @@ async def test_trial_does_not_trigger_the_five_day_reminder(service):
     assert claimed is False
 
 
+async def test_a_longer_trial_keeps_its_five_day_warning(db_ready, monkeypatch):
+    """
+    Заглушка выше держится на равенстве TRIAL_DAYS == REMIND_LEAD_DAYS.
+
+    Удлини триал — и она погасила бы настоящее предупреждение: управляющий
+    досидел бы пробный период и узнал о конце только письмом «истекла», уже
+    после отключения. Константы живут в разных модулях и совпадают случайно.
+    """
+    monkeypatch.setattr(config, "TRIAL_DAYS", subscription.REMIND_LEAD_DAYS + 9)
+    idservice = await db.create_service(
+        name=f"Тест {_uuid.uuid4().hex[:8]}",
+        phone="+79990000000",
+        city="Тестоград",
+        address="ул. Тестовая, 1",
+        owner_tg_id=999_000_101,
+    )
+    try:
+        svc = await db.get_service(idservice)
+        claimed = await db.claim_reminder(
+            idservice, svc["paid_until"], subscription.STAGE_5D
+        )
+        assert claimed is True, "предзанятая отметка съела бы настоящее письмо"
+    finally:
+        async with db.pool.acquire() as conn:
+            await conn.execute("DELETE FROM services WHERE idservice=$1", idservice)
+
+
 # ── Поиск ────────────────────────────────────────────────────────────────────
 
 
@@ -315,6 +342,8 @@ async def test_expired_service_does_not_take_requests(service):
         )
     text = str(exc.value).lower()
     assert "подписк" not in text and "оплат" not in text, "клиенту про оплату не говорим"
+    # Тот же номер и в том же виде, что показывает бот по ссылке на сервис
+    assert "+7 (999) 000-00-00" in str(exc.value)
 
 
 # ── Путь подписки целиком ────────────────────────────────────────────────────

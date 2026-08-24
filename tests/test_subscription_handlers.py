@@ -89,3 +89,50 @@ async def test_missing_service_is_reported(extended, monkeypatch):
     message = FakeMessage(f"/extend {SERVICE_ID} 30", OWNER_ID)
     await handler.extend_command(message)
     assert "не найден" in " ".join(message.answers).lower()
+
+
+# ── «Записаться в свой сервис» ───────────────────────────────────────────────
+# Пятый вход в форму, и единственный, который открывает её сотрудник. Гейты
+# ниже его поймают, но покажут клиентский текст: предложат позвонить самому
+# себе, ни словом не объяснив причину.
+
+import handlers.requests as requests_handler  # noqa: E402
+import keyboards as kb  # noqa: E402
+
+
+def _own_service(paid_until):
+    return {
+        "idservice": SERVICE_ID,
+        "service_name": "Тест",
+        "service_number": "+79990000000",
+        "timezone": "Europe/Moscow",
+        "paid_until": paid_until,
+    }
+
+
+@pytest.fixture
+def own_service(monkeypatch):
+    """Подменяем поиск своего сервиса: проверяется гейт, а не права."""
+    box = {}
+
+    async def _require(_message, _state):
+        return box.get("svc")
+
+    monkeypatch.setattr(requests_handler, "require_active_service", _require)
+    return box
+
+
+async def test_own_form_is_refused_when_the_subscription_expired(own_service):
+    own_service["svc"] = _own_service(datetime.now(timezone.utc) - timedelta(days=1))
+    message = FakeMessage(kb.BTN_BOOK_OWN, OWNER_ID)
+    await requests_handler.open_booking_form(message, None)
+    answer = " ".join(message.answers)
+    assert "истекла" in answer, "сотруднику называем причину, а не «позвоните»"
+    assert "Позвоните" not in answer, "клиентский текст сотруднику не показываем"
+
+
+async def test_own_form_opens_while_the_subscription_holds(own_service):
+    own_service["svc"] = _own_service(datetime.now(timezone.utc) + timedelta(days=10))
+    message = FakeMessage(kb.BTN_BOOK_OWN, OWNER_ID)
+    await requests_handler.open_booking_form(message, None)
+    assert "истекла" not in " ".join(message.answers)

@@ -12,8 +12,7 @@ import hashlib
 import logging
 import secrets
 from collections.abc import Mapping
-import datetime as dt
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import Any, Iterable, Sequence
 from uuid import uuid4
 
@@ -187,9 +186,9 @@ class Database:
             )
             # Пробный период — это просто срок, проставленный при регистрации:
             # отдельной сущности «триал» нет и заводить её незачем
-            paid_until = subscription.extend(
-                None, dt.datetime.now(dt.timezone.utc), config.TRIAL_DAYS
-            )
+            # datetime.now(UTC), а не now(timezone.utc): параметр timezone
+            # этой функции затеняет одноимённый модуль
+            paid_until = subscription.extend(None, datetime.now(UTC), config.TRIAL_DAYS)
             await conn.execute(
                 "UPDATE services SET paid_until=$2 WHERE idservice=$1",
                 idservice, paid_until,
@@ -201,15 +200,18 @@ class Database:
                 """,
                 idservice, config.TRIAL_DAYS, paid_until,
             )
-            # Триал длится ровно столько, за сколько предупреждаем, поэтому
-            # стадия «5d» подошла бы прямо сейчас. Дату называет приветствие
-            await conn.execute(
-                """
-                INSERT INTO subscription_reminders (idservice, paid_until, stage)
-                VALUES ($1,$2,$3)
-                """,
-                idservice, paid_until, subscription.STAGE_5D,
-            )
+            # Пока триал не длиннее окна предупреждения, стадия «5d» подошла бы
+            # прямо в секунду регистрации — гасим её заранее занятой отметкой.
+            # Дату называет приветствие. Если триал удлинить, гасить нечего:
+            # due_stage сам вернёт None, а заглушка съела бы настоящее письмо
+            if config.TRIAL_DAYS <= subscription.REMIND_LEAD_DAYS:
+                await conn.execute(
+                    """
+                    INSERT INTO subscription_reminders (idservice, paid_until, stage)
+                    VALUES ($1,$2,$3)
+                    """,
+                    idservice, paid_until, subscription.STAGE_5D,
+                )
             # Сервис без услуг не должен существовать даже мгновение:
             # в форме записи клиенту было бы нечего выбрать.
             await self._seed_catalog(conn, idservice)

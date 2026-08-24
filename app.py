@@ -38,7 +38,7 @@ from handlers.requests import RequestRejected, create_request_flow
 from middlewares import ErrorLoggingMiddleware, UserMiddleware
 from notifications import send_subscription_reminders
 from ratelimit import DatabaseGate, RateLimiter, enforce
-from validators import ValidationError, validate_uuid
+from validators import ValidationError, format_phone, validate_uuid
 from webapp_auth import InitDataError, verify_init_data
 
 logging.basicConfig(
@@ -283,7 +283,9 @@ async def api_service(request: Request, service_id: str):
         if not subscription.is_active(svc["paid_until"], datetime.now(timezone.utc)):
             raise HTTPException(
                 status_code=403,
-                detail=config.CLOSED_FOR_BOOKING.format(phone=svc["service_number"]),
+                detail=config.CLOSED_FOR_BOOKING.format(
+                    phone=format_phone(svc["service_number"])
+                ),
             )
 
         items = await db.get_catalog(service_id)
@@ -395,14 +397,22 @@ async def subscriptions_tick(x_tick_secret: str | None = Header(default=None)):
     уникальным индексом в базе.
     """
     # Пустой секрет закрывает эндпоинт совсем: иначе стенд с незаполненной
-    # переменной оказался бы открыт всем
+    # переменной оказался бы открыт всем.
+    # Сравниваем байты, а не строки: compare_digest на строках требует ASCII и
+    # на секрете с кириллицей бросил бы TypeError — эндпоинт отвечал бы 500 на
+    # любой запрос, включая правильный, и напоминания не ушли бы никогда.
+    # Заголовок ASGI отдаёт декодированным latin-1, поэтому и в байты его
+    # возвращаем тем же способом: иначе секрет с кириллицей не совпал бы с собой
     if not config.TICK_SECRET or not hmac.compare_digest(
-        x_tick_secret or "", config.TICK_SECRET
+        (x_tick_secret or "").encode("latin-1", "replace"),
+        config.TICK_SECRET.encode(),
     ):
         raise HTTPException(status_code=401, detail="unauthorized")
 
-    async with _db_gate:
-        sent = await send_subscription_reminders(bot)
+    # Без _db_gate: гейт бережёт соединения от наплыва публичного API, а тик
+    # между походами в базу переписывается с Telegram — держать его слот всё
+    # это время значит отнимать соединение у клиентов ради ожидания сети
+    sent = await send_subscription_reminders(bot)
     return {"sent": sent}
 
 

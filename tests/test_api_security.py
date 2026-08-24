@@ -72,6 +72,9 @@ def test_expired_service_gets_no_slots(client, monkeypatch):
     # Ключ "error", а не "detail": так формирует общий http_exception_handler
     # приложения, единый конверт ошибок для всего API
     assert "подписк" not in response.json()["error"].lower()
+    # Телефон читается так же, как везде в боте: клиент по одной и той же
+    # ссылке не должен видеть «+79990000000» в форме и человеческий номер в чате
+    assert "+7 (999) 000-00-00" in response.json()["error"]
 
 
 def test_lookup_endpoint_rate_limited(client):
@@ -298,3 +301,34 @@ def test_tick_is_closed_when_no_secret_is_configured(client, monkeypatch):
         "/internal/subscriptions/tick", headers={"X-Tick-Secret": ""}
     )
     assert response.status_code == 401
+
+
+def test_tick_survives_a_non_ascii_secret(client, monkeypatch):
+    """
+    Секрет выбирает человек в день выката. Возьми он пароль с кириллицей —
+    compare_digest на строках бросил бы TypeError, и эндпоинт отвечал бы 500
+    на любой запрос, включая правильный: письма не ушли бы никогда.
+    """
+    calls = []
+
+    async def _send(_bot):
+        calls.append(1)
+        return 0
+
+    monkeypatch.setattr(app_module.config, "TICK_SECRET", "пароль")
+    monkeypatch.setattr(app_module, "send_subscription_reminders", _send)
+
+    wrong = client.post(
+        "/internal/subscriptions/tick", headers={"X-Tick-Secret": "guess"}
+    )
+    assert wrong.status_code == 401, "чужой секрет — отказ, а не падение"
+    assert calls == []
+
+    # Заголовок байтами — ровно то, что кладёт в запрос curl: HTTP переносит
+    # байты, а не строки, и str с кириллицей клиент вообще не примет
+    right = client.post(
+        "/internal/subscriptions/tick",
+        headers={"X-Tick-Secret": "пароль".encode()},
+    )
+    assert right.status_code == 200, "правильный секрет обязан открывать дверь"
+    assert calls == [1]

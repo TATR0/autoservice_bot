@@ -103,8 +103,11 @@ def test_no_subscription_line_while_the_deadline_is_far():
 
 
 def test_subscription_line_warns_before_the_deadline():
-    line = render.subscription_line(_svc(datetime.now(timezone.utc) + timedelta(days=2)))
-    assert line != ""
+    """Строка обязана назвать дату: «что-то с подпиской» не повод к действию."""
+    deadline = datetime.now(timezone.utc) + timedelta(days=2)
+    line = render.subscription_line(_svc(deadline))
+    assert "действует до" in line
+    assert render.local_dt(deadline, "Europe/Moscow") in line
 
 
 def test_expired_line_says_what_stopped_and_what_did_not():

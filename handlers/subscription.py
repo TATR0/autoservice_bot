@@ -15,7 +15,7 @@ from aiogram.types import Message
 import config
 import render
 from database import db
-from validators import ValidationError, validate_uuid
+from validators import ValidationError, h, validate_uuid
 
 router = Router()
 
@@ -45,7 +45,7 @@ async def extend_command(message: Message) -> None:
         await message.answer(f"❌ {exc}")
         return
 
-    if not parts[2].isdigit() or not 1 <= int(parts[2]) <= MAX_DAYS:
+    if not parts[2].isdecimal() or not 1 <= int(parts[2]) <= MAX_DAYS:
         await message.answer(USAGE)
         return
 
@@ -59,6 +59,6 @@ async def extend_command(message: Message) -> None:
 
     svc = await db.get_service(idservice)
     await message.answer(
-        f"✅ «{svc['service_name']}» продлён на {days} дн.\n"
+        f"✅ «{h(svc['service_name'])}» продлён на {days} дн.\n"
         f"Подписка действует до {render.local_dt(paid_until, svc['timezone'])}."
     )

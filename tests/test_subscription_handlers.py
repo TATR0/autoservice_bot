@@ -70,6 +70,15 @@ async def test_zero_days_is_rejected_before_the_database(extended):
     message = FakeMessage(f"/extend {SERVICE_ID} 0", OWNER_ID)
     await handler.extend_command(message)
     assert extended == []
+    assert message.answers == [handler.USAGE]
+
+
+async def test_non_ascii_digits_do_not_crash(extended):
+    """isdigit() истинно для «²», а int() его не парсит — хендлер падал."""
+    message = FakeMessage(f"/extend {SERVICE_ID} ²", OWNER_ID)
+    await handler.extend_command(message)
+    assert extended == []
+    assert message.answers == [handler.USAGE]
 
 
 async def test_missing_service_is_reported(extended, monkeypatch):

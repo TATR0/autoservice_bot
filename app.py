@@ -11,6 +11,7 @@ app.py — единственная точка входа: Telegram-бот (webh
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -35,6 +36,7 @@ from handlers import admin_actions, admin_mgmt, catalog, register, requests, sch
 from handlers import subscription as subscription_handlers
 from handlers.requests import RequestRejected, create_request_flow
 from middlewares import ErrorLoggingMiddleware, UserMiddleware
+from notifications import send_subscription_reminders
 from ratelimit import DatabaseGate, RateLimiter, enforce
 from validators import ValidationError, validate_uuid
 from webapp_auth import InitDataError, verify_init_data
@@ -381,6 +383,27 @@ async def api_me(request: Request, init_data: str = Query(..., alias="init_data"
         p for p in (tg_user.get("first_name"), tg_user.get("last_name")) if p
     )
     return {"name": name, "phone": user["phone"] if user else None}
+
+
+@app.post("/internal/subscriptions/tick")
+async def subscriptions_tick(x_tick_secret: str | None = Header(default=None)):
+    """
+    Рассылка напоминаний о подписке. Дёргается внешним кроном.
+
+    Состояние подписки тик не меняет: он только шлёт письма и помечает
+    отправленное. Два тика внахлёст безопасны — право на письмо занимается
+    уникальным индексом в базе.
+    """
+    # Пустой секрет закрывает эндпоинт совсем: иначе стенд с незаполненной
+    # переменной оказался бы открыт всем
+    if not config.TICK_SECRET or not hmac.compare_digest(
+        x_tick_secret or "", config.TICK_SECRET
+    ):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    async with _db_gate:
+        sent = await send_subscription_reminders(bot)
+    return {"sent": sent}
 
 
 # ── Служебное ────────────────────────────────────────────────────────────────

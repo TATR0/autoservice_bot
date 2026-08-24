@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from aiogram import Bot
 from aiogram.exceptions import (
@@ -19,6 +20,8 @@ from aiogram.exceptions import (
 from aiogram.types import InlineKeyboardMarkup
 
 import config
+import render
+import subscription
 from database import db
 
 logger = logging.getLogger(__name__)
@@ -109,3 +112,31 @@ async def notify_staff(
             ),
         )
     return delivered
+
+
+async def send_subscription_reminders(bot: Bot) -> int:
+    """
+    Разослать причитающиеся напоминания о подписке. Возвращает число писем.
+
+    Право на письмо занимается до отправки: при сбое теряется одно
+    напоминание, а не управляющий получает его заново на каждом тике.
+
+    Состояние подписки здесь не меняется — оно выводится из paid_until.
+    Поэтому молчавший неделю крон стоит писем, а не поехавших гейтов.
+    """
+    now = datetime.now(timezone.utc)
+    sent = 0
+    for svc in await db.services_for_reminders():
+        stage = subscription.due_stage(svc["paid_until"], now)
+        if stage is None:
+            continue
+        if not await db.claim_reminder(
+            str(svc["idservice"]), svc["paid_until"], stage
+        ):
+            continue
+        if await safe_send(
+            bot, svc["owner_id"], render.subscription_reminder(stage, svc)
+        ):
+            sent += 1
+        await asyncio.sleep(BROADCAST_DELAY)
+    return sent

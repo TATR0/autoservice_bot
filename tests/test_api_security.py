@@ -247,3 +247,54 @@ async def test_telegram_retry_does_not_repeat_telegram_refusals(monkeypatch):
 
 async def _noop():
     return None
+
+
+# ── Тик напоминаний ──────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def tick(monkeypatch):
+    """Секрет задан, рассылка подменена: проверяется дверь, а не письма."""
+    calls = []
+
+    async def _send(_bot):
+        calls.append(1)
+        return 3
+
+    monkeypatch.setattr(app_module.config, "TICK_SECRET", "s3cret")
+    monkeypatch.setattr(app_module, "send_subscription_reminders", _send)
+    return calls
+
+
+def test_tick_runs_with_the_right_secret(client, tick):
+    response = client.post(
+        "/internal/subscriptions/tick", headers={"X-Tick-Secret": "s3cret"}
+    )
+    assert response.status_code == 200
+    assert response.json()["sent"] == 3
+    assert tick == [1]
+
+
+def test_tick_without_a_secret_is_rejected(client, tick):
+    assert client.post("/internal/subscriptions/tick").status_code == 401
+    assert tick == []
+
+
+def test_tick_with_a_wrong_secret_is_rejected(client, tick):
+    response = client.post(
+        "/internal/subscriptions/tick", headers={"X-Tick-Secret": "guess"}
+    )
+    assert response.status_code == 401
+    assert tick == []
+
+
+def test_tick_is_closed_when_no_secret_is_configured(client, monkeypatch):
+    """
+    Иначе стенд с незаполненной переменной оказался бы открыт всем: пустой
+    секрет совпал бы с пустым заголовком.
+    """
+    monkeypatch.setattr(app_module.config, "TICK_SECRET", "")
+    response = client.post(
+        "/internal/subscriptions/tick", headers={"X-Tick-Secret": ""}
+    )
+    assert response.status_code == 401

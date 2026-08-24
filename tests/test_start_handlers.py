@@ -43,7 +43,7 @@ async def test_expired_service_link_offers_the_phone(expired):
     await start._handle_service_link(message, "11111111-1111-1111-1111-111111111111")
 
     text = "\n".join(message.answers)
-    assert "+79990000000" in text
+    assert "+7 (999) 000-00-00" in text
     assert "подписк" not in text.lower() and "оплат" not in text.lower()
 
 

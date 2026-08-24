@@ -63,7 +63,7 @@ async def _handle_service_link(message: Message, idservice: str) -> None:
     if not subscription.is_active(service["paid_until"], datetime.now(timezone.utc)):
         await message.answer(
             "⚠️ " + config.CLOSED_FOR_BOOKING.format(
-                phone=service["service_number"]
+                phone=h(format_phone(service["service_number"]))
             ),
             reply_markup=kb.kb_client_main(),
         )

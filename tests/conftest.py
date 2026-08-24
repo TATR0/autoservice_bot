@@ -42,3 +42,29 @@ async def service(db_ready) -> str:
         # requests ссылается на services через ON DELETE SET NULL — чистим руками
         await conn.execute("DELETE FROM requests WHERE idservice=$1", idservice)
         await conn.execute("DELETE FROM services WHERE idservice=$1", idservice)
+
+
+@pytest_asyncio.fixture
+async def make_request(db_ready):
+    """Заявка на конкретное время. Услуга создаётся своя, чтобы не мешать тестам."""
+    async def _make(idservice: str, moment, *, client_uid: str | None = None):
+        item = await db.add_catalog_item(idservice, f"Работа {uuid.uuid4().hex[:6]}")
+        request, _ = await db.create_request(
+            idservice=idservice,
+            client_tg_id=TEST_OWNER_ID,
+            client_name="Тест",
+            phone="+79990000000",
+            brand="Toyota",
+            model="Camry",
+            plate="А777АА777",
+            services=[{
+                "idcatalog": str(item["idcatalog"]),
+                "title": item["title"],
+                "price_rub": item["price_rub"],
+            }],
+            comment="",
+            scheduled_at=moment,
+            client_uid=client_uid or str(uuid.uuid4()),
+        )
+        return request
+    return _make

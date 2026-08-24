@@ -85,7 +85,9 @@
     text-transform: uppercase;
     color: var(--muted);
   }
-  .field input, .field select, .field textarea {
+  /* Только поля ввода: галочки внутри .field должны остаться нативными —
+     appearance:none стирает саму отметку, и выбор становится не виден */
+  .field input:not([type="checkbox"]), .field select, .field textarea {
     width: 100%;
     background: rgba(255,255,255,0.05);
     border: 1.5px solid var(--border);
@@ -99,7 +101,7 @@
   }
   .field select { cursor: pointer; }
   .field input::placeholder, .field textarea::placeholder { color: var(--muted); }
-  .field input:focus, .field select:focus, .field textarea:focus {
+  .field input:not([type="checkbox"]):focus, .field select:focus, .field textarea:focus {
     outline: none;
     border-color: var(--accent);
     background: rgba(240,192,64,.06);
@@ -110,6 +112,55 @@
   .field .char { font-size: 11px; color: var(--muted); text-align: right; }
 
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  /* Свои display перебивают [hidden] из таблицы браузера — возвращаем ему силу */
+  [hidden] { display: none !important; }
+
+  /* Потолок каталога — 30 услуг. Без своей прокрутки такой список утащил бы
+     срочность, комментарий и кнопку отправки далеко за экран */
+  .catalog-list { display: flex; flex-direction: column; gap: 2px;
+                  max-height: 45vh; overflow-y: auto; overscroll-behavior: contain; }
+  .catalog-item { display: flex; align-items: center; gap: 8px;
+                  padding: 8px; border-radius: var(--radius-sm); cursor: pointer; }
+  .catalog-item:active { background: rgba(255,255,255,0.05); }
+  .catalog-item:has(:checked) { background: rgba(240,192,64,.08); }
+  .catalog-item input { width: 20px; height: 20px; flex-shrink: 0; accent-color: var(--accent); }
+  .catalog-title { flex: 1; }
+  .catalog-price { color: var(--muted); font-size: 13px; white-space: nowrap; }
+  .catalog-bar { display: flex; justify-content: space-between; align-items: center;
+                 font-size: 12px; color: var(--muted); }
+  .catalog-bar button {
+    background: none; border: none; padding: 0;
+    font: inherit; color: var(--accent); cursor: pointer;
+  }
+  .catalog-empty { padding: 14px 8px; text-align: center; font-size: 13px; color: var(--muted); }
+
+  .cal-head { display: flex; justify-content: space-between; align-items: center;
+              font-weight: 600; padding: 2px 0 10px; }
+  .cal-head button { background: none; border: none; color: var(--accent);
+                     font-size: 22px; line-height: 1; padding: 2px 12px; cursor: pointer; }
+  .cal-head button:disabled { color: var(--muted); opacity: .35; cursor: default; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  .cal-dow { text-align: center; font-size: 11px; color: var(--muted); padding-bottom: 4px; }
+  .cal-cell { aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+              border: none; background: none; color: var(--text);
+              font: inherit; border-radius: var(--radius-sm); }
+  .cal-day { cursor: pointer; background: rgba(255,255,255,0.05); }
+  /* Закрытый день должен читаться как закрытый, а не как «просто другой» */
+  .cal-off { color: var(--muted); opacity: .3; cursor: default; }
+  .cal-times { margin-top: 16px; }
+  .cal-daylabel { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .cal-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(74px, 1fr)); gap: 8px; }
+  .cal-chip { padding: 11px 6px; border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+              background: rgba(255,255,255,0.05); color: var(--text);
+              font: inherit; cursor: pointer; }
+  .cal-tz { margin-top: 10px; font-size: 11px; color: var(--muted); }
+
+  /* Подсветка выбранного идёт ПОСЛЕ .cal-day и .cal-chip: специфичность у всех
+     трёх одинаковая, побеждает последнее правило. Стояла раньше — и выбранная
+     плитка времени перекрашивалась обратно в обычную */
+  .cal-picked { background: linear-gradient(110deg, var(--accent), var(--accent2));
+                color: #111; font-weight: 700; border-color: transparent; }
 
   .consent { display: flex; gap: 10px; align-items: flex-start; font-size: 12px; color: var(--muted); line-height: 1.5; }
   .consent input { width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px; accent-color: var(--accent); }
@@ -217,12 +268,11 @@ if (tg) {
 // запросы идут на текущий origin. Настраивать ничего не нужно.
 const API_BASE = "";
 
-const URGENCY = [
-  { value: "low",    label: "Обычный — 7+ дней" },
-  { value: "medium", label: "Средний — 3–5 дней" },
-  { value: "high",   label: "Срочный — 1–2 дня" },
-  { value: "urgent", label: "Очень срочный — сегодня" },
-];
+const MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня",
+                    "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+const MONTHS_NOM = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+                    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+const WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
 
 const params = new URLSearchParams(location.search);
 const state = {
@@ -230,6 +280,11 @@ const state = {
   selectedService: null,
   city:            "",
   profile:         { name: "", phone: "" },
+  // Свободные окна с сервера: { "2026-08-17": ["09:00", "10:00"] }
+  slots:           {},
+  month:           null,   // Date, первое число показываемого месяца
+  pickedDay:       null,   // "2026-08-17"
+  pickedTime:      null,   // "10:00"
   // Один uid на попытку отправки: повторный тап не создаст дубль заявки
   clientUid:       newUid(),
 };
@@ -245,6 +300,151 @@ function newUid() {
 function esc(str) {
   return String(str ?? "").replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
+  );
+}
+
+// Цены нет — не показываем ничего: заглушка только зашумляет список
+function priceLabel(price) {
+  if (price === null || price === undefined) return "";
+  return "от " + String(price).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₽";
+}
+
+function selectedCatalogIds() {
+  return [...document.querySelectorAll(".catalog-cb:checked")].map(cb => cb.value);
+}
+
+// Короткий список читается целиком, поиск над ним — лишняя деталь
+const CATALOG_SEARCH_FROM = 8;
+
+function updateCatalogBar() {
+  const count = selectedCatalogIds().length;
+  const bar = document.getElementById("catalogBar");
+  if (!bar) return;
+  bar.hidden = count === 0;
+  document.getElementById("catalogCount").textContent = "Выбрано: " + count;
+}
+
+// Прячем строки, а не перерисовываем список: перерисовка сбросила бы галочки,
+// уже проставленные до поиска
+function filterCatalog(query) {
+  const needle = query.trim().toLowerCase();
+  let shown = 0;
+  document.querySelectorAll(".catalog-item").forEach(item => {
+    const match = !needle || item.dataset.title.includes(needle);
+    item.hidden = !match;
+    if (match) shown += 1;
+  });
+  document.getElementById("catalogEmpty").hidden = shown > 0;
+}
+
+// ── Календарь ────────────────────────────────────────────────────────────────
+
+// День без единого окна для клиента ничего не значит: он не кликается, не
+// открывает месяц и не делает сервис «открытым для записи». Сервер такой день
+// не отдаёт, но проверки ниже считают дни, а не окна, — отсеиваем один раз
+// здесь, чтобы каждой из них не приходилось помнить про этот случай
+function withFreeTimes(slots) {
+  return Object.fromEntries(
+    Object.entries(slots || {}).filter(([, times]) => (times || []).length > 0)
+  );
+}
+
+function firstOfMonth(iso) {
+  const [y, m] = iso.split("-").map(Number);
+  return new Date(y, m - 1, 1);
+}
+
+function isoDay(date) {
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${m}-${d}`;
+}
+
+// Сетка начинается с понедельника, а getDay() отдаёт воскресенье нулём
+function mondayOffset(date) {
+  return (date.getDay() + 6) % 7;
+}
+
+function renderCalendar() {
+  const box = document.getElementById("calendar");
+  if (!box || !state.month) return;
+
+  const year = state.month.getFullYear();
+  const month = state.month.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const cells = [];
+  for (let i = 0; i < mondayOffset(new Date(year, month, 1)); i++) {
+    cells.push(`<span class="cal-cell"></span>`);
+  }
+  for (let day = 1; day <= daysInMonth; day++) {
+    const iso = isoDay(new Date(year, month, day));
+    const free = (state.slots[iso] || []).length > 0;
+    const picked = state.pickedDay === iso;
+    cells.push(
+      `<button type="button" class="cal-cell cal-day${free ? "" : " cal-off"}` +
+      `${picked ? " cal-picked" : ""}" ${free ? `data-day="${iso}"` : "disabled"}` +
+      `>${day}</button>`
+    );
+  }
+
+  // Листать в пустоту нельзя: границы задаёт горизонт, открытый сервисом
+  const months = Object.keys(state.slots).map(firstOfMonth);
+  const canPrev = months.some(m => m < state.month);
+  const canNext = months.some(m => m > state.month);
+
+  box.innerHTML = `
+    <div class="cal-head">
+      <button type="button" id="calPrev" ${canPrev ? "" : "disabled"}>‹</button>
+      <span>${MONTHS_NOM[month]} ${year}</span>
+      <button type="button" id="calNext" ${canNext ? "" : "disabled"}>›</button>
+    </div>
+    <div class="cal-grid">
+      ${WEEKDAYS.map(d => `<span class="cal-dow">${d}</span>`).join("")}
+      ${cells.join("")}
+    </div>
+    <div id="calTimes" class="cal-times"></div>`;
+
+  box.querySelector("#calPrev").addEventListener("click", () => shiftMonth(-1));
+  box.querySelector("#calNext").addEventListener("click", () => shiftMonth(1));
+  box.querySelectorAll("[data-day]").forEach(el =>
+    el.addEventListener("click", () => {
+      state.pickedDay = el.dataset.day;
+      state.pickedTime = null;
+      renderCalendar();
+    })
+  );
+  renderTimes();
+}
+
+function shiftMonth(delta) {
+  state.month = new Date(state.month.getFullYear(), state.month.getMonth() + delta, 1);
+  renderCalendar();
+}
+
+function renderTimes() {
+  const box = document.getElementById("calTimes");
+  if (!box) return;
+  if (!state.pickedDay) { box.innerHTML = ""; return; }
+
+  const [, month, day] = state.pickedDay.split("-").map(Number);
+  const times = state.slots[state.pickedDay] || [];
+  box.innerHTML = `
+    <div class="cal-daylabel">${day} ${MONTHS_GEN[month - 1]}</div>
+    <div class="cal-chips">
+      ${times.map(t => `
+        <button type="button" class="cal-chip${state.pickedTime === t ? " cal-picked" : ""}"
+                data-time="${esc(t)}">${esc(t)}</button>`).join("")}
+    </div>
+    ${state.selectedService?.timezone
+      ? `<div class="cal-tz">время сервиса, ${esc(state.selectedService.timezone)}</div>`
+      : ""}`;
+
+  box.querySelectorAll("[data-time]").forEach(el =>
+    el.addEventListener("click", () => {
+      state.pickedTime = el.dataset.time;
+      renderTimes();
+    })
   );
 }
 
@@ -275,6 +475,12 @@ async function openService(serviceId) {
     state.selectedService = await api(`/api/service/${encodeURIComponent(serviceId)}`);
     state.serviceId = serviceId;
     document.title = state.selectedService.service_name + " — запись";
+    // Календарь открываем на первом месяце, где вообще есть свободное время
+    state.slots = withFreeTimes(state.selectedService.slots);
+    state.pickedDay = null;
+    state.pickedTime = null;
+    const days = Object.keys(state.slots).sort();
+    state.month = days.length ? firstOfMonth(days[0]) : null;
   } catch (e) {
     render(`
       <div class="header"><div class="logo">⚙ АВТОСЕРВИС</div></div>
@@ -433,6 +639,18 @@ function renderForm() {
     return;
   }
 
+  if (Object.keys(state.slots).length === 0) {
+    render(`
+      <div class="header"><div class="logo">${esc(svc.service_name || "Автосервис")}</div></div>
+      <div class="card">
+        <div class="error-banner">
+          Сервис пока не открыл время для записи.<br>Попробуйте позже.
+        </div>
+      </div>
+    `);
+    return;
+  }
+
   render(`
     <div class="header">
       <div class="logo">${svc.service_name ? esc(svc.service_name) : "⚙ АВТОСЕРВИС"}</div>
@@ -474,16 +692,30 @@ function renderForm() {
     <div class="card">
       <div class="card-title">Услуга</div>
       <div class="field">
-        <label>Тип работы *</label>
-        <select id="f_catalog">
-          ${catalog.map(s => `<option value="${esc(s.idcatalog)}">${esc(s.title)}</option>`).join("")}
-        </select>
+        <label>Услуги *</label>
+        ${catalog.length > CATALOG_SEARCH_FROM ? `
+          <input id="catalogSearch" placeholder="Поиск услуги" autocomplete="off">
+        ` : ""}
+        <div class="catalog-bar" id="catalogBar" hidden>
+          <span id="catalogCount"></span>
+          <button type="button" id="catalogReset">Сбросить</button>
+        </div>
+        <div id="catalogList" class="catalog-list">
+          ${catalog.map(s => {
+            const price = priceLabel(s.price_rub);
+            return `
+            <label class="catalog-item" data-title="${esc(s.title.toLowerCase())}">
+              <input type="checkbox" class="catalog-cb" value="${esc(s.idcatalog)}">
+              <span class="catalog-title">${esc(s.title)}</span>
+              ${price ? `<span class="catalog-price">${esc(price)}</span>` : ""}
+            </label>`;
+          }).join("")}
+          <div class="catalog-empty" id="catalogEmpty" hidden>Ничего не найдено</div>
+        </div>
       </div>
       <div class="field">
-        <label>Срочность *</label>
-        <select id="f_urgency">
-          ${URGENCY.map(u => `<option value="${u.value}">${u.label}</option>`).join("")}
-        </select>
+        <label>Когда приехать *</label>
+        <div id="calendar"></div>
       </div>
       <div class="field">
         <label>Комментарий</label>
@@ -516,6 +748,17 @@ function renderForm() {
     renderCityPicker();
   });
   document.getElementById("submitBtn").addEventListener("click", doSubmit);
+
+  const search = document.getElementById("catalogSearch");
+  search?.addEventListener("input", () => filterCatalog(search.value));
+  document.querySelectorAll(".catalog-cb").forEach(cb =>
+    cb.addEventListener("change", updateCatalogBar)
+  );
+  document.getElementById("catalogReset").addEventListener("click", () => {
+    document.querySelectorAll(".catalog-cb").forEach(cb => { cb.checked = false; });
+    updateCatalogBar();
+  });
+  renderCalendar();
 }
 
 // ── Отправка ─────────────────────────────────────────────────────────────────
@@ -535,6 +778,14 @@ async function doSubmit() {
   if (get("f_phone").replace(/\D/g, "").length < 10) {
     el("f_phone").classList.add("invalid");
     alertUser("Введите корректный номер телефона");
+    return;
+  }
+  if (selectedCatalogIds().length === 0) {
+    el("formError").innerHTML = `<div class="error-banner">Выберите хотя бы одну услугу.</div>`;
+    return;
+  }
+  if (!state.pickedDay || !state.pickedTime) {
+    el("formError").innerHTML = `<div class="error-banner">Выберите день и время записи.</div>`;
     return;
   }
   if (!el("f_consent").checked) {
@@ -560,8 +811,8 @@ async function doSubmit() {
         brand:        get("f_brand"),
         model:        get("f_model"),
         plate:        get("f_plate").toUpperCase(),
-        idcatalog:    get("f_catalog"),
-        urgency:      get("f_urgency"),
+        idcatalogs:   selectedCatalogIds(),
+        scheduled_at: `${state.pickedDay} ${state.pickedTime}`,
         comment:      get("f_comment"),
         consent:      true,
       }),
@@ -573,6 +824,26 @@ async function doSubmit() {
     btn.textContent = "Отправить заявку";
     // Новый uid: прошлая попытка не дошла, следующая — самостоятельная заявка
     state.clientUid = newUid();
+
+    // Окно могли занять, пока клиент заполнял форму. Перечитываем расписание,
+    // иначе он будет тыкать в час, которого в списке уже нет
+    try {
+      const fresh = await api(`/api/service/${encodeURIComponent(state.serviceId)}`);
+      state.slots = withFreeTimes(fresh.slots);
+      // Сбрасываем и день, если он опустел целиком: иначе клетка останется
+      // подсвеченной как выбранная, но нажать её будет нельзя, а под сеткой
+      // повиснет заголовок дня без единой плитки времени
+      const stillFree = state.slots[state.pickedDay] || [];
+      if (stillFree.length === 0) {
+        state.pickedDay = null;
+        state.pickedTime = null;
+      } else if (!stillFree.includes(state.pickedTime)) {
+        state.pickedTime = null;
+      }
+      renderCalendar();
+    } catch (ignored) {
+      // Не смогли обновить — форма и так показывает ошибку отправки
+    }
   }
 }
 

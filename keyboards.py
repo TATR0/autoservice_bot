@@ -14,6 +14,7 @@ from aiogram.types import (
 )
 
 import config
+import render
 
 # ── Подписи кнопок (импортируются хендлерами, чтобы не расходились) ──────────
 BTN_BOOK           = "🚗 Записаться в автосервис"
@@ -26,6 +27,7 @@ BTN_ADMINS         = "👥 Администраторы"
 BTN_INVITE         = "➕ Пригласить админа"
 BTN_REMOVE_ADMIN   = "➖ Удалить админа"
 BTN_SERVICES       = "🔧 Услуги"
+BTN_SCHEDULE       = "🗓 Расписание"
 BTN_ABOUT          = "ℹ️ О сервисе"
 BTN_SWITCH         = "🔄 Сменить сервис"
 BTN_LEAVE          = "🚪 Уйти из администраторов"
@@ -94,7 +96,7 @@ def kb_owner_main(idservice: str, *, many_services: bool) -> ReplyKeyboardMarkup
         [KeyboardButton(text=BTN_SERVICE_REQS), KeyboardButton(text=BTN_STATS)],
         [KeyboardButton(text=BTN_INVITE), KeyboardButton(text=BTN_REMOVE_ADMIN)],
         [KeyboardButton(text=BTN_ADMINS), KeyboardButton(text=BTN_ABOUT)],
-        [KeyboardButton(text=BTN_SERVICES)],
+        [KeyboardButton(text=BTN_SERVICES), KeyboardButton(text=BTN_SCHEDULE)],
         [KeyboardButton(text=BTN_BOOK_OWN)],
     ]
     if many_services:
@@ -184,11 +186,11 @@ def kb_select_admin(admins: list, owner_id: int, titles: dict[int, str]) -> Inli
 
 
 def kb_catalog(items: list) -> InlineKeyboardMarkup:
-    """Список услуг: тап по услуге ведёт к её удалению."""
+    """Список услуг: тап открывает карточку услуги."""
     rows = [
         [InlineKeyboardButton(
-            text=f"❌ {item['title']}",
-            callback_data=f"svcdel:{item['idcatalog']}",
+            text=render.titled_price(item["title"], item["price_rub"]),
+            callback_data=f"svcopen:{item['idcatalog']}",
         )]
         for item in items
     ]
@@ -196,6 +198,15 @@ def kb_catalog(items: list) -> InlineKeyboardMarkup:
         text="➕ Добавить услугу", callback_data="svcadd"
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def kb_catalog_item(idcatalog: str) -> InlineKeyboardMarkup:
+    """Карточка услуги: правка цены, удаление, возврат к списку."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Изменить цену", callback_data=f"svcprice:{idcatalog}"),
+         InlineKeyboardButton(text="❌ Удалить услугу", callback_data=f"svcdel:{idcatalog}")],
+        [InlineKeyboardButton(text="⬅️ К списку", callback_data="svclist")],
+    ])
 
 
 def kb_confirm(action: str, payload: str) -> InlineKeyboardMarkup:
@@ -218,3 +229,42 @@ def kb_share_invite(link: str, service_name: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="📤 Отправить приглашение", url=share)
     ]])
+
+
+def kb_schedule() -> InlineKeyboardMarkup:
+    """Карточка расписания: по кнопке на каждое поле шаблона."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🕘 Часы", callback_data="schedhours"),
+         InlineKeyboardButton(text="⏱ Шаг", callback_data="schedstep")],
+        [InlineKeyboardButton(text="🍽 Обед", callback_data="schedlunch"),
+         InlineKeyboardButton(text="📅 Дни", callback_data="scheddays")],
+        [InlineKeyboardButton(text="🚗 Машин", callback_data="schedcap"),
+         InlineKeyboardButton(text="📆 Горизонт", callback_data="schedhorizon")],
+    ])
+
+
+def kb_schedule_step() -> InlineKeyboardMarkup:
+    """Шаг записи — выбор из конечного набора, печатать нечего."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{m} мин", callback_data=f"schedstep:{m}")
+         for m in (30, 60)],
+        [InlineKeyboardButton(text=f"{m} мин", callback_data=f"schedstep:{m}")
+         for m in (90, 120)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="schedback")],
+    ])
+
+
+def kb_schedule_days(selected: list[int]) -> InlineKeyboardMarkup:
+    """Семь переключателей: тап меняет день, «Готово» сохраняет."""
+    chosen = set(selected)
+    rows = []
+    for start in (0, 4):
+        rows.append([
+            InlineKeyboardButton(
+                text=("✅ " if day + 1 in chosen else "") + render.WEEKDAY_NAMES[day],
+                callback_data=f"scheddaytoggle:{day + 1}",
+            )
+            for day in range(start, min(start + 4, 7))
+        ])
+    rows.append([InlineKeyboardButton(text="💾 Готово", callback_data="scheddaysdone")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

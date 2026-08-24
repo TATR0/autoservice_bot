@@ -41,13 +41,65 @@ def status_label(status: str) -> str:
     return config.REQUEST_STATUS_LABELS.get(status, status)
 
 
-def urgency_label(key: str) -> str:
-    return config.URGENCY_LABELS.get(key, key)
+def price_label(price_rub: int | None) -> str:
+    """Цена для показа. Всегда «от»: точную сервис назовёт после осмотра.
+
+    Цены нет — пустая строка: пока управляющий её не задал, показывать нечего.
+    """
+    if price_rub is None:
+        return ""
+    return "от " + f"{price_rub:,}".replace(",", " ") + " ₽"
+
+
+WEEKDAY_NAMES = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+
+
+def weekdays_label(weekdays) -> str:
+    """[1,2,3,4,5] → «пн, вт, ср, чт, пт». Порядок всегда недельный."""
+    return ", ".join(WEEKDAY_NAMES[day - 1] for day in sorted(weekdays))
+
+
+def _hm(value) -> str:
+    return value.strftime("%H:%M")
+
+
+def schedule_card(svc, schedule, free_count: int) -> str:
+    """
+    Карточка расписания. Счётчик свободных окон считается тем же генератором,
+    что и форма, — это единственный способ для управляющего сразу увидеть,
+    что он поставил обед на весь день.
+    """
+    lunch = (
+        f"{_hm(schedule['lunch_from'])} — {_hm(schedule['lunch_to'])}"
+        if schedule["lunch_from"] else "нет"
+    )
+    return (
+        f"🗓 <b>Расписание — {h(svc['service_name'])}</b>\n\n"
+        f"🕘 Часы работы: {_hm(schedule['work_from'])} — {_hm(schedule['work_to'])}\n"
+        f"⏱ Шаг записи: {schedule['slot_minutes']} минут\n"
+        f"🍽 Обед: {lunch}\n"
+        f"📅 Рабочие дни: {weekdays_label(schedule['weekdays'])}\n"
+        f"🚗 Машин за раз: {schedule['capacity']}\n"
+        f"📆 Открыто вперёд: {schedule['horizon_days']} дней\n\n"
+        f"Свободных окон на этот срок: {free_count}"
+    )
+
+
+def titled_price(title: str, price_rub: int | None) -> str:
+    """«Название — от 3 000 ₽» либо просто «Название», без висящего тире.
+
+    Название приходит уже подготовленным для своего места вывода
+    (экранированным для HTML или сырым для текста кнопки).
+    """
+    label = price_label(price_rub)
+    return f"{title} — {label}" if label else title
 
 
 # ── Карточки заявок ──────────────────────────────────────────────────────────
 
-def request_card_for_staff(req, *, tz: str | None = None, title: str = "🚗 <b>НОВАЯ ЗАЯВКА</b>") -> str:
+def request_card_for_staff(
+    req, services, *, tz: str | None = None, title: str = "🚗 <b>НОВАЯ ЗАЯВКА</b>"
+) -> str:
     text = (
         f"{title} {request_number(req['seq'])}\n"
         "─────────────────────\n"
@@ -56,9 +108,27 @@ def request_card_for_staff(req, *, tz: str | None = None, title: str = "🚗 <b>
         f"💬 <b>Telegram ID:</b> <code>{req['idclienttg']}</code>\n\n"
         f"🚙 <b>Автомобиль:</b> {h(req['brand'])} {h(req['model'])}\n"
         f"🔢 <b>Гос. номер:</b> <code>{h(req['plate'])}</code>\n\n"
-        f"🔧 <b>Услуга:</b> {h(req['service_title'])}\n"
-        f"⚡ <b>Срочность:</b> {h(urgency_label(req['urgency']))}\n"
     )
+
+    priced = [item for item in services if item["price_rub"] is not None]
+    lines = "".join(
+        f"  • {titled_price(h(item['title']), item['price_rub'])}\n"
+        for item in services
+    )
+    text += f"🔧 <b>Услуги:</b>\n{lines}"
+
+    if priced:
+        total = sum(item["price_rub"] for item in priced)
+        # Оговорка обязательна: без неё сумма выглядит полной, хотя часть
+        # работ в неё не вошла
+        note = "" if len(priced) == len(services) else " <i>(часть работ — по запросу)</i>"
+        text += "💰 <b>Итого:</b> от " + f"{total:,}".replace(",", " ") + f" ₽{note}\n"
+
+    # Заявки, оформленные до появления записи на время, его не имеют —
+    # тогда строки просто нет, выдумывать нечего
+    if req["scheduled_at"]:
+        text += f"🗓 <b>Запись:</b> {local_dt(req['scheduled_at'], tz)}\n"
+
     if req["comment"]:
         text += f"\n💬 <b>Комментарий:</b>\n<i>{h(req['comment'])}</i>\n"
     text += (
@@ -80,9 +150,9 @@ def request_line_for_staff(req, tz: str | None = None) -> str:
         f"{status_label(req['status'])}{overdue}\n"
         f"  📞 <code>{h(format_phone(req['phone']))}</code> | "
         f"🚗 {h(req['brand'])} {h(req['model'])} ({h(req['plate'])})\n"
-        f"  🔧 {h(req['service_title'])} | "
-        f"⚡ {h(urgency_label(req['urgency']))}\n"
-        f"  🕒 {local_dt(req['createdate'], tz)}\n"
+        f"  🔧 {h(req['services_summary'] or '—')}\n"
+        + (f"  🗓 {local_dt(req['scheduled_at'], tz)}\n" if req["scheduled_at"] else "")
+        + f"  🕒 {local_dt(req['createdate'], tz)}\n"
     )
 
 
@@ -90,7 +160,7 @@ def request_line_for_client(req) -> str:
     return (
         f"{request_number(req['seq'])} 🚗 <b>{h(req['brand'])} {h(req['model'])}</b>\n"
         f"   Сервис: {h(req['service_name'] or '—')}\n"
-        f"   Услуга: {h(req['service_title'])}\n"
+        f"   Услуги: {h(req['services_summary'] or '—')}\n"
         f"   Статус: {status_label(req['status'])}\n"
         f"   Дата: {local_dt(req['createdate'])}\n\n"
     )

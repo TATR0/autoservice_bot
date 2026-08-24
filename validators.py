@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
-import config
 
 
 class ValidationError(ValueError):
@@ -93,13 +94,6 @@ def normalize_city(raw: object) -> str:
     )
 
 
-def validate_urgency(raw: object) -> str:
-    value = str(raw or "").strip()
-    if value not in config.URGENCY_LABELS:
-        raise ValidationError("Неизвестная срочность.")
-    return value
-
-
 def validate_uuid(raw: object, *, field: str) -> str:
     """
     Проверить UUID из недоверенного источника — тела запроса или callback_data.
@@ -118,6 +112,231 @@ def validate_service_title(raw: object) -> str:
     return clean_text(raw, field="Название услуги", min_len=2, max_len=40)
 
 
+def validate_price(raw: object) -> int | None:
+    """
+    Цена услуги в рублях. None — цена не указана.
+
+    Управляющий вводит её текстом, поэтому принимаем и «3 000», и «3000 ₽»:
+    отказ из-за пробела внутри числа выглядит придиркой, а не проверкой.
+    """
+    text = clean_text(raw, field="Цена", max_len=20)
+    if text in {"-", "—", "–", ""}:
+        return None
+
+    compact = re.sub(r"\s", "", text)
+    compact = re.sub(r"(₽|руб\.?|р\.?)$", "", compact, flags=re.IGNORECASE)
+    if not compact.isdecimal():
+        raise ValidationError(
+            "Введите число рублей, например 3000, или «-», чтобы не указывать цену."
+        )
+
+    value = int(compact)
+    if value > 10_000_000:
+        raise ValidationError("Цена не может быть больше 10 000 000 ₽.")
+    return value
+
+
+_TIME_RANGE_RE = re.compile(
+    r"^(\d{1,2})(?::(\d{2}))?\s*[-—–]\s*(\d{1,2})(?::(\d{2}))?$"
+)
+
+
+def _parse_time(hour: str, minute: str | None, *, field: str) -> time:
+    value_h, value_m = int(hour), int(minute or 0)
+    if value_h > 23 or value_m > 59:
+        raise ValidationError(f"«{field}»: такого времени не бывает.")
+    return time(value_h, value_m)
+
+
+def validate_time_range(raw: object, *, field: str) -> tuple[time, time]:
+    """
+    Диапазон времени: «9-18» или «09:00-18:00».
+
+    Короткая форма принимается намеренно: управляющий пишет часы работы так,
+    как сказал бы их вслух, и отказ из-за пропущенных нулей выглядит
+    придиркой, а не проверкой.
+    """
+    text = clean_text(raw, field=field, max_len=20)
+    match = _TIME_RANGE_RE.match(text.replace(" ", ""))
+    if not match:
+        raise ValidationError(
+            f"«{field}»: введите диапазон, например 9-18 или 09:00-18:00."
+        )
+
+    start = _parse_time(match.group(1), match.group(2), field=field)
+    end = _parse_time(match.group(3), match.group(4), field=field)
+    if start >= end:
+        raise ValidationError(f"«{field}»: начало должно быть раньше конца.")
+    return start, end
+
+
+def validate_lunch(raw: object) -> tuple[time, time] | None:
+    """Обед. None — обеда нет; «-» убирает его, как и у цены."""
+    text = clean_text(raw, field="Обед", max_len=20)
+    if text in {"-", "—", "–", ""}:
+        return None
+    return validate_time_range(text, field="Обед")
+
+
+def _minutes(value: time) -> int:
+    return value.hour * 60 + value.minute
+
+
+def lunch_fits_hours(
+    lunch: tuple[time, time] | None, *, work_from: time, work_to: time
+) -> bool:
+    """Помещается ли обед в рабочие часы — то же, что требует chk_schedule_lunch."""
+    return lunch is None or (work_from <= lunch[0] and lunch[1] <= work_to)
+
+
+def validate_lunch_on_grid(
+    lunch: tuple[time, time] | None,
+    *,
+    work_from: time,
+    work_to: time,
+    slot_minutes: int,
+) -> tuple[time, time] | None:
+    """
+    Обед обязан лежать внутри рабочих часов и занимать целое число окон записи.
+
+    Про окна: иначе обед всё равно съедает окно целиком — окно, задетое обедом
+    хотя бы краем, продать нельзя, — но управляющий об этом не догадывается: он
+    ввёл 45 минут, а из расписания пропал час. Расхождение между тем, что
+    человек задал, и тем, что случилось, дороже гибкости в четверть часа.
+
+    Про часы: это же условие стоит констрейнтом в базе, и без проверки здесь
+    обед вида 20-21 при рабочем дне до 18:00 доходил бы до неё — управляющий
+    получал бы ошибку драйвера вместо предложения.
+
+    Ошибка называет ближайший подходящий диапазон: считать за управляющего
+    дешевле, чем заставлять его делить в уме.
+    """
+    if lunch is None:
+        return None
+
+    if not lunch_fits_hours(lunch, work_from=work_from, work_to=work_to):
+        raise ValidationError(
+            f"Обед должен помещаться в рабочие часы "
+            f"{work_from:%H:%M}-{work_to:%H:%M}."
+        )
+
+    start, end = lunch
+    opens = _minutes(work_from)
+    offset_start = _minutes(start) - opens
+    offset_end = _minutes(end) - opens
+
+    if offset_start % slot_minutes == 0 and offset_end % slot_minutes == 0:
+        return lunch
+
+    start_aligned, end_aligned = snap_lunch_to_grid(
+        lunch, work_from=work_from, work_to=work_to, slot_minutes=slot_minutes
+    )
+    if (start_aligned, end_aligned) == lunch:
+        # Растягивать некуда: обед упёрся в конец рабочего дня и остался
+        # частью последнего окна, которого всё равно не существует
+        return lunch
+    raise ValidationError(
+        f"Обед должен занимать целое число окон по {slot_minutes} мин. "
+        f"Ближайший подходящий: {start_aligned:%H:%M}-{end_aligned:%H:%M}"
+    )
+
+
+def snap_lunch_to_grid(
+    lunch: tuple[time, time], *, work_from: time, work_to: time, slot_minutes: int
+) -> tuple[time, time]:
+    """
+    Ближайший обед из целого числа окон, не выходящий за рабочий день.
+
+    Считается только чтобы подсказать в ошибке: сам обед никогда не двигается
+    без ведома управляющего.
+
+    Наружу, а не внутрь: обед, ставший короче задуманного, отправил бы клиента
+    на время, когда сервис ещё обедает.
+
+    Конец упирается в work_to: без упора обед 17:30-18:00 при шаге 60 и начале
+    дня в 9:30 растянулся бы до 18:30 — а это и нарушение констрейнта, и, при
+    рабочем дне до полуночи, time(24, 0) с ValueError.
+    """
+    start, end = lunch
+    opens = _minutes(work_from)
+    offset_start = _minutes(start) - opens
+    offset_end = _minutes(end) - opens
+    closes = _minutes(work_to) - opens
+
+    aligned_start = max(0, offset_start - offset_start % slot_minutes)
+    aligned_end = min(closes, -(-offset_end // slot_minutes) * slot_minutes)
+    return (
+        time((opens + aligned_start) // 60, (opens + aligned_start) % 60),
+        time((opens + aligned_end) // 60, (opens + aligned_end) % 60),
+    )
+
+
+def _validate_int(raw: object, *, field: str, low: int, high: int, hint: str) -> int:
+    text = clean_text(raw, field=field, max_len=10)
+    compact = re.sub(r"\s", "", text)
+    if not compact.isdecimal():
+        raise ValidationError(hint)
+    value = int(compact)
+    if not low <= value <= high:
+        raise ValidationError(hint)
+    return value
+
+
+def validate_capacity(raw: object) -> int:
+    """Сколько машин сервис принимает в одно время."""
+    return _validate_int(
+        raw, field="Машин за раз", low=1, high=20,
+        hint="Введите число от 1 до 20.",
+    )
+
+
+def validate_horizon(raw: object) -> int:
+    """На сколько дней вперёд открыта запись."""
+    return _validate_int(
+        raw, field="Горизонт", low=1, high=60,
+        hint="Введите число дней от 1 до 60.",
+    )
+
+
+def validate_catalog_ids(raw: object) -> list[str]:
+    """
+    Список выбранных клиентом услуг. Порядок сохраняется — в нём заявка
+    показывается администратору. Дубликаты схлопываются: повторный элемент
+    ничего не добавляет, а в базе на него стоит уникальный индекс.
+    """
+    if not isinstance(raw, (list, tuple)):
+        raise ValidationError("Выберите хотя бы одну услугу.")
+
+    chosen: list[str] = []
+    for value in raw:
+        item = validate_uuid(value, field="Услуга")
+        if item not in chosen:
+            chosen.append(item)
+
+    if not chosen:
+        raise ValidationError("Выберите хотя бы одну услугу.")
+    return chosen
+
+
+def validate_scheduled_at(raw: object, *, free: dict, tz: str) -> datetime:
+    """
+    Момент записи из формы: «2026-08-17 10:00» в зоне сервиса.
+
+    Проверяется не формат, а принадлежность реально свободному окну: payload
+    можно отправить в обход формы, поэтому список окон — единственный источник
+    истины, а не то, что прислал клиент.
+    """
+    text = clean_text(raw, field="Время записи", max_len=20)
+    try:
+        moment = datetime.strptime(text, "%Y-%m-%d %H:%M")
+    except ValueError:
+        raise ValidationError("Выберите время записи.") from None
+
+    if moment.time() not in free.get(moment.date(), []):
+        raise ValidationError("Это время только что заняли. Выберите другое.")
+    return moment.replace(tzinfo=ZoneInfo(tz))
+
+
 def validate_request_fields(payload: dict) -> dict:
     """Проверить и нормализовать поля заявки из WebApp. Бросает ValidationError."""
     return {
@@ -126,7 +345,6 @@ def validate_request_fields(payload: dict) -> dict:
         "brand":        clean_text(payload.get("brand"), field="Марка", min_len=1, max_len=40),
         "model":        clean_text(payload.get("model"), field="Модель", min_len=1, max_len=40),
         "plate":        normalize_plate(payload.get("plate")),
-        "urgency":      validate_urgency(payload.get("urgency")),
         "comment":      clean_text(
             payload.get("comment"), field="Комментарий", max_len=500, multiline=True
         ),

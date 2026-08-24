@@ -85,6 +85,67 @@ CREATE INDEX IF NOT EXISTS idx_catalog_service
 CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_unique_title
     ON service_catalog (idservice, lower(trim(title))) WHERE idrecstatus = 0;
 
+ALTER TABLE service_catalog
+    ADD COLUMN IF NOT EXISTS price_rub int;
+
+-- Цена в целых рублях: копейки в прайсе автосервиса не встречаются, а numeric
+-- тянет округления на ровном месте. NULL — «не указана», это не то же самое,
+-- что 0 («бесплатно»).
+ALTER TABLE service_catalog DROP CONSTRAINT IF EXISTS chk_catalog_price;
+ALTER TABLE service_catalog ADD  CONSTRAINT chk_catalog_price
+    CHECK (price_rub IS NULL OR price_rub BETWEEN 0 AND 10000000);
+
+
+-- ── Расписание сервиса ───────────────────────────────────────────────────────
+-- Слоты записи нигде не хранятся: они вычисляются из этого шаблона, а занятость
+-- берётся из заявок. Так отмена заявки освобождает время сама собой, без
+-- отдельной логики возврата, которой было бы что ломать.
+
+CREATE TABLE IF NOT EXISTS service_schedule (
+    idservice    uuid        PRIMARY KEY REFERENCES services(idservice) ON DELETE CASCADE,
+    work_from    time        NOT NULL DEFAULT '09:00',
+    work_to      time        NOT NULL DEFAULT '18:00',
+    slot_minutes int         NOT NULL DEFAULT 60,
+    lunch_from   time,
+    lunch_to     time,
+    weekdays     smallint[]  NOT NULL DEFAULT '{1,2,3,4,5}',  -- ISO: 1=пн … 7=вс
+    horizon_days int         NOT NULL DEFAULT 14,
+    capacity     int         NOT NULL DEFAULT 1,
+    updatedate   timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE service_schedule DROP CONSTRAINT IF EXISTS chk_schedule_hours;
+ALTER TABLE service_schedule ADD  CONSTRAINT chk_schedule_hours
+    CHECK (work_from < work_to);
+
+ALTER TABLE service_schedule DROP CONSTRAINT IF EXISTS chk_schedule_step;
+ALTER TABLE service_schedule ADD  CONSTRAINT chk_schedule_step
+    CHECK (slot_minutes IN (30, 60, 90, 120));
+
+-- Обед либо не задан вовсе, либо задан целиком и лежит внутри рабочих часов:
+-- половинчатое состояние сделало бы нарезку неоднозначной
+ALTER TABLE service_schedule DROP CONSTRAINT IF EXISTS chk_schedule_lunch;
+ALTER TABLE service_schedule ADD  CONSTRAINT chk_schedule_lunch
+    CHECK ((lunch_from IS NULL AND lunch_to IS NULL)
+        OR (lunch_from IS NOT NULL AND lunch_to IS NOT NULL
+            AND lunch_from < lunch_to
+            AND lunch_from >= work_from AND lunch_to <= work_to));
+
+ALTER TABLE service_schedule DROP CONSTRAINT IF EXISTS chk_schedule_horizon;
+ALTER TABLE service_schedule ADD  CONSTRAINT chk_schedule_horizon
+    CHECK (horizon_days BETWEEN 1 AND 60);
+
+ALTER TABLE service_schedule DROP CONSTRAINT IF EXISTS chk_schedule_capacity;
+ALTER TABLE service_schedule ADD  CONSTRAINT chk_schedule_capacity
+    CHECK (capacity BETWEEN 1 AND 20);
+
+-- Хранятся рабочие дни, а не выходные: пустой список выходных двусмыслен
+-- («работаем всегда» или «не заполнили»), а пустой список рабочих дней запрещён
+ALTER TABLE service_schedule DROP CONSTRAINT IF EXISTS chk_schedule_weekdays;
+ALTER TABLE service_schedule ADD  CONSTRAINT chk_schedule_weekdays
+    CHECK (array_length(weekdays, 1) BETWEEN 1 AND 7
+       AND weekdays <@ ARRAY[1,2,3,4,5,6,7]::smallint[]);
+
 
 -- ── Заявки клиентов ──────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS requests (
@@ -96,7 +157,6 @@ CREATE TABLE IF NOT EXISTS requests (
     brand        text        NOT NULL DEFAULT '—',
     model        text        NOT NULL DEFAULT '—',
     plate        text        NOT NULL DEFAULT '—',
-    service_type text        NOT NULL DEFAULT 'other', -- legacy: не читается приложением, ждёт удаления после проверки бэкфила
     urgency      text        NOT NULL DEFAULT 'low',
     comment      text                 DEFAULT '',
     status       text        NOT NULL DEFAULT 'new',
@@ -110,13 +170,23 @@ ALTER TABLE requests
     ADD COLUMN IF NOT EXISTS handled_by bigint,
     ADD COLUMN IF NOT EXISTS updatedate timestamptz NOT NULL DEFAULT now(),
     ADD COLUMN IF NOT EXISTS idcatalog     uuid REFERENCES service_catalog(idcatalog) ON DELETE SET NULL,
-    ADD COLUMN IF NOT EXISTS service_title text NOT NULL DEFAULT '';
+    ADD COLUMN IF NOT EXISTS service_title text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS scheduled_at  timestamptz;
+
+-- Колонка пережила прошлую фичу как страховка на случай отката. Бэкфил
+-- проверен, приложение её не читает и не пишет — удаляем.
+ALTER TABLE requests DROP COLUMN IF EXISTS service_type;
 
 CREATE INDEX IF NOT EXISTS idx_requests_service ON requests (idservice);
 CREATE INDEX IF NOT EXISTS idx_requests_client  ON requests (idclienttg);
 CREATE INDEX IF NOT EXISTS idx_requests_status  ON requests (status);
 CREATE INDEX IF NOT EXISTS idx_requests_date    ON requests (createdate DESC);
 CREATE INDEX IF NOT EXISTS idx_requests_catalog ON requests (idcatalog);
+
+-- Занятость окна считается по этому индексу. Заявки без времени отсечены:
+-- они остались с тех пор, когда клиент выбирал срочность, а не час
+CREATE INDEX IF NOT EXISTS idx_requests_scheduled
+    ON requests (idservice, scheduled_at) WHERE scheduled_at IS NOT NULL;
 
 -- человекочитаемый номер заявки: клиенту показываем #000142, а не uuid
 CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_seq ON requests (seq);
@@ -146,6 +216,31 @@ CREATE TABLE IF NOT EXISTS request_status_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rsh_request ON request_status_history (idrequests, changed_at);
+
+
+-- ── Позиции заявки ───────────────────────────────────────────────────────
+-- Одна строка на одну выбранную клиентом услугу. title и price_rub —
+-- снимки на момент оформления: управляющий вправе поменять цену завтра, но
+-- клиенту обещали сегодняшнюю. position хранит порядок, в котором клиент
+-- видел услуги, чтобы карточка администратору совпадала с формой.
+CREATE TABLE IF NOT EXISTS request_services (
+    idrequestservice uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    idrequests       uuid        NOT NULL REFERENCES requests(idrequests) ON DELETE CASCADE,
+    idcatalog        uuid        REFERENCES service_catalog(idcatalog) ON DELETE SET NULL,
+    title            text        NOT NULL,
+    price_rub        int,
+    position         int         NOT NULL DEFAULT 0,
+    createdate       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_request_services_request
+    ON request_services (idrequests);
+CREATE INDEX IF NOT EXISTS idx_request_services_catalog
+    ON request_services (idcatalog);
+
+-- одну и ту же услугу нельзя добавить в заявку дважды
+CREATE UNIQUE INDEX IF NOT EXISTS idx_request_services_unique
+    ON request_services (idrequests, idcatalog) WHERE idcatalog IS NOT NULL;
 
 
 -- ── Инвайты администраторов ──────────────────────────────────
@@ -220,21 +315,6 @@ SELECT s.idservice, t.title, t.ord
  WHERE s.idrecstatus = 0
    AND NOT EXISTS (SELECT 1 FROM service_catalog c WHERE c.idservice = s.idservice);
 
-UPDATE requests r
-   SET service_title = m.title
-  FROM (VALUES
-        ('diagnostic',   'Диагностика'),
-        ('oil-change',   'Замена масла'),
-        ('tires',        'Шины и диски'),
-        ('brake',        'Тормозная система'),
-        ('engine',       'Ремонт двигателя'),
-        ('transmission', 'Коробка передач'),
-        ('suspension',   'Подвеска'),
-        ('body',         'Кузовные работы'),
-        ('other',        'Другое')
-       ) AS m(key, title)
- WHERE r.service_title = '' AND r.service_type = m.key;
-
 -- ключа не нашлось в списке выше — заявка всё равно должна быть читаемой
 UPDATE requests SET service_title = 'Другое' WHERE service_title = '';
 
@@ -246,6 +326,21 @@ UPDATE requests r
    AND c.idrecstatus = 0
    AND lower(trim(c.title)) = lower(trim(r.service_title));
 
+-- Существующие заявки: у каждой ровно одна услуга, она становится позицией.
+INSERT INTO request_services (idrequests, idcatalog, title, position)
+SELECT r.idrequests, r.idcatalog, r.service_title, 0
+  FROM requests r
+ WHERE r.service_title <> ''
+   AND NOT EXISTS (
+        SELECT 1 FROM request_services rs WHERE rs.idrequests = r.idrequests);
+
+-- Каждому существующему сервису — расписание по умолчанию. Альтернатива
+-- («нет строки — значит не настроено») означала бы, что после выката все живые
+-- сервисы перестают принимать заявки, пока управляющий не дойдёт до настроек.
+INSERT INTO service_schedule (idservice)
+SELECT idservice FROM services
+ON CONFLICT (idservice) DO NOTHING;
+
 
 -- ── Row Level Security ───────────────────────────────────────
 -- Политики не создаются намеренно: бот ходит в базу под владельцем таблиц
@@ -255,7 +350,9 @@ ALTER TABLE users                  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE services               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admins                 ENABLE ROW LEVEL SECURITY;
 ALTER TABLE service_catalog        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE service_schedule       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE requests               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE request_status_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE request_services        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_invites          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fsm_storage            ENABLE ROW LEVEL SECURITY;

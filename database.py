@@ -11,12 +11,15 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
+from collections.abc import Mapping
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Iterable, Sequence
 from uuid import uuid4
 
 import asyncpg
 
 import config
+import slots
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,10 @@ class ForeignClientUid(Exception):
     Свой uid форма генерирует случайно, поэтому в норме такого не бывает —
     это либо подбор чужого идентификатора, либо сломанный клиент.
     """
+
+
+class SlotTaken(Exception):
+    """Все места на выбранное время разобраны."""
 
 
 def _new_id() -> str:
@@ -179,6 +186,13 @@ class Database:
             # Сервис без услуг не должен существовать даже мгновение:
             # в форме записи клиенту было бы нечего выбрать.
             await self._seed_catalog(conn, idservice)
+            # Расписание по умолчанию — часть создания сервиса, а не отдельный
+            # шаг: сервис без расписания не может принять ни одной заявки
+            await conn.execute(
+                "INSERT INTO service_schedule (idservice) VALUES ($1) "
+                "ON CONFLICT (idservice) DO NOTHING",
+                idservice,
+            )
         return idservice
 
     async def get_service(self, idservice: str) -> asyncpg.Record | None:
@@ -245,19 +259,21 @@ class Database:
             )
 
     async def add_catalog_item(
-        self, idservice: str, title: str
+        self, idservice: str, title: str, price_rub: int | None = None
     ) -> asyncpg.Record | None:
         """
         Добавить услугу. None — активная услуга с таким названием уже есть.
 
         Ранее удалённая услуга воскресает, а не создаётся заново: так заявки,
         оформленные на неё до удаления, снова оказываются слинкованы со своей
-        строкой каталога.
+        строкой каталога. Цена при воскрешении перезаписывается переданной:
+        управляющий заводит услугу заново и указывает актуальную цену, а не
+        наследует прошлогоднюю.
         """
         async with self.pool.acquire() as conn, conn.transaction():
             revived = await conn.fetchrow(
                 """
-                UPDATE service_catalog SET idrecstatus=0, deletedate=NULL
+                UPDATE service_catalog SET idrecstatus=0, deletedate=NULL, price_rub=$3
                 WHERE idcatalog = (
                         SELECT idcatalog FROM service_catalog
                          WHERE idservice=$1 AND idrecstatus=-1
@@ -270,7 +286,7 @@ class Database:
                            AND lower(trim(title))=lower(trim($2)))
                 RETURNING *
                 """,
-                idservice, title,
+                idservice, title, price_rub,
             )
             if revived:
                 return revived
@@ -280,13 +296,60 @@ class Database:
             return await conn.fetchrow(
                 """
                 INSERT INTO service_catalog
-                    (idcatalog, idservice, title, sort_order, idrecstatus)
-                VALUES ($1,$2,$3,$4,0)
+                    (idcatalog, idservice, title, price_rub, sort_order, idrecstatus)
+                VALUES ($1,$2,$3,$4,$5,0)
                 ON CONFLICT (idservice, lower(trim(title))) WHERE idrecstatus = 0
                 DO NOTHING
                 RETURNING *
                 """,
-                _new_id(), idservice, title, 1000,
+                _new_id(), idservice, title, price_rub, 1000,
+            )
+
+    async def set_catalog_item_price(
+        self, idservice: str, idcatalog: str, price_rub: int | None
+    ) -> asyncpg.Record | None:
+        """
+        Изменить цену услуги. None — услуги нет, она удалена или чужая.
+
+        Отдельный метод, а не «обновить услугу целиком»: переименование услуг
+        сознательно вне области, и смешивать эти операции незачем.
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE service_catalog SET price_rub=$3
+                WHERE idcatalog=$1 AND idservice=$2 AND idrecstatus=0
+                RETURNING *
+                """,
+                idcatalog, idservice, price_rub,
+            )
+
+    async def get_catalog_items(
+        self,
+        idservice: str,
+        idcatalogs: Sequence[str],
+        *,
+        only_active: bool = True,
+    ) -> list[asyncpg.Record]:
+        """
+        Услуги сервиса по списку идентификаторов, одним запросом.
+
+        Фильтр по idservice обязателен: без него клиент подставил бы в заявку
+        услуги чужого сервиса. only_active=False нужен, чтобы назвать удалённую
+        услугу по имени в тексте отказа, а не отделаться безличным «одна из
+        услуг недоступна».
+        """
+        if not idcatalogs:
+            return []
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT * FROM service_catalog
+                WHERE idservice=$1 AND idcatalog = ANY($2::uuid[])
+                  AND (NOT $3::bool OR idrecstatus = 0)
+                ORDER BY sort_order, title
+                """,
+                idservice, list(idcatalogs), only_active,
             )
 
     async def delete_catalog_item(
@@ -325,12 +388,14 @@ class Database:
             )
 
     async def count_requests_by_catalog(self, idservice: str, idcatalog: str) -> int:
-        """Сколько заявок оформлено на эту услугу — для текста подтверждения."""
+        """Сколько заявок содержит эту услугу — для текста подтверждения."""
         async with self.pool.acquire() as conn:
             value = await conn.fetchval(
                 """
-                SELECT count(*) FROM requests
-                WHERE idservice=$1 AND idcatalog=$2 AND idrecstatus=0
+                SELECT count(DISTINCT rs.idrequests)
+                FROM request_services rs
+                JOIN requests r ON r.idrequests = rs.idrequests
+                WHERE r.idservice=$1 AND rs.idcatalog=$2 AND r.idrecstatus=0
                 """,
                 idservice, idcatalog,
             )
@@ -433,6 +498,79 @@ class Database:
 
     def invite_link(self, token: str) -> str:
         return f"https://t.me/{config.BOT_USERNAME}?start=ADM_{token}"
+
+    # ── schedule ─────────────────────────────────────────────────────────────
+
+    _SCHEDULE_FIELDS = (
+        "work_from", "work_to", "slot_minutes",
+        "lunch_from", "lunch_to", "weekdays", "horizon_days", "capacity",
+    )
+
+    async def get_schedule(self, idservice: str) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                "SELECT * FROM service_schedule WHERE idservice=$1", idservice
+            )
+
+    async def update_schedule(self, idservice: str, **fields) -> asyncpg.Record | None:
+        """
+        Правка расписания. Имена полей сверяются с белым списком: они приходят
+        из хендлеров, и подстановка их в SQL без проверки — дыра.
+        """
+        unknown = set(fields) - set(self._SCHEDULE_FIELDS)
+        if unknown:
+            raise ValueError(f"Неизвестные поля расписания: {sorted(unknown)}")
+        if not fields:
+            return await self.get_schedule(idservice)
+
+        columns = list(fields)
+        assignments = ", ".join(f"{name}=${i}" for i, name in enumerate(columns, 2))
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                f"UPDATE service_schedule SET {assignments}, updatedate=now() "
+                "WHERE idservice=$1 RETURNING *",
+                idservice, *(fields[name] for name in columns),
+            )
+
+    async def get_taken_slots(
+        self, idservice: str, since: datetime, until: datetime
+    ) -> dict[datetime, int]:
+        """Сколько живых заявок на каждый момент времени в окне."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT scheduled_at, count(*) AS taken FROM requests
+                 WHERE idservice=$1 AND idrecstatus=0
+                   AND scheduled_at BETWEEN $2 AND $3
+                   AND status = ANY($4::text[])
+                 GROUP BY scheduled_at
+                """,
+                idservice, since, until, list(config.SLOT_HOLDING_STATUSES),
+            )
+        return {row["scheduled_at"]: row["taken"] for row in rows}
+
+    async def free_slots(self, service: Mapping) -> dict[date, list[time]]:
+        """
+        Свободные окна сервиса на весь горизонт записи.
+
+        Один расчёт на три места: форма, приём заявки и карточка расписания.
+        Разъехавшись, они показывали бы клиенту одни окна, принимали другие,
+        а управляющему считали третьи.
+
+        Расписания нет — окон нет: сервис ещё не открыл запись. Такой строки
+        не должно существовать (она заводится вместе с сервисом), но политика
+        на этот случай обязана быть одна, а не три разные.
+        """
+        idservice = str(service["idservice"])
+        schedule = await self.get_schedule(idservice)
+        if schedule is None:
+            return {}
+
+        now = datetime.now(timezone.utc)
+        taken = await self.get_taken_slots(
+            idservice, now, now + timedelta(days=schedule["horizon_days"] + 1)
+        )
+        return slots.free_slots(schedule, service["timezone"], now, taken)
 
     # ── admins ───────────────────────────────────────────────────────────────
 
@@ -572,9 +710,8 @@ class Database:
         brand: str,
         model: str,
         plate: str,
-        idcatalog: str,
-        service_title: str,
-        urgency: str,
+        scheduled_at: datetime | None = None,
+        services: list[dict],
         comment: str,
         client_uid: str | None = None,
     ) -> tuple[asyncpg.Record, bool]:
@@ -585,19 +722,56 @@ class Database:
         (повторный тап «Отправить»), возвращается существующая.
         """
         async with self.pool.acquire() as conn, conn.transaction():
+            # Блокировка строки расписания делает проверку и вставку неделимыми.
+            # Без неё два одновременных клиента оба проходят проверку до того,
+            # как любой из них вставит строку, и одно место уходит дважды.
+            if scheduled_at is not None:
+                # Ждать блокировку дольше нескольких секунд бессмысленно: клиент
+                # сидит перед формой. Без своего таймаута ожидание упирается в
+                # command_timeout соединения, а тот бросает CancelledError —
+                # клиент получает 500 вместо «время только что заняли».
+                await conn.execute("SET LOCAL lock_timeout = '3s'")
+                try:
+                    schedule = await conn.fetchrow(
+                        "SELECT capacity FROM service_schedule WHERE idservice=$1 FOR UPDATE",
+                        idservice,
+                    )
+                except asyncpg.exceptions.LockNotAvailableError:
+                    # Строку три секунды держит другая запись на этот же сервис.
+                    # Для клиента это неотличимо от занятого места, и ответ тот же
+                    logger.info(
+                        "Не дождались блокировки расписания сервиса %s", idservice
+                    )
+                    raise SlotTaken(scheduled_at) from None
+                if schedule is None:
+                    raise SlotTaken(scheduled_at)
+
+                # Повторный тап не должен занимать второе место: заявка с этим
+                # client_uid уже существует и своё место уже держит
+                already = await conn.fetchval(
+                    "SELECT count(*) FROM requests "
+                    " WHERE idservice=$1 AND scheduled_at=$2 AND idrecstatus=0 "
+                    "   AND status = ANY($3::text[]) "
+                    "   AND ($4::text IS NULL OR client_uid IS DISTINCT FROM $4)",
+                    idservice, scheduled_at,
+                    list(config.SLOT_HOLDING_STATUSES), client_uid,
+                )
+                if already >= schedule["capacity"]:
+                    raise SlotTaken(scheduled_at)
+
             row = await conn.fetchrow(
                 """
                 INSERT INTO requests
                     (idrequests, idservice, idclienttg, client_name, phone,
-                     brand, model, plate, idcatalog, service_title, urgency,
-                     comment, client_uid, status, idrecstatus)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'new',0)
+                     brand, model, plate, comment, client_uid,
+                     scheduled_at, status, idrecstatus)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'new',0)
                 ON CONFLICT (client_uid) WHERE client_uid IS NOT NULL DO NOTHING
                 RETURNING *
                 """,
                 _new_id(), idservice, client_tg_id, client_name, phone,
-                brand, model, plate, idcatalog, service_title, urgency,
-                comment, client_uid,
+                brand, model, plate, comment, client_uid,
+                scheduled_at,
             )
             if row is None:
                 # Фильтр по idclienttg обязателен: без него, подобрав чужой
@@ -610,6 +784,27 @@ class Database:
                     raise ForeignClientUid(client_uid)
                 return existing, True
 
+            # Позиции пишутся в той же транзакции: заявки без услуг
+            # существовать не должно даже мгновение
+            await conn.executemany(
+                """
+                INSERT INTO request_services
+                    (idrequestservice, idrequests, idcatalog, title, price_rub, position)
+                VALUES ($1,$2,$3,$4,$5,$6)
+                """,
+                [
+                    (
+                        _new_id(),
+                        row["idrequests"],
+                        item["idcatalog"],
+                        item["title"],
+                        item.get("price_rub"),
+                        index,
+                    )
+                    for index, item in enumerate(services)
+                ],
+            )
+
             await conn.execute(
                 """
                 INSERT INTO request_status_history (idrequests, status_from, status_to, changed_by)
@@ -618,6 +813,14 @@ class Database:
                 row["idrequests"], client_tg_id,
             )
         return row, False
+
+    async def get_request_services(self, idrequests: str) -> list[asyncpg.Record]:
+        """Позиции заявки в том порядке, в каком их выбирал клиент."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                "SELECT * FROM request_services WHERE idrequests=$1 ORDER BY position",
+                idrequests,
+            )
 
     async def get_request(self, idrequests: str) -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:
@@ -671,15 +874,19 @@ class Database:
         self, idservice: str, *, limit: int = 20, statuses: Iterable[str] | None = None
     ) -> list[asyncpg.Record]:
         query = """
-            SELECT * FROM requests
-            WHERE idservice=$1 AND idrecstatus=0
+            SELECT r.*
+                  ,(SELECT string_agg(rs.title, ', ' ORDER BY rs.position)
+                      FROM request_services rs
+                     WHERE rs.idrequests = r.idrequests) AS services_summary
+            FROM requests r
+            WHERE r.idservice=$1 AND r.idrecstatus=0
         """
         args: list[Any] = [idservice]
         if statuses:
             args.append(list(statuses))
-            query += f" AND status = ANY(${len(args)}::text[])"
+            query += f" AND r.status = ANY(${len(args)}::text[])"
         args.append(limit)
-        query += f" ORDER BY createdate DESC LIMIT ${len(args)}"
+        query += f" ORDER BY r.createdate DESC LIMIT ${len(args)}"
 
         async with self.pool.acquire() as conn:
             return await conn.fetch(query, *args)
@@ -690,7 +897,11 @@ class Database:
         async with self.pool.acquire() as conn:
             return await conn.fetch(
                 """
-                SELECT r.*, s.service_name FROM requests r
+                SELECT r.*, s.service_name
+                      ,(SELECT string_agg(rs.title, ', ' ORDER BY rs.position)
+                          FROM request_services rs
+                         WHERE rs.idrequests = r.idrequests) AS services_summary
+                FROM requests r
                 LEFT JOIN services s ON r.idservice=s.idservice
                 WHERE r.idclienttg=$1 AND r.idrecstatus=0
                 ORDER BY r.createdate DESC LIMIT $2
@@ -754,15 +965,20 @@ class Database:
             )
 
     async def get_service_breakdown(self, idservice: str) -> list[asyncpg.Record]:
-        """Сколько заявок по каждой услуге — группируем по снимку названия,
-        чтобы удалённые услуги не выпадали из статистики."""
+        """
+        Сколько раз заказывали каждую услугу. Считаем по позициям, а не по
+        заявкам: заявка с тремя работами — это три заказанные услуги.
+        Группировка по снимку названия оставляет в статистике и те услуги,
+        которые из каталога уже удалили.
+        """
         async with self.pool.acquire() as conn:
             return await conn.fetch(
                 """
-                SELECT service_title AS title, count(*) AS cnt
-                FROM requests
-                WHERE idservice=$1 AND idrecstatus=0 AND service_title <> ''
-                GROUP BY service_title ORDER BY cnt DESC
+                SELECT rs.title AS title, count(*) AS cnt
+                FROM request_services rs
+                JOIN requests r ON r.idrequests = rs.idrequests
+                WHERE r.idservice=$1 AND r.idrecstatus=0
+                GROUP BY rs.title ORDER BY cnt DESC
                 """,
                 idservice,
             )

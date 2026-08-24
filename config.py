@@ -75,13 +75,6 @@ DEFAULT_SERVICE_TITLES: tuple[str, ...] = (
     "Другое",
 )
 
-URGENCY_LABELS: dict[str, str] = {
-    "low":    "Обычный (7+ дней)",
-    "medium": "Средний (3–5 дней)",
-    "high":   "Срочный (1–2 дня)",
-    "urgent": "Очень срочный (сегодня)",
-}
-
 # Полный набор статусов заявки — синхронизирован с CHECK-констрейнтом в schema.sql
 REQUEST_STATUSES: tuple[str, ...] = (
     "new", "accepted", "called", "in_progress",
@@ -90,6 +83,12 @@ REQUEST_STATUSES: tuple[str, ...] = (
 
 # Заявка «живая»: её ещё можно обрабатывать, она учитывается в лимитах клиента
 ACTIVE_STATUSES: tuple[str, ...] = ("new", "accepted", "called", "in_progress")
+
+# Статусы, при которых заявка держит своё окно записи. Отказ, отмена и закрытие
+# сервиса окно освобождают; «выполнена» держит навсегда — это уже история.
+SLOT_HOLDING_STATUSES: tuple[str, ...] = (
+    "new", "accepted", "called", "in_progress", "done",
+)
 
 REQUEST_STATUS_LABELS: dict[str, str] = {
     "new":            "🆕 Новая",

@@ -15,6 +15,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 import keyboards as kb
+import render
 from database import db
 from validators import h
 
@@ -140,6 +141,14 @@ async def show_main_menu(
         f"👋 <b>Добро пожаловать, {role_title}!</b>\n\n"
         f"Активный сервис: <b>{h(svc['service_name'])}</b>"
     )
+
+    # Только к обычному приветствию: подшивать предупреждение о подписке к
+    # «✅ Часы работы обновлены» значит показывать его на каждый чих
+    if greeting is None and role == "owner":
+        note = render.subscription_line(svc)
+        if note:
+            text = f"{text}\n\n{note}"
+
     await message.answer(
         text,
         reply_markup=main_menu_markup(svc, role, len(services) > 1),

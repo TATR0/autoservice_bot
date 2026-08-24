@@ -7,17 +7,20 @@ handlers/start.py
 """
 
 import logging
+from datetime import datetime, timezone
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+import config
 import keyboards as kb
+import subscription
 from database import db
 from handlers.common import set_active_service, show_main_menu
 from notifications import safe_send
-from validators import h
+from validators import format_phone, h
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -50,6 +53,18 @@ async def _handle_service_link(message: Message, idservice: str) -> None:
     if not service:
         await message.answer(
             "❌ Сервис не найден или больше не активен.",
+            reply_markup=kb.kb_client_main(),
+        )
+        return
+
+    # Ссылку могли сохранить или переслать — фильтр поиска её не прикрывает.
+    # Телефон даём, как в ветке ниже: сервис не должен терять заказ из-за
+    # того, что не заплатил нам
+    if not subscription.is_active(service["paid_until"], datetime.now(timezone.utc)):
+        await message.answer(
+            "⚠️ " + config.CLOSED_FOR_BOOKING.format(
+                phone=service["service_number"]
+            ),
             reply_markup=kb.kb_client_main(),
         )
         return

@@ -55,6 +55,16 @@ def _int_list(raw: str) -> tuple[int, ...]:
     return tuple(int(part) for part in raw.split(",") if part.strip())
 
 
+def _flag(name: str, *, default: bool) -> bool:
+    """Да/нет из .env. Незнакомое значение — это опечатка, берём умолчание."""
+    raw = os.getenv(name, "").strip().lower()
+    if raw in ("1", "true", "yes", "on", "да"):
+        return True
+    if raw in ("0", "false", "no", "off", "нет"):
+        return False
+    return default
+
+
 # Кому доступна команда /extend. Не MASTER_CHAT_ID: тот — чат для
 # недоставленных уведомлений и вполне может оказаться группой, а у группы id
 # отрицательный и с user id не совпадёт никогда
@@ -68,6 +78,17 @@ SUPPORT_CONTACT: str = os.getenv("SUPPORT_CONTACT", "").strip()
 
 # Пробный период нового сервиса, дней
 TRIAL_DAYS: int = int(os.getenv("TRIAL_DAYS") or 5)
+
+# Введена ли подписка в действие. Пока платить нечем — нечего и отключать:
+# срок считается, журнал пишется, но ни один гейт не закрывается и ни одно
+# письмо не уходит. Ставится в true в тот день, когда появится приём денег,
+# и с этого момента механизм работает целиком — он собран и проверен заранее
+SUBSCRIPTION_ENFORCED: bool = _flag("SUBSCRIPTION_ENFORCED", default=False)
+
+# Как часто бот сам будит рассылку напоминаний. Раз в час: точности до часа
+# хватает и суточному письму. Внешний крон не нужен — его пришлось бы
+# настраивать на каждом новом сервере и он молча не работал бы, если забыли
+REMINDER_TICK_SECONDS: int = int(os.getenv("REMINDER_TICK_SECONDS") or 3600)
 
 # ── Лимиты и антиспам ────────────────────────────────────────────────────────
 FREE_PLAN_SERVICE_LIMIT: int = int(os.getenv("FREE_PLAN_SERVICE_LIMIT") or 1)

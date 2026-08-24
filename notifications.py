@@ -140,3 +140,29 @@ async def send_subscription_reminders(bot: Bot) -> int:
             sent += 1
         await asyncio.sleep(BROADCAST_DELAY)
     return sent
+
+
+async def send_reminders_forever(bot: Bot, interval: float) -> None:
+    """
+    Свой будильник вместо внешнего крона. Запускается вместе с приложением.
+
+    Внешний крон — это ещё одна вещь, которую надо не забыть настроить на новом
+    сервере и которая, если её забыли, молча не работает: гейты-то стоят, просто
+    писем нет. Здесь забывать нечего.
+
+    Первый круг — сразу на старте: перезапуск не должен стоить письма.
+    Пропущенные ничего не ломают, а лишних не будет — право на письмо занимается
+    уникальным индексом, поэтому и два процесса с этим циклом безопасны.
+
+    Цикл не умирает: обрыв сети или базы через час стоит попробовать снова.
+    """
+    while True:
+        try:
+            sent = await send_subscription_reminders(bot)
+            if sent:
+                logger.info("Напоминания о подписке: отправлено %d", sent)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Круг напоминаний о подписке не отработал")
+        await asyncio.sleep(interval)

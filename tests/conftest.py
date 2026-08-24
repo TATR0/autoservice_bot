@@ -18,6 +18,18 @@ from database import db
 TEST_OWNER_ID = 999_000_001
 
 
+@pytest.fixture(autouse=True)
+def subscription_enforced(monkeypatch):
+    """
+    Механизм подписки проверяется во включённом виде, каким он поедет в бой.
+
+    В .env он пока выключен: платить нечем, отключать некого. Если бы тесты
+    брали это значение, вся проверка гейтов молча превратилась бы в проверку
+    того, что гейтов нет. Выключенное состояние проверяется отдельно и явно.
+    """
+    monkeypatch.setattr(config, "SUBSCRIPTION_ENFORCED", True)
+
+
 @pytest_asyncio.fixture
 async def db_ready():
     if not config.DATABASE_URL:

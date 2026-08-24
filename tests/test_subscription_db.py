@@ -398,3 +398,44 @@ async def test_two_ticks_send_one_letter(service, monkeypatch):
     await notifications.send_subscription_reminders(None)
     await notifications.send_subscription_reminders(None)
     assert sent.count(999_000_001) == 1
+
+
+# ── Пока подписка не введена в действие ──────────────────────────────────────
+# Всё выше проверяет механизм включённым, каким он поедет в бой. Здесь — что он
+# делает, пока платить нечем: не мешает. Это состояние бота на стадии тестирования.
+
+
+async def test_expired_service_is_found_while_not_enforced(service, monkeypatch):
+    """Гейт поиска живёт в SQL отдельно от остальных — проверяем его отдельно."""
+    svc = await db.get_service(service)
+    await _expire(service)
+
+    monkeypatch.setattr(config, "SUBSCRIPTION_ENFORCED", False)
+    found = await db.get_services_by_city(svc["city"])
+    assert any(str(row["idservice"]) == service for row in found)
+
+
+async def test_expired_service_still_takes_requests_while_not_enforced(
+    service, monkeypatch
+):
+    """
+    Главное свойство выключенного состояния: клиент записывается как обычно.
+
+    Без этого пробный период через пять дней превратил бы тестовый стенд в
+    мёртвый бот, а вернуть его можно было бы только командой /extend.
+    """
+    item = (await db.get_catalog(service))[0]
+    svc = await db.get_service(service)
+    free = await db.free_slots(svc)
+    day = sorted(free)[0]
+    moment = free[day][0]
+    await _expire(service)
+
+    monkeypatch.setattr(config, "SUBSCRIPTION_ENFORCED", False)
+    summary, is_duplicate = await create_request_flow(
+        None,
+        client_tg_id=CLIENT_ID,
+        payload=_payload(service, item, scheduled_at=f"{day} {moment:%H:%M}"),
+    )
+    assert summary["request_id"], "заявка должна быть создана, а не отклонена"
+    assert not is_duplicate

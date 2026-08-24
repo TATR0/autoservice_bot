@@ -232,14 +232,19 @@ class Database:
             )
 
     async def get_services_by_city(self, city: str) -> list[asyncpg.Record]:
+        # Единственный гейт подписки, который живёт в SQL, а не зовёт
+        # subscription.is_active: фильтровать город в Python значило бы тащить
+        # из базы всех, чтобы выбросить половину. Условие поэтому продублировано
+        # здесь — вместе с выключателем, чтобы оно не разошлось с остальными
+        paid_only = "AND paid_until > now()" if config.SUBSCRIPTION_ENFORCED else ""
         async with self.pool.acquire() as conn:
             return await conn.fetch(
-                """
+                f"""
                 SELECT * FROM services
                 WHERE LOWER(TRIM(city))=LOWER(TRIM($1)) AND idrecstatus=0
                   -- Не оплатил — не продаёт новое время. Кабинет управляющего
                   -- при этом открыт: get_service такого фильтра не получает
-                  AND paid_until > now()
+                  {paid_only}
                 ORDER BY service_name
                 """,
                 city,

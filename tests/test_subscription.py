@@ -69,3 +69,34 @@ def test_long_silent_cron_does_not_send_stale_stages():
 def test_never_paid_gets_no_reminder():
     """Напоминать не о чем: срока никогда не было."""
     assert subscription.due_stage(None, NOW) is None
+
+
+# ── Пока подписка не введена в действие ──────────────────────────────────────
+# Механизм собран и проверен выше во включённом виде. Ниже — что он делает,
+# пока платить нечем: ничего. Это состояние бота на стадии тестирования.
+
+
+def test_nobody_is_shut_off_while_the_subscription_is_not_enforced(monkeypatch):
+    """
+    Отключать сервис за неоплату, когда оплатить его нечем, — значит ломать
+    работающий бот, а не зарабатывать.
+    """
+    monkeypatch.setattr(subscription.config, "SUBSCRIPTION_ENFORCED", False)
+    assert subscription.is_active(NOW - timedelta(days=100), NOW)
+    assert subscription.is_active(None, NOW)
+
+
+def test_no_reminders_while_the_subscription_is_not_enforced(monkeypatch):
+    """Письмо «срок заканчивается» от бота, который ничем не заканчивается."""
+    monkeypatch.setattr(subscription.config, "SUBSCRIPTION_ENFORCED", False)
+    assert subscription.due_stage(NOW + timedelta(hours=1), NOW) is None
+    assert subscription.due_stage(NOW - timedelta(days=1), NOW) is None
+
+
+def test_the_deadline_keeps_ticking_while_not_enforced(monkeypatch):
+    """
+    Срок считается и в выключенном виде — иначе в день включения у сервисов
+    не оказалось бы честной даты и всех пришлось бы отключить разом.
+    """
+    monkeypatch.setattr(subscription.config, "SUBSCRIPTION_ENFORCED", False)
+    assert subscription.extend(None, NOW, 30) == NOW + timedelta(days=30)

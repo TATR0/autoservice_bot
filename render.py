@@ -239,6 +239,13 @@ def service_card(svc, *, link: str, role: str, admins_text: str) -> str:
 
 
 def registration_summary(svc, link: str) -> str:
+    # Пока подписка не введена в действие, пробный период ничем не кончается —
+    # называть его дату значит обещать отключение, которого не будет
+    trial = (
+        f"<b>Пробный период:</b> до {local_dt(svc['paid_until'], svc['timezone'])}\n\n"
+        if config.SUBSCRIPTION_ENFORCED
+        else ""
+    )
     return (
         "✅ <b>Сервис зарегистрирован!</b>\n\n"
         f"<b>Название:</b> {h(svc['service_name'])}\n"
@@ -247,7 +254,7 @@ def registration_summary(svc, link: str) -> str:
         f"<b>Адрес:</b> {h(svc['location_service'])}\n"
         f"<b>Управляющий:</b> вы (и первый администратор)\n\n"
         f"<b>ID сервиса:</b> <code>{svc['idservice']}</code>\n\n"
-        f"<b>Пробный период:</b> до {local_dt(svc['paid_until'], svc['timezone'])}\n\n"
+        f"{trial}"
         "🔗 <b>Ссылка для клиентов</b> — разместите её там, где вас найдут:\n"
         f"{h(link)}\n\n"
         "Чтобы подключить сотрудников, нажмите «➕ Пригласить админа»."

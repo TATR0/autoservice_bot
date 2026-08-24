@@ -14,7 +14,7 @@ import asyncio
 import hmac
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,7 +36,7 @@ from handlers import admin_actions, admin_mgmt, catalog, register, requests, sch
 from handlers import subscription as subscription_handlers
 from handlers.requests import RequestRejected, create_request_flow
 from middlewares import ErrorLoggingMiddleware, UserMiddleware
-from notifications import send_subscription_reminders
+from notifications import send_reminders_forever, send_subscription_reminders
 from ratelimit import DatabaseGate, RateLimiter, enforce
 from validators import ValidationError, format_phone, validate_uuid
 from webapp_auth import InitDataError, verify_init_data
@@ -144,9 +144,20 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("BASE_URL не задан — webhook не установлен, бот не получит апдейты.")
 
+    # Напоминания о подписке будит сам бот. Внешний крон остаётся возможным
+    # (эндпоинт тика никуда не делся), но обязательным больше не является:
+    # разворачивание на новом сервере не должно требовать помнить про него
+    reminders = asyncio.create_task(
+        send_reminders_forever(bot, config.REMINDER_TICK_SECONDS)
+    )
+
     try:
         yield
     finally:
+        reminders.cancel()
+        with suppress(asyncio.CancelledError):
+            await reminders
+
         if config.BASE_URL:
             try:
                 await bot.delete_webhook()

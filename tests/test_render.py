@@ -132,3 +132,28 @@ def test_support_contact_is_omitted_when_unset(monkeypatch):
     monkeypatch.setattr(render.config, "SUPPORT_CONTACT", "")
     line = render.subscription_line(_svc(datetime.now(timezone.utc) - timedelta(days=1)))
     assert "Продлить" not in line
+
+
+def test_no_subscription_line_while_not_enforced(monkeypatch):
+    """Управляющему нечего сообщать: срок есть, а последствий у него нет."""
+    monkeypatch.setattr(render.config, "SUBSCRIPTION_ENFORCED", False)
+    assert render.subscription_line(_svc(datetime.now(timezone.utc) - timedelta(days=1))) == ""
+
+
+def test_registration_says_nothing_about_a_trial_while_not_enforced(monkeypatch):
+    """
+    Пробный период, который ничем не кончается, называть датой нельзя: это
+    обещание отключения, которого не будет.
+    """
+    svc = _svc(datetime.now(timezone.utc) + timedelta(days=5)) | {
+        "city": "Тестоград",
+        "location_service": "ул. Тестовая, 1",
+        "idservice": "11111111-1111-1111-1111-111111111111",
+    }
+    link = "https://t.me/bot?start=SVC_x"
+
+    monkeypatch.setattr(render.config, "SUBSCRIPTION_ENFORCED", True)
+    assert "Пробный период" in render.registration_summary(svc, link)
+
+    monkeypatch.setattr(render.config, "SUBSCRIPTION_ENFORCED", False)
+    assert "Пробный период" not in render.registration_summary(svc, link)

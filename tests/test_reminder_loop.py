@@ -1,0 +1,93 @@
+"""
+Свой будильник вместо внешнего крона. Базы не требует — тик подменён.
+
+Проверяется не рассылка (она в test_subscription_db), а свойства самого цикла:
+он стартует сразу, переживает падение круга и глушится вместе с приложением.
+
+Ждём событий, а не секунд: цикл живёт на том же event loop, что и остальная
+сюита, и под нагрузкой полного прогона любой sleep-таймаут — это ложное падение.
+"""
+
+import asyncio
+
+import pytest
+
+import notifications
+
+pytestmark = pytest.mark.asyncio
+
+# Столько ждём события, прежде чем признать цикл сломанным. Заведомо больше
+# любой разумной задержки планировщика и заведомо меньше терпения человека
+PATIENCE = 5
+
+
+async def _stop(task: asyncio.Task) -> None:
+    """Погасить цикл так же, как это делает lifespan приложения."""
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_first_round_runs_without_waiting(monkeypatch):
+    """Перезапуск не должен стоить письма: круг идёт сразу, а не через час."""
+    calls = []
+    rang = asyncio.Event()
+
+    async def _tick(_bot):
+        calls.append(1)
+        rang.set()
+        return 0
+
+    monkeypatch.setattr(notifications, "send_subscription_reminders", _tick)
+    task = asyncio.create_task(notifications.send_reminders_forever(None, 3600))
+    try:
+        await asyncio.wait_for(rang.wait(), PATIENCE)
+    finally:
+        await _stop(task)
+    assert calls == [1], "цикл обязан сходить в базу до первого сна"
+
+
+async def test_a_failed_round_does_not_kill_the_alarm(monkeypatch):
+    """
+    Обрыв базы или сети через час стоит попробовать снова.
+
+    Умри цикл на первом исключении — снаружи это молчащий бот: гейты стоят,
+    сроки идут, а писем нет и никто об этом не узнает.
+    """
+    calls = []
+    second_round = asyncio.Event()
+
+    async def _tick(_bot):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("база отвалилась")
+        second_round.set()
+        return 0
+
+    monkeypatch.setattr(notifications, "send_subscription_reminders", _tick)
+    task = asyncio.create_task(notifications.send_reminders_forever(None, 0))
+    try:
+        await asyncio.wait_for(second_round.wait(), PATIENCE)
+    finally:
+        await _stop(task)
+    assert len(calls) >= 2, "после падения круга будильник должен продолжить"
+
+
+async def test_cancel_reaches_the_loop_mid_round(monkeypatch):
+    """
+    Отмену цикл пропускает наверх, а не глотает своим except.
+
+    Иначе остановка приложения ждала бы его вечно, а пул базы закрылся бы
+    из-под работающего круга.
+    """
+    entered = asyncio.Event()
+
+    async def _tick(_bot):
+        entered.set()
+        await asyncio.sleep(3600)
+        return 0
+
+    monkeypatch.setattr(notifications, "send_subscription_reminders", _tick)
+    task = asyncio.create_task(notifications.send_reminders_forever(None, 0))
+    await asyncio.wait_for(entered.wait(), PATIENCE)
+    await _stop(task)

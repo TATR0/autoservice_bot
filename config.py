@@ -9,6 +9,7 @@ import logging
 import os
 import secrets
 
+from typing import NamedTuple
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -89,6 +90,28 @@ SUBSCRIPTION_ENFORCED: bool = _flag("SUBSCRIPTION_ENFORCED", default=False)
 # хватает и суточному письму. Внешний крон не нужен — его пришлось бы
 # настраивать на каждом новом сервере и он молча не работал бы, если забыли
 REMINDER_TICK_SECONDS: int = int(os.getenv("REMINDER_TICK_SECONDS") or 3600)
+
+
+class StarPlan(NamedTuple):
+    """Тариф подписки: сколько дней, сколько звёзд и как назвать на кнопке."""
+    days: int
+    stars: int
+    label: str
+
+
+# Подпись лежит рядом с числами, а не собирается из дней: «12 месяцев» читается
+# лучше, чем «365 дней», а делить дни на тридцать ради подписи — врать в мелочах.
+# Цены целые: звёзды не дробятся. Добавить четвёртый тариф — дописать строку
+STAR_PLANS: tuple[StarPlan, ...] = (
+    StarPlan(30, int(os.getenv("STARS_PRICE_1M") or 150), "1 месяц"),
+    StarPlan(90, int(os.getenv("STARS_PRICE_3M") or 400), "3 месяца"),
+    StarPlan(365, int(os.getenv("STARS_PRICE_12M") or 1350), "12 месяцев"),
+)
+
+
+def plan_by_days(days: int) -> StarPlan | None:
+    """Тариф по числу дней. None — такого тарифа нет, цену взять неоткуда."""
+    return next((plan for plan in STAR_PLANS if plan.days == days), None)
 
 # ── Лимиты и антиспам ────────────────────────────────────────────────────────
 FREE_PLAN_SERVICE_LIMIT: int = int(os.getenv("FREE_PLAN_SERVICE_LIMIT") or 1)

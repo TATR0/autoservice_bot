@@ -157,7 +157,6 @@ CREATE TABLE IF NOT EXISTS requests (
     brand        text        NOT NULL DEFAULT '—',
     model        text        NOT NULL DEFAULT '—',
     plate        text        NOT NULL DEFAULT '—',
-    urgency      text        NOT NULL DEFAULT 'low',
     comment      text                 DEFAULT '',
     status       text        NOT NULL DEFAULT 'new',
     idrecstatus  smallint    NOT NULL DEFAULT 0,  -- 0 активна / -1 удалена
@@ -176,6 +175,14 @@ ALTER TABLE requests
 -- Колонка пережила прошлую фичу как страховка на случай отката. Бэкфил
 -- проверен, приложение её не читает и не пишет — удаляем.
 ALTER TABLE requests DROP COLUMN IF EXISTS service_type;
+
+-- Срочность заменена временем записи: клиент выбирает окно в календаре, а
+-- «высокая срочность» без часа ничего не обещала ни ему, ни сервису. Колонка
+-- пережила выкат календаря как страховка на случай отката — она больше не
+-- нужна. Констрейнт снимается вместе с ней, но названо это отдельной строкой:
+-- на базе, где колонку уже удалили, DROP CONSTRAINT просто ничего не найдёт
+ALTER TABLE requests DROP CONSTRAINT IF EXISTS chk_requests_urgency;
+ALTER TABLE requests DROP COLUMN     IF EXISTS urgency;
 
 CREATE INDEX IF NOT EXISTS idx_requests_service ON requests (idservice);
 CREATE INDEX IF NOT EXISTS idx_requests_client  ON requests (idclienttg);
@@ -198,10 +205,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_client_uid
 ALTER TABLE requests DROP CONSTRAINT IF EXISTS chk_requests_status;
 ALTER TABLE requests ADD  CONSTRAINT chk_requests_status CHECK (status IN
     ('new','accepted','called','in_progress','done','rejected','cancelled','service_closed'));
-
-ALTER TABLE requests DROP CONSTRAINT IF EXISTS chk_requests_urgency;
-ALTER TABLE requests ADD  CONSTRAINT chk_requests_urgency CHECK (urgency IN
-    ('low','medium','high','urgent'));
 
 
 -- ── Подписка сервиса ─────────────────────────────────────────

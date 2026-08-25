@@ -100,3 +100,48 @@ def test_the_deadline_keeps_ticking_while_not_enforced(monkeypatch):
     """
     monkeypatch.setattr(subscription.config, "SUBSCRIPTION_ENFORCED", False)
     assert subscription.extend(None, NOW, 30) == NOW + timedelta(days=30)
+
+
+# ── Дни со знаком ────────────────────────────────────────────────────────────
+
+
+def test_positive_days_do_not_burn_the_paid_remainder():
+    """Заплатил заранее — дни ложатся на остаток, а не вместо него."""
+    assert subscription.apply_days(NOW + timedelta(days=10), NOW, 30) == (
+        NOW + timedelta(days=40)
+    )
+
+
+def test_positive_days_after_expiry_count_from_today():
+    """Иначе деньги ушли бы в оплату уже прошедшего простоя."""
+    assert subscription.apply_days(NOW - timedelta(days=10), NOW, 30) == (
+        NOW + timedelta(days=30)
+    )
+
+
+def test_negative_days_are_taken_from_the_bought_term():
+    """
+    Возврат отбирает купленный срок, а не считает от «сейчас».
+
+    У просроченного сервиса «сейчас» уже позже срока, и вычитание из него
+    увело бы дату непредсказуемо далеко в прошлое.
+    """
+    assert subscription.apply_days(NOW - timedelta(days=10), NOW, -30) == (
+        NOW - timedelta(days=40)
+    )
+
+
+def test_negative_days_from_an_active_term():
+    assert subscription.apply_days(NOW + timedelta(days=60), NOW, -30) == (
+        NOW + timedelta(days=30)
+    )
+
+
+def test_negative_days_without_a_term_do_nothing_strange():
+    """Срока не было — отбирать нечего, отсчёт от «сейчас»."""
+    assert subscription.apply_days(None, NOW, -30) == NOW - timedelta(days=30)
+
+
+def test_extend_is_apply_days_with_a_positive_sign():
+    """Старое имя обязано остаться синонимом: его вызовы уже проверены."""
+    assert subscription.extend(NOW, NOW, 30) == subscription.apply_days(NOW, NOW, 30)

@@ -41,16 +41,27 @@ def is_active(paid_until: datetime | None, now: datetime) -> bool:
     return paid_until is not None and paid_until > now
 
 
-def extend(paid_until: datetime | None, now: datetime, days: int) -> datetime:
+def apply_days(paid_until: datetime | None, now: datetime, days: int) -> datetime:
     """
-    Новый срок после продления на days дней.
+    Новый срок после начисления или изъятия days дней.
 
-    Отсчёт от большего из «сейчас» и текущего срока: заплатил заранее — дни
-    прибавляются к остатку и не сгорают; заплатил после просрочки — отсчёт с
-    сегодня, иначе деньги уходят в оплату уже прошедшего простоя.
+    Положительные дни считаются от большего из «сейчас» и текущего срока:
+    заплатил заранее — дни прибавляются к остатку и не сгорают; заплатил после
+    просрочки — отсчёт с сегодня, иначе деньги уходят в оплату простоя.
+
+    Отрицательные вычитаются из самого срока, а не из «сейчас». У просроченного
+    сервиса «сейчас» уже позже срока, и вычитание из него увело бы дату дальше в
+    прошлое, чем отбирали. Возврат обязан отобрать ровно то, что выдал.
     """
+    if days < 0:
+        return (paid_until or now) + timedelta(days=days)
     base = max(now, paid_until) if paid_until else now
     return base + timedelta(days=days)
+
+
+def extend(paid_until: datetime | None, now: datetime, days: int) -> datetime:
+    """Начисление дней. Синоним apply_days: вызовы с ним уже проверены."""
+    return apply_days(paid_until, now, days)
 
 
 def due_stage(paid_until: datetime | None, now: datetime) -> str | None:

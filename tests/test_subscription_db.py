@@ -5,6 +5,7 @@
 срока, однократность напоминания и запрет продления «на ноль дней».
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import asyncpg
@@ -139,6 +140,52 @@ async def test_second_extension_counts_from_the_first(service):
     first = await db.extend_subscription(service, days=30)
     second = await db.extend_subscription(service, days=30)
     assert second == first + timedelta(days=30)
+
+
+async def test_extension_reads_the_deadline_after_the_lock_not_before(service):
+    """
+    Два продления внахлёст — так ведут себя вебхуки платёжного провайдера.
+
+    Повтор доставки, ретрай на таймауте, две попытки оплаты подряд: дубли
+    приходят одновременно, а не друг за другом. Без FOR UPDATE обе транзакции
+    читают один и тот же paid_until, считают от него и пишут одинаковый срок —
+    заплачено дважды, дни начислены одни. Виноватых не найти: в журнале две
+    честные строки по тридцать дней.
+
+    Гонку здесь не разыгрывают, а ставят: строка держится заблокированной, срок
+    под ней меняется. Продление, читающее с FOR UPDATE, дождётся коммита и
+    увидит новое значение. Читающее без блокировки — уже прочло старое и
+    посчитает от него, сколько бы потом ни ждало своей очереди на запись.
+    """
+    before = (await db.get_service(service))["paid_until"]
+    bumped = before + timedelta(days=100)
+
+    # Держим строку отдельным соединением, мимо пула: иначе конкурент мог бы
+    # ждать не блокировку, а свободное соединение, и тест доказывал бы не то
+    holder = await asyncpg.connect(config.DATABASE_URL)
+    try:
+        tx = holder.transaction()
+        await tx.start()
+        await holder.fetchval(
+            "SELECT paid_until FROM services WHERE idservice=$1 FOR UPDATE", service
+        )
+
+        rival = asyncio.create_task(db.extend_subscription(service, days=30))
+        # Дать конкуренту дойти до строки и упереться. Раз он не завершился,
+        # пока строка заперта, — значит, до неё он уже добрался
+        await asyncio.sleep(1)
+        assert not rival.done(), "продление обязано ждать, а не писать поверх"
+
+        await holder.execute(
+            "UPDATE services SET paid_until=$2 WHERE idservice=$1", service, bumped
+        )
+        await tx.commit()
+        result = await asyncio.wait_for(rival, 10)
+    finally:
+        await holder.close()
+
+    assert result == bumped + timedelta(days=30), "срок прочитан до блокировки"
+    assert (await db.get_service(service))["paid_until"] == result
 
 
 async def test_extension_of_a_missing_service_changes_nothing(service):

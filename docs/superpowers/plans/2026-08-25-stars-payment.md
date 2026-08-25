@@ -604,8 +604,12 @@ class PaymentApplied(NamedTuple):
         заявки не воскресают (клиентам уже сказали, что сервис закрыт), админы
         не возвращаются (их снял управляющий своим решением).
 
-        Восстановление и начисление — одной транзакцией: иначе однажды появится
-        поднятый сервис без оплаченных дней или наоборот.
+        Восстановление и начисление идут двумя транзакциями, и иначе нельзя:
+        extend_subscription ищет сервис условием idrecstatus=0, то есть
+        удалённого не находит — подъём обязан закоммититься раньше. Щель между
+        ними самозалечивается: Telegram доставит платёж повторно, подъём станет
+        пустой операцией, а начисление отработает. Ради этого и заведена
+        идемпотентность по external_id.
         """
         async with self.pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
@@ -803,7 +807,19 @@ git commit -m "Возврат отбирает ровно те дни, кото�
 def test_tariff_screen_names_the_current_term():
     """Человек должен видеть, что продлевает, а не покупать вслепую."""
     text = render.tariff_screen(_svc(datetime.now(timezone.utc) + timedelta(days=3)))
-    assert "действует до" in text
+    assert "оплачена до" in text
+
+
+def test_tariff_screen_does_not_promise_consequences_that_are_switched_off(monkeypatch):
+    """
+    «Оплачена до», а не «действует до»: при выключенной подписке is_active
+    истинен всегда, и просроченный сервис получил бы дату в прошлом со словом
+    «действует». «Оплачена до <прошлое>» — правда в обоих мирах.
+    """
+    monkeypatch.setattr(render.config, "SUBSCRIPTION_ENFORCED", False)
+    text = render.tariff_screen(_svc(datetime.now(timezone.utc) - timedelta(days=10)))
+    assert "оплачена до" in text
+    assert "скрыт из поиска" not in text, "отключения нет — обещать его нельзя"
 
 
 def test_tariff_screen_of_an_expired_service_says_so():
@@ -861,8 +877,12 @@ def tariff_screen(svc) -> str:
     """Шапка экрана тарифов. Кнопки с ценами рисует keyboards.kb_tariffs."""
     now = datetime.now(timezone.utc)
     paid_until = svc["paid_until"]
+    # «Оплачена до», а не «действует до»: при выключенной подписке is_active
+    # истинен всегда, и просроченный сервис получил бы дату в прошлом со словом
+    # «действует». «Оплачена до» — правда и когда срок идёт, и когда он прошёл,
+    # но отключение ещё не введено в действие
     if subscription.is_active(paid_until, now):
-        head = f"💳 Подписка действует до {local_dt(paid_until, svc['timezone'])}."
+        head = f"💳 Подписка оплачена до {local_dt(paid_until, svc['timezone'])}."
     else:
         head = (
             "⛔️ <b>Подписка истекла.</b> Сервис скрыт из поиска, "

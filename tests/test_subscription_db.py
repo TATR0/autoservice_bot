@@ -629,3 +629,54 @@ async def test_payment_for_a_service_that_never_existed(service):
     assert await db.apply_stars_payment(
         str(uuid.uuid4()), days=30, charge_id="charge_ghost", payer_id=1
     ) is None
+
+
+# ── Возврат звёзд ────────────────────────────────────────────────────────────
+
+
+async def test_refund_takes_back_exactly_what_it_gave(service):
+    before = (await db.get_service(service))["paid_until"]
+    await db.extend_subscription(
+        service, days=30, source="stars", external_id="charge_r1", granted_by=42
+    )
+    payment = await db.get_stars_payment("charge_r1")
+    assert payment["granted_by"] == 42, "без плательщика возврат некому сделать"
+
+    after = await db.revoke_payment(str(payment["idpayment"]))
+    assert after == before, "срок обязан вернуться ровно туда, где был"
+    assert (await db.get_service(service))["paid_until"] == after
+
+
+async def test_a_refunded_payment_is_not_refunded_twice(service):
+    await db.extend_subscription(
+        service, days=30, source="stars", external_id="charge_r2", granted_by=42
+    )
+    payment = await db.get_stars_payment("charge_r2")
+    assert await db.revoke_payment(str(payment["idpayment"])) is not None
+    assert await db.revoke_payment(str(payment["idpayment"])) is None
+
+
+async def test_refund_can_push_the_term_into_the_past(service):
+    """
+    Не заплатил — не пользуешься.
+
+    Если после спорного платежа были другие продления, вычитание может сделать
+    сервис просроченным прямо сейчас. Смягчать это значило бы дарить месяц
+    каждому, кто попросит возврат.
+    """
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE services SET paid_until=now() + interval '5 days'"
+            " WHERE idservice=$1",
+            service,
+        )
+    await db.extend_subscription(
+        service, days=30, source="stars", external_id="charge_r3", granted_by=42
+    )
+    payment = await db.get_stars_payment("charge_r3")
+    after = await db.revoke_payment(str(payment["idpayment"]))
+    assert after < datetime.now(timezone.utc) + timedelta(days=6)
+
+
+async def test_unknown_charge_is_not_found(service):
+    assert await db.get_stars_payment("charge_that_never_was") is None

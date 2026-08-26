@@ -637,6 +637,51 @@ class Database:
             return None
         return PaymentApplied(paid_until=paid_until, restored=restored)
 
+    async def get_stars_payment(self, charge_id: str) -> asyncpg.Record | None:
+        """Платёж звёздами по идентификатору списания. None — такого нет."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                "SELECT * FROM subscription_payments"
+                " WHERE source='stars' AND external_id=$1",
+                charge_id,
+            )
+
+    async def revoke_payment(self, idpayment: str) -> datetime | None:
+        """
+        Отобрать выданные платежом дни и пометить его возвращённым.
+
+        None — платёж уже был возвращён. Отметка ставится условием в самом
+        UPDATE, а не проверкой перед ним: два одновременных возврата иначе
+        вычли бы дни дважды.
+
+        Срок может уйти в прошлое, и это правильно: не заплатил — не
+        пользуешься.
+        """
+        now = datetime.now(UTC)
+        async with self.pool.acquire() as conn, conn.transaction():
+            payment = await conn.fetchrow(
+                "UPDATE subscription_payments SET refunded_at=$2"
+                " WHERE idpayment=$1 AND refunded_at IS NULL"
+                " RETURNING idservice, days",
+                idpayment, now,
+            )
+            if payment is None:
+                return None
+            row = await conn.fetchrow(
+                "SELECT paid_until FROM services WHERE idservice=$1 FOR UPDATE",
+                payment["idservice"],
+            )
+            if row is None:
+                return None
+            paid_until = subscription.apply_days(
+                row["paid_until"], now, -payment["days"]
+            )
+            await conn.execute(
+                "UPDATE services SET paid_until=$2 WHERE idservice=$1",
+                payment["idservice"], paid_until,
+            )
+        return paid_until
+
     async def services_for_reminders(self) -> list[asyncpg.Record]:
         """
         Сервисы, которым может причитаться напоминание о подписке.

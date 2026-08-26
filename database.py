@@ -13,7 +13,7 @@ import logging
 import secrets
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, time, timedelta, timezone
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, NamedTuple, Sequence
 from uuid import uuid4
 
 import asyncpg
@@ -36,6 +36,12 @@ class ForeignClientUid(Exception):
 
 class SlotTaken(Exception):
     """Все места на выбранное время разобраны."""
+
+
+class PaymentApplied(NamedTuple):
+    """Что сделал платёж: до какого числа продлил и поднимал ли сервис."""
+    paid_until: datetime
+    restored: bool
 
 
 def _new_id() -> str:
@@ -586,6 +592,50 @@ class Database:
                 idservice, paid_until,
             )
         return paid_until
+
+    async def apply_stars_payment(
+        self, idservice: str, *, days: int, charge_id: str, payer_id: int
+    ) -> PaymentApplied | None:
+        """
+        Зачесть платёж звёздами. None — сервиса с таким id не существует.
+
+        Удалённый сервис поднимается: деньги уже списаны, и оставить человека
+        без товара нельзя. Поднимается сам сервис — отменённые при удалении
+        заявки не воскресают (клиентам уже сказали, что сервис закрыт), админы
+        не возвращаются (их снял управляющий своим решением).
+
+        Восстановление и начисление идут двумя транзакциями, и иначе нельзя:
+        extend_subscription ищет сервис условием idrecstatus=0, то есть
+        удалённого не находит — подъём обязан закоммититься раньше. Щель между
+        ними самозалечивается: Telegram доставит платёж повторно, подъём станет
+        пустой операцией, а начисление отработает. Ради этого и заведена
+        идемпотентность по external_id.
+        """
+        async with self.pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT idrecstatus FROM services WHERE idservice=$1 FOR UPDATE",
+                idservice,
+            )
+            if row is None:
+                return None
+            restored = row["idrecstatus"] != 0
+            if restored:
+                await conn.execute(
+                    "UPDATE services SET idrecstatus=0, deletedate=NULL"
+                    " WHERE idservice=$1",
+                    idservice,
+                )
+
+        paid_until = await self.extend_subscription(
+            idservice,
+            days=days,
+            source="stars",
+            external_id=charge_id,
+            granted_by=payer_id,
+        )
+        if paid_until is None:
+            return None
+        return PaymentApplied(paid_until=paid_until, restored=restored)
 
     async def services_for_reminders(self) -> list[asyncpg.Record]:
         """

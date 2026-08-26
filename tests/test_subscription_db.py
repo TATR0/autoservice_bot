@@ -594,3 +594,38 @@ async def test_expired_service_still_takes_requests_while_not_enforced(
     )
     assert summary["request_id"], "заявка должна быть создана, а не отклонена"
     assert not is_duplicate
+
+
+# ── Оплата воскрешает удалённый сервис ───────────────────────────────────────
+
+
+async def test_payment_brings_a_deleted_service_back(service):
+    """
+    Взять деньги и не дать товар — худшее, что бот может сделать.
+
+    Между pre-checkout и списанием сервис могли удалить. Деньги уже у нас.
+    """
+    await db.close_service(service)
+    assert (await db.get_service(service)) is None
+
+    applied = await db.apply_stars_payment(
+        service, days=30, charge_id="charge_revive", payer_id=999_000_001
+    )
+    assert applied.restored is True
+
+    svc = await db.get_service(service)
+    assert svc is not None, "сервис обязан вернуться в строй"
+    assert svc["paid_until"] == applied.paid_until
+
+
+async def test_payment_for_a_live_service_restores_nothing(service):
+    applied = await db.apply_stars_payment(
+        service, days=30, charge_id="charge_live", payer_id=999_000_001
+    )
+    assert applied.restored is False
+
+
+async def test_payment_for_a_service_that_never_existed(service):
+    assert await db.apply_stars_payment(
+        str(uuid.uuid4()), days=30, charge_id="charge_ghost", payer_id=1
+    ) is None

@@ -55,9 +55,30 @@ async def test_expired_owner_can_still_reach_the_tariffs(monkeypatch):
             "paid_until": datetime.now(timezone.utc) - timedelta(days=10),
         }
 
-    monkeypatch.setattr(payment, "require_active_service", _expired)
+    monkeypatch.setattr(payment, "require_owner_service", _expired)
     message = FakeScreenMessage()
     await payment.subscription_screen(message, None)
 
     assert message.answers, "просроченному управляющему экран обязан открыться"
     assert message.markups[0] is not None, "тарифы без кнопок бесполезны"
+
+
+async def test_admin_is_refused_the_tariff_screen(monkeypatch):
+    """
+    Подписка сервиса — не дело администратора.
+
+    Кнопку ему не показывают, но текст можно набрать руками, а callback —
+    нажать в пересланном письме. Решает сервер, а не клавиатура.
+    """
+    refused = []
+
+    async def _not_owner(message, _state, user_id=None):
+        refused.append(user_id)
+        return None
+
+    monkeypatch.setattr(payment, "require_owner_service", _not_owner)
+    message = FakeScreenMessage()
+    await payment.subscription_screen(message, None)
+
+    assert refused, "проверка владельца обязана быть вызвана"
+    assert message.answers == [], "чужому экран не рисуем"

@@ -23,7 +23,7 @@ import config
 import keyboards as kb
 import render
 from database import db
-from handlers.common import require_active_service
+from handlers.common import require_owner_service
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -58,7 +58,7 @@ async def _show_tariffs(message: Message, svc) -> None:
 
 @router.message(F.text == kb.BTN_SUBSCRIPTION, StateFilter(default_state))
 async def subscription_screen(message: Message, state: FSMContext) -> None:
-    svc = await require_active_service(message, state)
+    svc = await require_owner_service(message, state)
     if svc is None:
         return
     await _show_tariffs(message, svc)
@@ -69,7 +69,7 @@ async def open_screen(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     # user_id обязателен: у callback.message автор — бот, а не человек, и без
     # этого аргумента сервис искался бы по id бота и не находился никогда
-    svc = await require_active_service(
+    svc = await require_owner_service(
         callback.message, state, user_id=callback.from_user.id
     )
     if svc is None:
@@ -87,7 +87,7 @@ async def buy_plan(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.answer("Этот тариф больше не действует.")
         return
 
-    svc = await require_active_service(
+    svc = await require_owner_service(
         callback.message, state, user_id=callback.from_user.id
     )
     if svc is None:

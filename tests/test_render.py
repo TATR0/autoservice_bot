@@ -215,4 +215,24 @@ def test_ordinary_payment_says_nothing_about_restoring():
 def test_service_name_is_escaped_in_the_invoice_title():
     """Правило проекта: всё пользовательское экранируется на выходе."""
     svc = _svc(datetime.now(timezone.utc)) | {"service_name": "Аста & <Сервис>"}
-    assert "&amp;" in render.invoice_title(svc) or "&" not in render.invoice_title(svc)
+    text = render.invoice_title(svc)
+    assert "<Сервис>" not in text, "сырой HTML из названия ушёл бы в сообщение"
+    assert "&lt;Сервис&gt;" in text
+
+
+def test_refund_confirmation_names_the_new_deadline():
+    svc = _svc(datetime.now(timezone.utc))
+    deadline = datetime.now(timezone.utc) + timedelta(days=5)
+    text = render.refund_done(svc, deadline)
+    assert render.local_dt(deadline, svc["timezone"]) in text
+
+
+def test_refund_confirmation_does_not_claim_a_past_term_is_active():
+    """
+    Возврат вычитает дни из самого срока и может увести его в прошлое.
+    «Действует до <вчера>» — неправда, сказанная человеку про его же деньги.
+    """
+    past = datetime.now(timezone.utc) - timedelta(days=12)
+    text = render.refund_done(_svc(datetime.now(timezone.utc)), past)
+    assert "действует" not in text.lower()
+    assert render.local_dt(past, "Europe/Moscow") in text

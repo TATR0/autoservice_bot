@@ -188,7 +188,7 @@ def refund_done(svc, paid_until) -> str:
     """Уведомление плательщику. Молча отбирать оплаченное нельзя."""
     return (
         "↩️ <b>Звёзды возвращены.</b>\n"
-        f"Подписка сервиса «{h(svc['service_name'])}» действует "
+        f"Срок сервиса «{h(svc['service_name'])}» теперь — "
         f"до {local_dt(paid_until, svc['timezone'])}."
     )
 

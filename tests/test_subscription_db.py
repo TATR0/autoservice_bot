@@ -192,6 +192,63 @@ async def test_extension_of_a_missing_service_changes_nothing(service):
     assert await db.extend_subscription(str(uuid.uuid4()), days=30) is None
 
 
+# ── Журнал платежей ──────────────────────────────────────────────────────────
+
+
+async def test_journal_remembers_a_refund(service):
+    """Возврат помечает ту строку, которую отменяет, а не заводит новую."""
+    await db.extend_subscription(service, days=30)
+    async with db.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT idpayment, refunded_at FROM subscription_payments"
+            " WHERE idservice=$1 AND source='manual'",
+            service,
+        )
+        assert row["refunded_at"] is None, "свежий платёж возвращённым не бывает"
+        await conn.execute(
+            "UPDATE subscription_payments SET refunded_at=now() WHERE idpayment=$1",
+            row["idpayment"],
+        )
+        stamped = await conn.fetchval(
+            "SELECT refunded_at FROM subscription_payments WHERE idpayment=$1",
+            row["idpayment"],
+        )
+    assert stamped is not None
+
+
+async def test_journal_accepts_taken_away_days(service):
+    """
+    Ручное укорачивание — самостоятельное событие, и в журнале оно видно.
+
+    Констрейнт до этой задачи требовал days > 0 и такую строку не пропускал.
+    """
+    svc = await db.get_service(service)
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO subscription_payments (idservice, days, paid_until, source)"
+            " VALUES ($1,-30,$2,'manual')",
+            service, svc["paid_until"],
+        )
+        taken = await conn.fetchval(
+            "SELECT days FROM subscription_payments"
+            " WHERE idservice=$1 AND days < 0",
+            service,
+        )
+    assert taken == -30
+
+
+async def test_journal_still_rejects_zero_days(service):
+    """Начисление на ноль дней ничего не значит — это опечатка, а не операция."""
+    svc = await db.get_service(service)
+    async with db.pool.acquire() as conn:
+        with pytest.raises(asyncpg.exceptions.CheckViolationError):
+            await conn.execute(
+                "INSERT INTO subscription_payments (idservice, days, paid_until, source)"
+                " VALUES ($1,0,$2,'manual')",
+                service, svc["paid_until"],
+            )
+
+
 # ── Пробный период ───────────────────────────────────────────────────────────
 
 import config

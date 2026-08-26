@@ -244,9 +244,14 @@ CREATE INDEX IF NOT EXISTS idx_subscription_payments_service
 CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_payments_external
     ON subscription_payments (source, external_id) WHERE external_id IS NOT NULL;
 
+ALTER TABLE subscription_payments
+    ADD COLUMN IF NOT EXISTS refunded_at timestamptz;
+
+-- Журнал помнит и отобранные дни: возврат звёзд и ручное укорачивание. Ноль
+-- по-прежнему отвергается — начисление на ноль дней это опечатка, а не операция
 ALTER TABLE subscription_payments DROP CONSTRAINT IF EXISTS chk_subscription_payments_days;
 ALTER TABLE subscription_payments ADD  CONSTRAINT chk_subscription_payments_days
-    CHECK (days > 0);
+    CHECK (days <> 0);
 
 -- Отметки об отправленных напоминаниях. В ключ входит сам срок: после
 -- продления новый срок получает свои напоминания, а напомнить повторно про

@@ -157,3 +157,62 @@ def test_registration_says_nothing_about_a_trial_while_not_enforced(monkeypatch)
 
     monkeypatch.setattr(render.config, "SUBSCRIPTION_ENFORCED", False)
     assert "Пробный период" not in render.registration_summary(svc, link)
+
+
+def test_tariff_screen_names_the_current_term():
+    """Человек должен видеть, что продлевает, а не покупать вслепую."""
+    text = render.tariff_screen(_svc(datetime.now(timezone.utc) + timedelta(days=3)))
+    assert "оплачена до" in text
+
+
+def test_tariff_screen_does_not_promise_consequences_that_are_switched_off(monkeypatch):
+    """
+    «Оплачена до», а не «действует до»: при выключенной подписке is_active
+    истинен всегда, и просроченный сервис получил бы дату в прошлом со словом
+    «действует». «Оплачена до <прошлое>» — правда в обоих мирах.
+    """
+    monkeypatch.setattr(render.config, "SUBSCRIPTION_ENFORCED", False)
+    text = render.tariff_screen(_svc(datetime.now(timezone.utc) - timedelta(days=10)))
+    assert "оплачена до" in text
+    assert "скрыт из поиска" not in text, "отключения нет — обещать его нельзя"
+
+
+def test_tariff_screen_of_an_expired_service_says_so():
+    text = render.tariff_screen(_svc(datetime.now(timezone.utc) - timedelta(days=1)))
+    assert "истекла" in text
+
+
+def test_tariff_screen_has_no_totals():
+    """Пустое место лучше подписей вроде «Итого» и «выгода 25%»."""
+    text = render.tariff_screen(_svc(datetime.now(timezone.utc) + timedelta(days=3)))
+    assert "Итого" not in text and "выгода" not in text
+
+
+def test_payment_confirmation_names_the_new_date():
+    svc = _svc(datetime.now(timezone.utc) + timedelta(days=33))
+    text = render.payment_done(svc, days=30, restored=False)
+    assert render.local_dt(svc["paid_until"], svc["timezone"]) in text
+
+
+def test_restored_service_is_told_about_out_loud():
+    """
+    Молчаливое воскрешение выглядит как отказ бота выполнять удаление.
+
+    И про то, что вернулось не всё, человек должен узнать от бота, а не через
+    неделю обнаружить сам.
+    """
+    svc = _svc(datetime.now(timezone.utc) + timedelta(days=30))
+    text = render.payment_done(svc, days=30, restored=True)
+    assert "восстановлен" in text
+    assert "заявки" in text.lower() and "админ" in text.lower()
+
+
+def test_ordinary_payment_says_nothing_about_restoring():
+    svc = _svc(datetime.now(timezone.utc) + timedelta(days=30))
+    assert "восстановлен" not in render.payment_done(svc, days=30, restored=False)
+
+
+def test_service_name_is_escaped_in_the_invoice_title():
+    """Правило проекта: всё пользовательское экранируется на выходе."""
+    svc = _svc(datetime.now(timezone.utc)) | {"service_name": "Аста & <Сервис>"}
+    assert "&amp;" in render.invoice_title(svc) or "&" not in render.invoice_title(svc)

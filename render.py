@@ -140,6 +140,59 @@ def subscription_reminder(stage: str, svc) -> str:
     return f"{head}\n{_SURVIVORS}" + _renew_hint()
 
 
+def tariff_screen(svc) -> str:
+    """Шапка экрана тарифов. Кнопки с ценами рисует keyboards.kb_tariffs."""
+    now = datetime.now(timezone.utc)
+    paid_until = svc["paid_until"]
+    # «Оплачена до», а не «действует до»: при выключенной подписке is_active
+    # истинен всегда, и просроченный сервис получил бы дату в прошлом со словом
+    # «действует». «Оплачена до» — правда и когда срок идёт, и когда он прошёл,
+    # но отключение ещё не введено в действие
+    if subscription.is_active(paid_until, now):
+        head = f"💳 Подписка оплачена до {local_dt(paid_until, svc['timezone'])}."
+    else:
+        head = (
+            "⛔️ <b>Подписка истекла.</b> Сервис скрыт из поиска, "
+            "новые записи не принимаются."
+        )
+    return f"{head}\n\nВыберите срок продления:"
+
+
+def invoice_title(svc) -> str:
+    """Заголовок счёта. Telegram показывает его без разметки — но чужого HTML
+    в нём быть не должно всё равно: заголовок попадает и в наши сообщения."""
+    return f"Подписка «{h(svc['service_name'])}»"
+
+
+def invoice_description(plan) -> str:
+    return f"Продление подписки сервиса на {plan.label}."
+
+
+def payment_done(svc, *, days: int, restored: bool) -> str:
+    """Подтверждение оплаты управляющему."""
+    lines = [
+        "✅ <b>Оплата прошла.</b>",
+        f"Подписка действует до {local_dt(svc['paid_until'], svc['timezone'])}.",
+    ]
+    if restored:
+        lines.append(
+            "\n🔄 <b>Сервис восстановлен</b> — он снова в поиске и принимает "
+            "записи.\nЗаявки, отменённые при удалении, и администраторы не "
+            "вернулись: клиентам уже ушло уведомление о закрытии, а админов "
+            "нужно пригласить заново."
+        )
+    return "\n".join(lines)
+
+
+def refund_done(svc, paid_until) -> str:
+    """Уведомление плательщику. Молча отбирать оплаченное нельзя."""
+    return (
+        "↩️ <b>Звёзды возвращены.</b>\n"
+        f"Подписка сервиса «{h(svc['service_name'])}» действует "
+        f"до {local_dt(paid_until, svc['timezone'])}."
+    )
+
+
 def titled_price(title: str, price_rub: int | None) -> str:
     """«Название — от 3 000 ₽» либо просто «Название», без висящего тире.
 

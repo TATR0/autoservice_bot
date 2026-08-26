@@ -28,6 +28,7 @@ BTN_INVITE         = "➕ Пригласить админа"
 BTN_REMOVE_ADMIN   = "➖ Удалить админа"
 BTN_SERVICES       = "🔧 Услуги"
 BTN_SCHEDULE       = "🗓 Расписание"
+BTN_SUBSCRIPTION   = "💳 Подписка"
 BTN_ABOUT          = "ℹ️ О сервисе"
 BTN_SWITCH         = "🔄 Сменить сервис"
 BTN_LEAVE          = "🚪 Уйти из администраторов"
@@ -97,6 +98,7 @@ def kb_owner_main(idservice: str, *, many_services: bool) -> ReplyKeyboardMarkup
         [KeyboardButton(text=BTN_INVITE), KeyboardButton(text=BTN_REMOVE_ADMIN)],
         [KeyboardButton(text=BTN_ADMINS), KeyboardButton(text=BTN_ABOUT)],
         [KeyboardButton(text=BTN_SERVICES), KeyboardButton(text=BTN_SCHEDULE)],
+        [KeyboardButton(text=BTN_SUBSCRIPTION)],
         [KeyboardButton(text=BTN_BOOK_OWN)],
     ]
     if many_services:
@@ -268,3 +270,25 @@ def kb_schedule_days(selected: list[int]) -> InlineKeyboardMarkup:
         ])
     rows.append([InlineKeyboardButton(text="💾 Готово", callback_data="scheddaysdone")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def kb_tariffs() -> InlineKeyboardMarkup:
+    """
+    Кнопки тарифов. В callback_data едят дни, а не цена: цену берём из конфига
+    в момент нажатия, иначе кнопка из прошлогоднего письма выставит счёт по
+    прошлогодней цене.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"{plan.label} — {plan.stars} ⭐",
+            callback_data=f"subscr:buy:{plan.days}",
+        )]
+        for plan in config.STAR_PLANS
+    ])
+
+
+def kb_pay() -> InlineKeyboardMarkup:
+    """Кнопка под письмом о подписке. Ведёт на тот же экран, что и меню."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Продлить подписку", callback_data="subscr:open")]
+    ])

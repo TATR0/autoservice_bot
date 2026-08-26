@@ -96,3 +96,45 @@ def test_schedule_days_marks_selected(webapp_configured):
     assert "✅ пн" in labels
     assert "вт" in " ".join(labels)
     assert "✅ сб" not in labels
+
+
+def test_owner_menu_has_a_subscription_button():
+    kb_markup = kb.kb_owner_main("11111111-1111-1111-1111-111111111111",
+                                 many_services=False)
+    texts = [b.text for row in kb_markup.keyboard for b in row]
+    assert kb.BTN_SUBSCRIPTION in texts
+
+
+def test_admin_menu_has_no_subscription_button():
+    """Подписка сервиса — не дело администратора, как и остальные хозяйские экраны."""
+    kb_markup = kb.kb_admin_main("11111111-1111-1111-1111-111111111111",
+                                 many_services=False)
+    texts = [b.text for row in kb_markup.keyboard for b in row]
+    assert kb.BTN_SUBSCRIPTION not in texts
+
+
+def test_every_plan_gets_a_button():
+    rows = kb.kb_tariffs().inline_keyboard
+    assert len([b for row in rows for b in row]) == len(config.STAR_PLANS)
+
+
+def test_tariff_button_carries_days_not_price():
+    """
+    Цену берём из конфига по дням, а не из callback_data.
+
+    Иначе устаревшая кнопка из прошлогоднего письма выставила бы счёт по
+    прошлогодней цене.
+    """
+    first = kb.kb_tariffs().inline_keyboard[0][0]
+    assert first.callback_data == f"subscr:buy:{config.STAR_PLANS[0].days}"
+
+
+def test_tariff_button_shows_the_price():
+    first = kb.kb_tariffs().inline_keyboard[0][0]
+    assert str(config.STAR_PLANS[0].stars) in first.text
+    assert config.STAR_PLANS[0].label in first.text
+
+
+def test_pay_button_opens_the_tariff_screen():
+    button = kb.kb_pay().inline_keyboard[0][0]
+    assert button.callback_data == "subscr:open"

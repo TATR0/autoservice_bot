@@ -192,6 +192,57 @@ async def test_extension_of_a_missing_service_changes_nothing(service):
     assert await db.extend_subscription(str(uuid.uuid4()), days=30) is None
 
 
+async def test_the_same_charge_is_credited_once(service):
+    """
+    Главное свойство приёма денег: Telegram доставляет апдейт повторно.
+
+    Без занятия права до начисления второй раз либо начислит дни заново, либо
+    уронит транзакцию нарушением уникальности — и то и другое видно клиенту.
+    """
+    first = await db.extend_subscription(
+        service, days=30, source="stars", external_id="charge_1", granted_by=1
+    )
+    second = await db.extend_subscription(
+        service, days=30, source="stars", external_id="charge_1", granted_by=1
+    )
+    assert second == first, "повтор обязан вернуть тот же срок, а не новый"
+
+    async with db.pool.acquire() as conn:
+        rows = await conn.fetchval(
+            "SELECT count(*) FROM subscription_payments"
+            " WHERE idservice=$1 AND source='stars'",
+            service,
+        )
+    assert rows == 1, "в журнале должен остаться один платёж"
+
+
+async def test_different_charges_are_credited_separately(service):
+    first = await db.extend_subscription(
+        service, days=30, source="stars", external_id="charge_a", granted_by=1
+    )
+    second = await db.extend_subscription(
+        service, days=30, source="stars", external_id="charge_b", granted_by=1
+    )
+    assert second == first + timedelta(days=30)
+
+
+async def test_negative_days_shorten_the_term(service):
+    before = (await db.get_service(service))["paid_until"]
+    after = await db.extend_subscription(service, days=-10)
+    assert after == before - timedelta(days=10)
+
+
+async def test_shortening_is_written_to_the_journal(service):
+    await db.extend_subscription(service, days=-10)
+    async with db.pool.acquire() as conn:
+        days = await conn.fetchval(
+            "SELECT days FROM subscription_payments"
+            " WHERE idservice=$1 AND days < 0",
+            service,
+        )
+    assert days == -10
+
+
 # ── Журнал платежей ──────────────────────────────────────────────────────────
 
 

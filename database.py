@@ -550,7 +550,7 @@ class Database:
         Строка сервиса блокируется на время расчёта: два продления подряд не
         должны посчитать новый срок от одного и того же остатка.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         async with self.pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "SELECT paid_until FROM services"
@@ -559,18 +559,31 @@ class Database:
             )
             if row is None:
                 return None
-            paid_until = subscription.extend(row["paid_until"], now, days)
-            await conn.execute(
-                "UPDATE services SET paid_until=$2 WHERE idservice=$1",
-                idservice, paid_until,
-            )
-            await conn.execute(
+
+            paid_until = subscription.apply_days(row["paid_until"], now, days)
+
+            # Право на начисление занимается до самого начисления — тем же
+            # приёмом, что и право на письмо в claim_reminder. Telegram
+            # доставляет успешный платёж повторно, и второй раз начислять
+            # нечего: деньги те же
+            claimed = await conn.fetchrow(
                 """
                 INSERT INTO subscription_payments
                     (idservice, days, paid_until, source, external_id, granted_by)
                 VALUES ($1,$2,$3,$4,$5,$6)
+                ON CONFLICT DO NOTHING
+                RETURNING idpayment
                 """,
                 idservice, days, paid_until, source, external_id, granted_by,
+            )
+            if claimed is None:
+                # Этот платёж уже зачтён. Возвращаем срок, который есть, —
+                # плательщик увидит ту же дату и не заметит, что повторилось
+                return row["paid_until"]
+
+            await conn.execute(
+                "UPDATE services SET paid_until=$2 WHERE idservice=$1",
+                idservice, paid_until,
             )
         return paid_until
 

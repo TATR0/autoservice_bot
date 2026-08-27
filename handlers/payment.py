@@ -17,7 +17,7 @@ from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import default_state
-from aiogram.types import CallbackQuery, LabeledPrice, Message
+from aiogram.types import CallbackQuery, LabeledPrice, Message, PreCheckoutQuery
 
 import config
 import keyboards as kb
@@ -100,3 +100,31 @@ async def buy_plan(callback: CallbackQuery, state: FSMContext) -> None:
         currency="XTR",
         prices=[LabeledPrice(label=plan.label, amount=plan.stars)],
     )
+
+
+@router.pre_checkout_query()
+async def pre_checkout(query: PreCheckoutQuery) -> None:
+    """
+    Последняя проверка перед списанием. Telegram ждёт ответа десять секунд.
+
+    Поэтому здесь только разбор payload и одно чтение сервиса — ничего
+    тяжёлого. Отказ на этом шаге не стоит человеку ни звезды.
+    """
+    parsed = parse_payload(query.invoice_payload)
+    if parsed is None:
+        await query.answer(False, error_message="Счёт испорчен. Откройте оплату заново.")
+        return
+
+    idservice, days = parsed
+    if config.plan_by_days(days) is None:
+        await query.answer(False, error_message="Этот тариф больше не действует.")
+        return
+
+    # Удалён заранее — не берём денег вовсе. Воскрешение при оплате (см.
+    # db.apply_stars_payment) закрывает только щель между этой проверкой и
+    # списанием, а не заменяет её
+    if await db.get_service(idservice) is None:
+        await query.answer(False, error_message="Сервис недоступен. Оплата отменена.")
+        return
+
+    await query.answer(True)

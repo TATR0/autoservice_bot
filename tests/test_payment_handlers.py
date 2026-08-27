@@ -82,3 +82,62 @@ async def test_admin_is_refused_the_tariff_screen(monkeypatch):
 
     assert refused, "проверка владельца обязана быть вызвана"
     assert message.answers == [], "чужому экран не рисуем"
+
+
+# ── Проверка перед списанием ─────────────────────────────────────────────────
+# Telegram ждёт ответа десять секунд: не ответил — платёж не состоится. Отказ
+# на этом шаге не стоит человеку ни звезды, деньги ещё не списаны.
+
+
+class FakePreCheckout:
+    def __init__(self, payload: str, total_amount: int = 150):
+        self.invoice_payload = payload
+        self.total_amount = total_amount
+        self.answers = []
+
+    async def answer(self, ok: bool, error_message: str | None = None):
+        self.answers.append((ok, error_message))
+
+
+@pytest.fixture
+def live_service(monkeypatch):
+    async def _service(_id):
+        return {"idservice": SERVICE_ID, "service_name": "Тест"}
+
+    monkeypatch.setattr(payment.db, "get_service", _service)
+
+
+async def test_good_invoice_is_let_through(live_service):
+    query = FakePreCheckout(payment.make_payload(SERVICE_ID, 30))
+    await payment.pre_checkout(query)
+    assert query.answers == [(True, None)]
+
+
+async def test_broken_payload_is_refused_with_words(live_service):
+    query = FakePreCheckout("мусор")
+    await payment.pre_checkout(query)
+    ok, message = query.answers[0]
+    assert ok is False
+    assert message, "отказ без текста человек не поймёт"
+
+
+async def test_unknown_plan_is_refused(live_service):
+    query = FakePreCheckout(payment.make_payload(SERVICE_ID, 7))
+    await payment.pre_checkout(query)
+    assert query.answers[0][0] is False
+
+
+async def test_deleted_service_is_refused_before_the_money(monkeypatch):
+    """
+    Не взять денег лучше, чем взять и чинить последствия.
+
+    Восстановление сервиса при оплате закрывает только щель между этой
+    проверкой и списанием, а не заменяет её.
+    """
+    async def _gone(_id):
+        return None
+
+    monkeypatch.setattr(payment.db, "get_service", _gone)
+    query = FakePreCheckout(payment.make_payload(SERVICE_ID, 30))
+    await payment.pre_checkout(query)
+    assert query.answers[0][0] is False

@@ -24,6 +24,7 @@ import keyboards as kb
 import render
 from database import db
 from handlers.common import require_owner_service
+from validators import _UUID_RE
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -47,7 +48,9 @@ def parse_payload(raw: str) -> tuple[str, int] | None:
     if len(parts) != 3 or parts[0] != PAYLOAD_PREFIX:
         return None
     idservice, days = parts[1], parts[2]
-    if not idservice or not days.isdecimal():
+    # services.idservice — колонка типа uuid: не-UUID строка дошла бы до
+    # db.get_service и уронила бы asyncpg DataError вместо понятного отказа
+    if not _UUID_RE.match(idservice) or not days.isdecimal():
         return None
     return idservice, int(days)
 
@@ -139,14 +142,15 @@ async def paid(message: Message) -> None:
     на начисление занимается уникальным индексом по (source, external_id).
     """
     payment_info = message.successful_payment
+    charge_id = payment_info.telegram_payment_charge_id
     parsed = parse_payload(payment_info.invoice_payload)
     if parsed is None:
         logger.error(
             "Платёж %s с неразбираемым payload %r",
-            payment_info.telegram_payment_charge_id, payment_info.invoice_payload,
+            charge_id, payment_info.invoice_payload,
         )
         await message.answer(
-            "✅ Оплата прошла, но счёт не удалось распознать. "
+            "⚠️ Оплата прошла, но счёт не удалось распознать. "
             "Напишите нам — разберёмся вручную."
         )
         return
@@ -158,28 +162,53 @@ async def paid(message: Message) -> None:
         # у нас, — но расхождение должно быть видно в логе
         logger.warning(
             "Платёж %s: заплачено %d звёзд, тариф стоит %d",
-            payment_info.telegram_payment_charge_id,
-            payment_info.total_amount, plan.stars,
+            charge_id, payment_info.total_amount, plan.stars,
         )
 
-    applied = await db.apply_stars_payment(
-        idservice,
-        days=days,
-        charge_id=payment_info.telegram_payment_charge_id,
-        payer_id=message.from_user.id,
-    )
-    if applied is None:
-        logger.error(
-            "Платёж %s за несуществующий сервис %s",
-            payment_info.telegram_payment_charge_id, idservice,
+    # Деньги уже списаны — необработанное исключение отсюда ловит только
+    # ErrorLoggingMiddleware, а в его логе нет ни charge_id, ни idservice, ни
+    # days: разбирать инцидент вручную было бы не по чему
+    try:
+        applied = await db.apply_stars_payment(
+            idservice,
+            days=days,
+            charge_id=charge_id,
+            payer_id=message.from_user.id,
+        )
+        if applied is None:
+            logger.error(
+                "Платёж %s за несуществующий сервис %s, дней=%d",
+                charge_id, idservice, days,
+            )
+            await message.answer(
+                "⚠️ Оплата прошла, но сервис не найден. "
+                "Напишите нам — вернём звёзды."
+            )
+            return
+
+        svc = await db.get_service(idservice)
+    except Exception:
+        logger.exception(
+            "Платёж %s: сбой зачисления, idservice=%s, дней=%d",
+            charge_id, idservice, days,
         )
         await message.answer(
-            "✅ Оплата прошла, но сервис не найден. "
-            "Напишите нам — вернём звёзды."
+            "⚠️ Оплата прошла, зачисление задержалось. "
+            "Мы уже видим платёж и разберёмся."
         )
         return
 
-    svc = await db.get_service(idservice)
+    if svc is None:
+        # Дни начислены — apply_stars_payment вернул не None, — но без имени
+        # сервиса и часового пояса render.payment_done не собрать. Заглушку
+        # вместо имени не выдумываем, отвечаем коротким подтверждением
+        logger.error(
+            "Платёж %s: дни начислены, но get_service(%s) вернул None",
+            charge_id, idservice,
+        )
+        await message.answer("✅ Оплата прошла, дни начислены.")
+        return
+
     await message.answer(
         render.payment_done(svc, days=days, restored=applied.restored)
     )

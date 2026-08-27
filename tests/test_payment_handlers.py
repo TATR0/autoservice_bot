@@ -1,5 +1,6 @@
 """Оплата звёздами. Базы не требует — слой БД и Telegram подменены."""
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -29,6 +30,14 @@ def test_broken_payload_is_not_guessed():
 def test_non_ascii_digits_do_not_crash_the_parser():
     """isdigit() истинно для «²», int() его не парсит — уже ловили в /extend."""
     assert payment.parse_payload(f"sub:{SERVICE_ID}:²") is None
+
+
+def test_non_uuid_id_is_rejected():
+    """
+    Мусор вместо UUID не должен доходить до asyncpg — там DataError,
+    потому что services.idservice имеет тип uuid.
+    """
+    assert payment.parse_payload("sub:not-a-uuid:30") is None
 
 
 class FakeScreenMessage:
@@ -130,6 +139,26 @@ async def test_unknown_plan_is_refused(live_service):
     assert query.answers[0][0] is False
 
 
+async def test_non_uuid_payload_is_refused_before_touching_the_database(monkeypatch):
+    """
+    Мусорный id не должен доходить до db.get_service — там asyncpg роняет
+    DataError, потому что колонка идентификатора типа uuid.
+    """
+    calls = []
+
+    async def _track(idservice):
+        calls.append(idservice)
+        return {"idservice": SERVICE_ID}
+
+    monkeypatch.setattr(payment.db, "get_service", _track)
+    query = FakePreCheckout("sub:not-a-uuid:30")
+    await payment.pre_checkout(query)
+    ok, message = query.answers[0]
+    assert ok is False
+    assert message, "отказ без текста человек не поймёт"
+    assert calls == [], "мусорный id не должен доходить до db.get_service"
+
+
 async def test_deleted_service_is_refused_before_the_money(monkeypatch):
     """
     Не взять денег лучше, чем взять и чинить последствия.
@@ -209,3 +238,80 @@ async def test_broken_payload_after_payment_does_not_crash(applied):
     await payment.paid(message)
     assert applied == []
     assert message.answers, "молчать после списания нельзя"
+    assert message.answers[0].startswith("⚠️"), (
+        "деньги списаны, а счёт не распознан — галочка тут врёт"
+    )
+
+
+@pytest.fixture
+def applied_missing_service(monkeypatch):
+    """apply_stars_payment не нашёл сервис — вернул None."""
+    calls = []
+
+    async def _apply(idservice, *, days, charge_id, payer_id):
+        calls.append((idservice, days, charge_id, payer_id))
+        return None
+
+    monkeypatch.setattr(payment.db, "apply_stars_payment", _apply)
+    return calls
+
+
+async def test_applied_is_none_answers_and_does_not_crash(applied_missing_service, caplog):
+    message = FakePaidMessage(payment.make_payload(SERVICE_ID, 30), charge_id="ch_none")
+    with caplog.at_level(logging.ERROR):
+        await payment.paid(message)
+
+    assert applied_missing_service, "apply_stars_payment обязан быть вызван"
+    assert message.answers, "человек обязан получить ответ"
+    assert message.answers[0].startswith("⚠️"), (
+        "деньги списаны, сервис не найден — галочка тут врёт"
+    )
+    assert "ch_none" in caplog.text, "charge_id обязан попасть в лог для разбора инцидента"
+
+
+@pytest.fixture
+def applied_raises(monkeypatch):
+    """db.apply_stars_payment падает — например, обрыв связи с базой."""
+    async def _apply(idservice, *, days, charge_id, payer_id):
+        raise RuntimeError("db connection lost")
+
+    monkeypatch.setattr(payment.db, "apply_stars_payment", _apply)
+
+
+async def test_apply_stars_payment_failure_does_not_crash(applied_raises, caplog):
+    """
+    Деньги списаны, зачисление могло не пройти. Хендлер не должен упасть
+    необработанным исключением, а лог обязан содержать charge_id для разбора.
+    """
+    message = FakePaidMessage(payment.make_payload(SERVICE_ID, 30), charge_id="ch_boom")
+    with caplog.at_level(logging.ERROR):
+        await payment.paid(message)
+
+    assert message.answers, "молчать после аварии нельзя"
+    assert message.answers[0].startswith("⚠️")
+    assert "ch_boom" in caplog.text, "charge_id обязан попасть в лог для разбора инцидента"
+
+
+async def test_missing_service_after_credit_confirms_without_name(applied, monkeypatch, caplog):
+    """
+    Дни начислены успешно, но get_service вернул None: имени и часового пояса
+    нет — render.payment_done на них упал бы TypeError. Подтверждение обязано
+    уйти без названия сервиса, без выдуманных заглушек.
+    """
+    async def _gone(_id):
+        return None
+
+    monkeypatch.setattr(payment.db, "get_service", _gone)
+    message = FakePaidMessage(payment.make_payload(SERVICE_ID, 30), charge_id="ch_gone")
+    with caplog.at_level(logging.ERROR):
+        await payment.paid(message)
+
+    assert applied == [(SERVICE_ID, 30, "ch_gone", 999_000_001)], (
+        "дни обязаны быть начислены до того, как читаем сервис обратно"
+    )
+    assert message.answers, "подтверждение обязано уйти — дни уже начислены"
+    assert message.answers[0].startswith("✅"), "начисление прошло полностью успешно"
+    assert "Тест" not in message.answers[0], (
+        "имени сервиса нет — заглушку вместо него не выдумываем"
+    )
+    assert "ch_gone" in caplog.text, "charge_id обязан попасть в лог для разбора инцидента"

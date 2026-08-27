@@ -128,3 +128,58 @@ async def pre_checkout(query: PreCheckoutQuery) -> None:
         return
 
     await query.answer(True)
+
+
+@router.message(F.successful_payment)
+async def paid(message: Message) -> None:
+    """
+    Деньги уже списаны — отсюда нельзя уйти молча ни при какой ошибке.
+
+    Повторную доставку того же платежа отсекает db.extend_subscription: право
+    на начисление занимается уникальным индексом по (source, external_id).
+    """
+    payment_info = message.successful_payment
+    parsed = parse_payload(payment_info.invoice_payload)
+    if parsed is None:
+        logger.error(
+            "Платёж %s с неразбираемым payload %r",
+            payment_info.telegram_payment_charge_id, payment_info.invoice_payload,
+        )
+        await message.answer(
+            "✅ Оплата прошла, но счёт не удалось распознать. "
+            "Напишите нам — разберёмся вручную."
+        )
+        return
+
+    idservice, days = parsed
+    plan = config.plan_by_days(days)
+    if plan is not None and plan.stars != payment_info.total_amount:
+        # Цену поменяли, пока счёт лежал в чате. Дни начисляем — деньги уже
+        # у нас, — но расхождение должно быть видно в логе
+        logger.warning(
+            "Платёж %s: заплачено %d звёзд, тариф стоит %d",
+            payment_info.telegram_payment_charge_id,
+            payment_info.total_amount, plan.stars,
+        )
+
+    applied = await db.apply_stars_payment(
+        idservice,
+        days=days,
+        charge_id=payment_info.telegram_payment_charge_id,
+        payer_id=message.from_user.id,
+    )
+    if applied is None:
+        logger.error(
+            "Платёж %s за несуществующий сервис %s",
+            payment_info.telegram_payment_charge_id, idservice,
+        )
+        await message.answer(
+            "✅ Оплата прошла, но сервис не найден. "
+            "Напишите нам — вернём звёзды."
+        )
+        return
+
+    svc = await db.get_service(idservice)
+    await message.answer(
+        render.payment_done(svc, days=days, restored=applied.restored)
+    )

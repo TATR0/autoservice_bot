@@ -1,9 +1,12 @@
 """Оплата звёздами. Базы не требует — слой БД и Telegram подменены."""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 import config
 import handlers.payment as payment
+from database import PaymentApplied
 
 pytestmark = pytest.mark.asyncio
 
@@ -141,3 +144,68 @@ async def test_deleted_service_is_refused_before_the_money(monkeypatch):
     query = FakePreCheckout(payment.make_payload(SERVICE_ID, 30))
     await payment.pre_checkout(query)
     assert query.answers[0][0] is False
+
+
+# ── Зачисление платежа ───────────────────────────────────────────────────────
+# Деньги уже списаны: молчать или падать здесь нельзя ни при каком вводе.
+
+
+class FakePayment:
+    def __init__(self, payload: str, charge_id: str = "ch_1", amount: int = 150):
+        self.invoice_payload = payload
+        self.telegram_payment_charge_id = charge_id
+        self.total_amount = amount
+        self.currency = "XTR"
+
+
+class FakePaidMessage:
+    def __init__(self, payload: str, user_id: int = 999_000_001, **kwargs):
+        self.successful_payment = FakePayment(payload, **kwargs)
+        self.from_user = type("User", (), {"id": user_id})()
+        self.answers = []
+
+    async def answer(self, text, **kwargs):
+        self.answers.append(text)
+
+
+@pytest.fixture
+def applied(monkeypatch):
+    calls = []
+
+    async def _apply(idservice, *, days, charge_id, payer_id):
+        calls.append((idservice, days, charge_id, payer_id))
+        # PaymentApplied — класс уровня модуля database, а не атрибут db:
+        # db это экземпляр Database, и через него класс не достать
+        return PaymentApplied(
+            paid_until=datetime.now(timezone.utc) + timedelta(days=days),
+            restored=False,
+        )
+
+    async def _service(_id):
+        return {
+            "idservice": SERVICE_ID,
+            "service_name": "Тест",
+            "timezone": "Europe/Moscow",
+            "paid_until": datetime.now(timezone.utc) + timedelta(days=30),
+        }
+
+    monkeypatch.setattr(payment.db, "apply_stars_payment", _apply)
+    monkeypatch.setattr(payment.db, "get_service", _service)
+    return calls
+
+
+async def test_payment_credits_the_service(applied):
+    message = FakePaidMessage(payment.make_payload(SERVICE_ID, 30))
+    await payment.paid(message)
+    assert applied == [(SERVICE_ID, 30, "ch_1", 999_000_001)]
+    assert message.answers, "человек обязан увидеть подтверждение"
+
+
+async def test_broken_payload_after_payment_does_not_crash(applied):
+    """
+    Деньги уже списаны. Падение здесь означало бы платёж без товара и без следа.
+    """
+    message = FakePaidMessage("мусор")
+    await payment.paid(message)
+    assert applied == []
+    assert message.answers, "молчать после списания нельзя"

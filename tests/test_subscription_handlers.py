@@ -91,6 +91,131 @@ async def test_missing_service_is_reported(extended, monkeypatch):
     assert "не найден" in " ".join(message.answers).lower()
 
 
+async def test_owner_can_grant_a_century(extended):
+    """Бессрочная подписка — это очень длинный срок, а не отдельное состояние."""
+    message = FakeMessage(f"/extend {SERVICE_ID} 36500", OWNER_ID)
+    await handler.extend_command(message)
+    assert extended == [(SERVICE_ID, 36500, OWNER_ID)]
+
+
+async def test_owner_can_take_days_back(extended):
+    """Необратимая операция без отмены рано или поздно случается."""
+    message = FakeMessage(f"/extend {SERVICE_ID} -30", OWNER_ID)
+    await handler.extend_command(message)
+    assert extended == [(SERVICE_ID, -30, OWNER_ID)]
+
+
+async def test_zero_is_still_rejected(extended):
+    message = FakeMessage(f"/extend {SERVICE_ID} 0", OWNER_ID)
+    await handler.extend_command(message)
+    assert extended == []
+
+
+async def test_minus_zero_is_rejected_too(extended):
+    message = FakeMessage(f"/extend {SERVICE_ID} -0", OWNER_ID)
+    await handler.extend_command(message)
+    assert extended == []
+
+
+async def test_absurd_number_is_rejected(extended):
+    message = FakeMessage(f"/extend {SERVICE_ID} 999999", OWNER_ID)
+    await handler.extend_command(message)
+    assert extended == []
+
+
+# ── «/refund» ────────────────────────────────────────────────────────────────
+
+PAYMENT_ID = "22222222-2222-2222-2222-222222222222"
+PAYER_ID = 999_000_300
+
+
+class FakeBot:
+    """Подменяет aiogram.Bot.refund_star_payment: до Telegram тест не ходит."""
+
+    def __init__(self, exc: Exception | None = None):
+        self.exc = exc
+        self.refund_calls = []
+
+    async def refund_star_payment(self, *, user_id, telegram_payment_charge_id):
+        self.refund_calls.append((user_id, telegram_payment_charge_id))
+        if self.exc is not None:
+            raise self.exc
+
+
+def _payment_record(refunded_at=None):
+    return {
+        "idpayment": PAYMENT_ID,
+        "idservice": SERVICE_ID,
+        "granted_by": PAYER_ID,
+        "refunded_at": refunded_at,
+    }
+
+
+@pytest.fixture
+def refundable(monkeypatch):
+    """Слой БД и уведомления подменены: проверяем разбор и права, а не Telegram."""
+    sent = []
+
+    async def _safe_send(bot, chat_id, text, **kwargs):
+        sent.append((chat_id, text))
+        return True
+
+    async def _get_payment(_charge_id):
+        return _payment_record()
+
+    async def _revoke(_idpayment):
+        return datetime.now(timezone.utc) + timedelta(days=5)
+
+    async def _service(_id):
+        return {"service_name": "Тест", "timezone": "Europe/Moscow"}
+
+    monkeypatch.setattr(handler.config, "BOT_OWNER_IDS", (OWNER_ID,))
+    monkeypatch.setattr(handler.db, "get_stars_payment", _get_payment)
+    monkeypatch.setattr(handler.db, "revoke_payment", _revoke)
+    monkeypatch.setattr(handler.db, "get_service", _service)
+    monkeypatch.setattr(handler, "safe_send", _safe_send)
+    return sent
+
+
+async def test_stranger_cannot_refund():
+    """Знать о существовании команды постороннему незачем."""
+    message = FakeMessage("/refund ch_1", STRANGER_ID)
+    await handler.refund_command(message, None)
+    assert message.answers == []
+
+
+async def test_owner_can_refund_a_payment(refundable):
+    bot = FakeBot()
+    message = FakeMessage(f"/refund {PAYMENT_ID}", OWNER_ID)
+    await handler.refund_command(message, bot)
+    assert bot.refund_calls == [(PAYER_ID, PAYMENT_ID)]
+    assert message.answers, "владельцу бота нужно подтверждение"
+    assert len(refundable) == 1 and refundable[0][0] == PAYER_ID, (
+        "плательщику должно уйти уведомление"
+    )
+
+
+async def test_refund_for_deleted_service_does_not_crash(refundable, monkeypatch):
+    """
+    Поправка контролёра: db.get_service фильтрует idrecstatus=0 и для
+    удалённого сервиса вернёт None. Деньги и дни к этому моменту уже отобраны
+    обратно — хендлер обязан ответить владельцу, а не упасть TypeError-ом.
+    """
+
+    async def _none(_id):
+        return None
+
+    monkeypatch.setattr(handler.db, "get_service", _none)
+    bot = FakeBot()
+    message = FakeMessage(f"/refund {PAYMENT_ID}", OWNER_ID)
+    await handler.refund_command(message, bot)
+
+    assert bot.refund_calls == [(PAYER_ID, PAYMENT_ID)], "деньги должны вернуться"
+    assert message.answers, "владелец бота должен получить подтверждение"
+    assert "удал" in " ".join(message.answers).lower()
+    assert refundable == [], "плательщику про удалённый сервис слать нечего"
+
+
 # ── «Записаться в свой сервис» ───────────────────────────────────────────────
 # Пятый вход в форму, и единственный, который открывает её сотрудник. Гейты
 # ниже его поймают, но покажут клиентский текст: предложат позвонить самому

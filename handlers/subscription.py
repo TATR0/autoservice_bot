@@ -111,12 +111,39 @@ async def refund_command(message: Message, bot: Bot) -> None:
         await message.answer(f"❌ Telegram отказал: {h(str(exc))}")
         return
 
-    paid_until = await db.revoke_payment(str(payment["idpayment"]))
+    # Деньги уже ушли плательщику — шаг необратимый. Дальше два похода в базу,
+    # и падать здесь молча нельзя: непойманное исключение уйдёт в
+    # ErrorLoggingMiddleware без charge_id и idpayment, а повторный /refund —
+    # тупик: Telegram откажет, потому что этот платёж он уже вернул
+    try:
+        paid_until = await db.revoke_payment(str(payment["idpayment"]))
+    except Exception:
+        logger.exception(
+            "Возврат %s: звёзды вернулись, а revoke_payment упал,"
+            " idpayment=%s, idservice=%s, days=%s",
+            parts[1], payment["idpayment"], payment["idservice"], payment["days"],
+        )
+        await message.answer(
+            "⚠️ Звёзды вернулись плательщику, но дни подписки не отобраны — "
+            "сбой базы. Повторный /refund не поможет: Telegram этот платёж "
+            "уже вернул. Отберите дни вручную:\n"
+            f"<code>/extend {payment['idservice']} -{payment['days']}</code>"
+        )
+        return
+
     if paid_until is None:
         await message.answer("Звёзды возвращены, но платёж уже был отменён раньше.")
         return
 
-    svc = await db.get_service(str(payment["idservice"]))
+    # Дальше и деньги, и дни уже списаны обратно — падать нельзя. get_service
+    # нужен только для текста ответа
+    try:
+        svc = await db.get_service(str(payment["idservice"]))
+    except Exception:
+        logger.exception("Возврат %s: дни отобраны, но сервис не прочитать", parts[1])
+        await message.answer("↩️ Возвращено.")
+        return
+
     if svc is None:
         # Сервис удалён (idrecstatus != 0): db.get_service его не находит,
         # хотя db.revoke_payment уже отобрал дни исправно. Деньги и дни к

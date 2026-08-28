@@ -1,5 +1,6 @@
 """Команда /extend. Базы не требуют — слой БД подменён."""
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -142,12 +143,13 @@ class FakeBot:
             raise self.exc
 
 
-def _payment_record(refunded_at=None):
+def _payment_record(refunded_at=None, days=5):
     return {
         "idpayment": PAYMENT_ID,
         "idservice": SERVICE_ID,
         "granted_by": PAYER_ID,
         "refunded_at": refunded_at,
+        "days": days,
     }
 
 
@@ -214,6 +216,55 @@ async def test_refund_for_deleted_service_does_not_crash(refundable, monkeypatch
     assert message.answers, "владелец бота должен получить подтверждение"
     assert "удал" in " ".join(message.answers).lower()
     assert refundable == [], "плательщику про удалённый сервис слать нечего"
+
+
+async def test_revoke_payment_failure_after_refund_does_not_crash(refundable, monkeypatch, caplog):
+    """
+    Деньги уже вернулись плательщику — это необратимо. Если revoke_payment
+    падает (обрыв связи, дедлок), хендлер не должен рухнуть необработанным
+    исключением, а обязан честно сказать: деньги вернулись, дни — нет, и
+    назвать рабочее средство — /extend с реальными id и отрицательным числом
+    дней, скопировать и выполнить.
+    """
+
+    async def _boom(_idpayment):
+        raise RuntimeError("db connection lost")
+
+    monkeypatch.setattr(handler.db, "revoke_payment", _boom)
+    bot = FakeBot()
+    message = FakeMessage(f"/refund {PAYMENT_ID}", OWNER_ID)
+    with caplog.at_level(logging.ERROR):
+        await handler.refund_command(message, bot)
+
+    assert bot.refund_calls == [(PAYER_ID, PAYMENT_ID)], "деньги уже должны были уйти"
+    assert message.answers, "владелец бота обязан получить ответ, а не тишину"
+    answer = " ".join(message.answers)
+    assert f"/extend {SERVICE_ID} -5" in answer, (
+        "рабочее средство — /extend с id сервиса и отрицательным числом дней, "
+        "готовое к копированию"
+    )
+    assert PAYMENT_ID in caplog.text, "charge_id обязан попасть в лог для разбора инцидента"
+    assert refundable == [], "плательщику после аварии слать нечего"
+
+
+async def test_get_service_failure_after_revoke_does_not_crash(refundable, monkeypatch, caplog):
+    """
+    К этому моменту и деньги, и дни уже списаны обратно — падать нельзя.
+    get_service нужен только для текста ответа.
+    """
+
+    async def _boom(_id):
+        raise RuntimeError("db connection lost")
+
+    monkeypatch.setattr(handler.db, "get_service", _boom)
+    bot = FakeBot()
+    message = FakeMessage(f"/refund {PAYMENT_ID}", OWNER_ID)
+    with caplog.at_level(logging.ERROR):
+        await handler.refund_command(message, bot)
+
+    assert bot.refund_calls == [(PAYER_ID, PAYMENT_ID)], "деньги уже должны были уйти"
+    assert message.answers, "владелец бота обязан получить ответ, а не тишину"
+    assert PAYMENT_ID in caplog.text, "charge_id обязан попасть в лог для разбора инцидента"
 
 
 # ── «Записаться в свой сервис» ───────────────────────────────────────────────

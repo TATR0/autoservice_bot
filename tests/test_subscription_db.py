@@ -680,3 +680,54 @@ async def test_refund_can_push_the_term_into_the_past(service):
 
 async def test_unknown_charge_is_not_found(service):
     assert await db.get_stars_payment("charge_that_never_was") is None
+
+
+# ── Сквозная проверка ────────────────────────────────────────────────────────
+
+# Идентификаторы списаний уникальны на каждый прогон: уникальный индекс по
+# (source, external_id) живёт во всей базе, а не в пределах сервиса, и строка,
+# оставшаяся от аварийно прерванного прогона, тихо превратила бы начисление в
+# повторную доставку — тест позеленел бы, ничего не проверив
+def _charge(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:8]}"
+
+
+async def test_payment_round_trip(service):
+    """
+    Полный круг: истёк → оплачен → вернулся в поиск → возврат → снова истёк.
+    """
+    svc = await db.get_service(service)
+    await _expire(service)
+    assert all(
+        str(row["idservice"]) != service
+        for row in await db.get_services_by_city(svc["city"])
+    )
+
+    charge_id = _charge("ch_round")
+    applied = await db.apply_stars_payment(
+        service, days=30, charge_id=charge_id, payer_id=999_000_001
+    )
+    assert applied.restored is False, "сервис не удаляли — воскрешать нечего"
+    assert any(
+        str(row["idservice"]) == service
+        for row in await db.get_services_by_city(svc["city"])
+    )
+
+    payment = await db.get_stars_payment(charge_id)
+    await db.revoke_payment(str(payment["idpayment"]))
+    assert all(
+        str(row["idservice"]) != service
+        for row in await db.get_services_by_city(svc["city"])
+    ), "звёзды вернули — оплаченного срока больше нет"
+
+
+async def test_a_redelivered_payment_does_not_pay_twice(service):
+    """Свойство, ради которого заводился уникальный индекс, — на живой базе."""
+    charge_id = _charge("ch_twice")
+    first = await db.apply_stars_payment(
+        service, days=30, charge_id=charge_id, payer_id=999_000_001
+    )
+    second = await db.apply_stars_payment(
+        service, days=30, charge_id=charge_id, payer_id=999_000_001
+    )
+    assert second.paid_until == first.paid_until

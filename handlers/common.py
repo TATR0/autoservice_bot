@@ -142,14 +142,16 @@ async def show_main_menu(
         f"Активный сервис: <b>{h(svc['service_name'])}</b>"
     )
 
-    # Только к обычному приветствию: подшивать предупреждение о подписке к
-    # «✅ Часы работы обновлены» значит показывать его на каждый чих
-    if greeting is None and role == "owner":
-        note = render.subscription_line(svc)
-        if note:
-            text = f"{text}\n\n{note}"
-
     await message.answer(
         text,
         reply_markup=main_menu_markup(svc, role, len(services) > 1),
     )
+
+    # Отдельным сообщением, а не строкой в меню: к reply-клавиатуре inline-кнопку
+    # не приложить, а строка о подписке без способа продлить её бесполезна.
+    # Только к обычному приветствию: подшивать предупреждение к «✅ Часы работы
+    # обновлены» значит показывать его на каждый чих
+    if greeting is None and role == "owner":
+        note = render.subscription_line(svc)
+        if note:
+            await message.answer(note, reply_markup=kb.kb_pay())

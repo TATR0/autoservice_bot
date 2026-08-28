@@ -91,3 +91,38 @@ async def test_cancel_reaches_the_loop_mid_round(monkeypatch):
     task = asyncio.create_task(notifications.send_reminders_forever(None, 0))
     await asyncio.wait_for(entered.wait(), PATIENCE)
     await _stop(task)
+
+
+async def test_reminder_carries_a_pay_button(monkeypatch):
+    """
+    Момент, когда человек готов платить, — момент письма.
+
+    Заставить его идти искать кнопку в меню значит потерять часть платежей.
+    """
+    import keyboards as kb
+
+    sent = []
+
+    async def _fake_send(bot, chat_id, text, **kwargs):
+        sent.append(kwargs.get("reply_markup"))
+        return True
+
+    async def _one_service():
+        from datetime import datetime, timedelta, timezone
+        return [{
+            "idservice": "11111111-1111-1111-1111-111111111111",
+            "service_name": "Тест",
+            "owner_id": 1,
+            "timezone": "Europe/Moscow",
+            "paid_until": datetime.now(timezone.utc) + timedelta(hours=20),
+        }]
+
+    async def _claim(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(notifications, "safe_send", _fake_send)
+    monkeypatch.setattr(notifications.db, "services_for_reminders", _one_service)
+    monkeypatch.setattr(notifications.db, "claim_reminder", _claim)
+
+    await notifications.send_subscription_reminders(None)
+    assert sent and sent[0] == kb.kb_pay()

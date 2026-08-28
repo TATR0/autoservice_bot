@@ -20,6 +20,7 @@ from aiogram.exceptions import (
 from aiogram.types import InlineKeyboardMarkup
 
 import config
+import keyboards as kb
 import render
 import subscription
 from database import db
@@ -135,7 +136,10 @@ async def send_subscription_reminders(bot: Bot) -> int:
         ):
             continue
         if await safe_send(
-            bot, svc["owner_id"], render.subscription_reminder(stage, svc)
+            bot,
+            svc["owner_id"],
+            render.subscription_reminder(stage, svc),
+            reply_markup=kb.kb_pay(),
         ):
             sent += 1
         await asyncio.sleep(BROADCAST_DELAY)

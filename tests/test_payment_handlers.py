@@ -315,3 +315,31 @@ async def test_missing_service_after_credit_confirms_without_name(applied, monke
         "имени сервиса нет — заглушку вместо него не выдумываем"
     )
     assert "ch_gone" in caplog.text, "charge_id обязан попасть в лог для разбора инцидента"
+
+
+async def test_unreadable_service_after_credit_is_not_called_a_delay(
+    applied, monkeypatch, caplog
+):
+    """
+    Дни начислены наверняка — упало только чтение сервиса ради текста.
+
+    Сказать тут «зачисление задержалось» значит соврать человеку про его же
+    деньги в единственном месте фичи, где они уже списаны.
+    """
+    async def _boom(_id):
+        raise RuntimeError("db connection lost")
+
+    monkeypatch.setattr(payment.db, "get_service", _boom)
+    message = FakePaidMessage(payment.make_payload(SERVICE_ID, 30), charge_id="ch_read")
+    with caplog.at_level(logging.ERROR):
+        await payment.paid(message)
+
+    assert applied == [(SERVICE_ID, 30, "ch_read", 999_000_001)], (
+        "дни начислены до чтения сервиса — это и есть суть случая"
+    )
+    assert message.answers, "молчать после списания нельзя"
+    assert "задерж" not in message.answers[0].lower(), (
+        "зачисление состоялось, задержкой его называть нельзя"
+    )
+    assert message.answers[0].startswith("✅")
+    assert "ch_read" in caplog.text, "charge_id обязан попасть в лог для разбора инцидента"

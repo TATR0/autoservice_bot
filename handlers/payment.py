@@ -31,6 +31,10 @@ router = Router()
 
 PAYLOAD_PREFIX = "sub"
 
+# Две ветки после успешного начисления отвечают одинаково — дни начислены, а
+# названия сервиса нет. Текст один на обе, чтобы они не разошлись правками
+CREDITED_WITHOUT_NAME = "✅ Оплата прошла, дни начислены."
+
 
 def make_payload(idservice: str, days: int) -> str:
     """Что именно оплачено. Telegram вернёт эту строку в неизменном виде."""
@@ -175,19 +179,8 @@ async def paid(message: Message) -> None:
             charge_id=charge_id,
             payer_id=message.from_user.id,
         )
-        if applied is None:
-            logger.error(
-                "Платёж %s за несуществующий сервис %s, дней=%d",
-                charge_id, idservice, days,
-            )
-            await message.answer(
-                "⚠️ Оплата прошла, но сервис не найден. "
-                "Напишите нам — вернём звёзды."
-            )
-            return
-
-        svc = await db.get_service(idservice)
     except Exception:
+        # Начислено или нет — отсюда не видно, и обещать начисление нельзя
         logger.exception(
             "Платёж %s: сбой зачисления, idservice=%s, дней=%d",
             charge_id, idservice, days,
@@ -198,15 +191,38 @@ async def paid(message: Message) -> None:
         )
         return
 
+    if applied is None:
+        logger.error(
+            "Платёж %s за несуществующий сервис %s, дней=%d",
+            charge_id, idservice, days,
+        )
+        await message.answer(
+            "⚠️ Оплата прошла, но сервис не найден. "
+            "Напишите нам — вернём звёзды."
+        )
+        return
+
+    # Дальше дни начислены наверняка, и провалиться может только сборка текста.
+    # Отдельный try именно поэтому: назвать это «задержкой зачисления» значило
+    # бы соврать человеку про его же деньги
+    try:
+        svc = await db.get_service(idservice)
+    except Exception:
+        logger.exception(
+            "Платёж %s: дни начислены, но сервис %s не прочитать",
+            charge_id, idservice,
+        )
+        await message.answer(CREDITED_WITHOUT_NAME)
+        return
+
     if svc is None:
-        # Дни начислены — apply_stars_payment вернул не None, — но без имени
-        # сервиса и часового пояса render.payment_done не собрать. Заглушку
-        # вместо имени не выдумываем, отвечаем коротким подтверждением
+        # Без имени сервиса и часового пояса render.payment_done не собрать.
+        # Заглушку вместо имени не выдумываем, отвечаем коротким подтверждением
         logger.error(
             "Платёж %s: дни начислены, но get_service(%s) вернул None",
             charge_id, idservice,
         )
-        await message.answer("✅ Оплата прошла, дни начислены.")
+        await message.answer(CREDITED_WITHOUT_NAME)
         return
 
     await message.answer(

@@ -94,6 +94,17 @@ def normalize_city(raw: object) -> str:
     )
 
 
+def is_uuid(raw: object) -> bool:
+    """
+    UUID ли это. Для мест, где мусор не ошибка пользователя, а просто «не наше»:
+    payload чужого счёта отвергают молча, а не объясняют человеку формат.
+
+    Строку не подчищает: в payload проверенное значение идёт в базу как есть,
+    и strip() здесь пропустил бы в asyncpg id с пробелами.
+    """
+    return bool(_UUID_RE.match(str(raw or "")))
+
+
 def validate_uuid(raw: object, *, field: str) -> str:
     """
     Проверить UUID из недоверенного источника — тела запроса или callback_data.
@@ -102,7 +113,7 @@ def validate_uuid(raw: object, *, field: str) -> str:
     понятного отказа клиент получает 500.
     """
     value = str(raw or "").strip()
-    if not _UUID_RE.match(value):
+    if not is_uuid(value):
         raise ValidationError(f"«{field}»: некорректный идентификатор.")
     return value
 

@@ -124,6 +124,53 @@ async def test_absurd_number_is_rejected(extended):
     assert extended == []
 
 
+async def test_unreadable_service_after_credit_does_not_invite_a_repeat(
+    extended, monkeypatch, caplog
+):
+    """
+    Дни уже начислены и закоммичены — падать отсюда нельзя.
+
+    Необработанное исключение уходит в ErrorLoggingMiddleware, а тот отвечает
+    «попробуйте ещё раз». Совет губительный: ручное продление идёт без
+    external_id, частичный уникальный индекс строки с NULL не покрывает, и
+    повторная команда начислит дни второй раз.
+    """
+
+    async def _boom(_id):
+        raise RuntimeError("db connection lost")
+
+    monkeypatch.setattr(handler.db, "get_service", _boom)
+    message = FakeMessage(f"/extend {SERVICE_ID} 30", OWNER_ID)
+    with caplog.at_level(logging.ERROR):
+        await handler.extend_command(message)
+
+    assert extended == [(SERVICE_ID, 30, OWNER_ID)], "дни должны быть начислены"
+    answer = " ".join(message.answers)
+    assert answer, "владелец бота обязан получить ответ, а не тишину"
+    assert "30" in answer, "сказать, сколько дней начислено"
+    assert "повтор" in answer.lower(), (
+        "ответ обязан сказать, что повторять команду не нужно: повтор начислит дважды"
+    )
+    assert SERVICE_ID in caplog.text, "разбирать инцидент нужно по логу"
+
+
+async def test_service_gone_after_credit_is_still_answered(extended, monkeypatch):
+    """
+    Сервис удалили между начислением и чтением: get_service фильтрует
+    idrecstatus=0 и вернёт None. Без проверки это TypeError вместо ответа.
+    """
+
+    async def _none(_id):
+        return None
+
+    monkeypatch.setattr(handler.db, "get_service", _none)
+    message = FakeMessage(f"/extend {SERVICE_ID} 30", OWNER_ID)
+    await handler.extend_command(message)
+
+    assert extended == [(SERVICE_ID, 30, OWNER_ID)], "дни должны быть начислены"
+    assert message.answers, "владелец бота обязан получить ответ, а не тишину"
+
+
 # ── «/refund» ────────────────────────────────────────────────────────────────
 
 PAYMENT_ID = "22222222-2222-2222-2222-222222222222"
@@ -223,8 +270,13 @@ async def test_revoke_payment_failure_after_refund_does_not_crash(refundable, mo
     Деньги уже вернулись плательщику — это необратимо. Если revoke_payment
     падает (обрыв связи, дедлок), хендлер не должен рухнуть необработанным
     исключением, а обязан честно сказать: деньги вернулись, дни — нет, и
-    назвать рабочее средство — /extend с реальными id и отрицательным числом
-    дней, скопировать и выполнить.
+    назвать рабочее средство — /revoke с тем же id списания, скопировать и
+    выполнить, когда база ответит.
+
+    Названным средством был /extend <idservice> -<дней>, и он не работал в
+    том самом случае, ради которого возврат по удалённому сервису и заведён:
+    extend_subscription ищет сервис условием idrecstatus=0 и удалённого не
+    находит. /revoke зовёт db.revoke_payment, у которого этого фильтра нет.
     """
 
     async def _boom(_idpayment):
@@ -239,9 +291,11 @@ async def test_revoke_payment_failure_after_refund_does_not_crash(refundable, mo
     assert bot.refund_calls == [(PAYER_ID, PAYMENT_ID)], "деньги уже должны были уйти"
     assert message.answers, "владелец бота обязан получить ответ, а не тишину"
     answer = " ".join(message.answers)
-    assert f"/extend {SERVICE_ID} -5" in answer, (
-        "рабочее средство — /extend с id сервиса и отрицательным числом дней, "
-        "готовое к копированию"
+    assert f"/revoke {PAYMENT_ID}" in answer, (
+        "рабочее средство — /revoke с id списания, готовое к копированию"
+    )
+    assert "/extend" not in answer, (
+        "/extend по удалённому сервису отказывает — звать его нельзя"
     )
     assert PAYMENT_ID in caplog.text, "charge_id обязан попасть в лог для разбора инцидента"
     assert refundable == [], "плательщику после аварии слать нечего"
@@ -265,6 +319,95 @@ async def test_get_service_failure_after_revoke_does_not_crash(refundable, monke
     assert bot.refund_calls == [(PAYER_ID, PAYMENT_ID)], "деньги уже должны были уйти"
     assert message.answers, "владелец бота обязан получить ответ, а не тишину"
     assert PAYMENT_ID in caplog.text, "charge_id обязан попасть в лог для разбора инцидента"
+
+
+# ── «/revoke» ────────────────────────────────────────────────────────────────
+# Вторая половина возврата, отдельной командой. Нужна ровно тогда, когда
+# Telegram звёзды уже отдал, а база в тот момент упала: повторить /refund
+# нельзя, а дни у сервиса так и остались.
+
+
+async def test_stranger_cannot_revoke():
+    """Знать о существовании команды постороннему незачем."""
+    message = FakeMessage(f"/revoke {PAYMENT_ID}", STRANGER_ID)
+    await handler.revoke_command(message)
+    assert message.answers == []
+
+
+async def test_owner_takes_days_back_by_charge_id(refundable):
+    message = FakeMessage(f"/revoke {PAYMENT_ID}", OWNER_ID)
+    await handler.revoke_command(message)
+    assert message.answers, "владельцу бота нужно подтверждение"
+    assert "Тест" in " ".join(message.answers), "срок сервиса называем по имени"
+    assert refundable == [], (
+        "звёзды команда не трогает — писать плательщику, что они вернулись, "
+        "значило бы обещать за Telegram"
+    )
+
+
+async def test_revoke_works_for_a_deleted_service(refundable, monkeypatch):
+    """
+    Тот самый случай, ради которого команда и заведена: db.get_service
+    удалённый сервис не находит, но дни отобрать всё равно надо и можно —
+    db.revoke_payment намеренно без фильтра idrecstatus.
+    """
+
+    async def _none(_id):
+        return None
+
+    monkeypatch.setattr(handler.db, "get_service", _none)
+    message = FakeMessage(f"/revoke {PAYMENT_ID}", OWNER_ID)
+    await handler.revoke_command(message)
+
+    answer = " ".join(message.answers)
+    assert "отобран" in answer.lower(), "дни отобраны — так и сказать"
+    assert "удал" in answer.lower(), "и объяснить, почему сервис не назван"
+
+
+async def test_revoke_twice_takes_days_only_once(refundable, monkeypatch):
+    """
+    Команду можно повторять: отметку о возврате ставит условие в самом UPDATE.
+    Второй раз дни не вычтутся, и обещать обратное нельзя.
+    """
+
+    async def _already(_idpayment):
+        return None
+
+    monkeypatch.setattr(handler.db, "revoke_payment", _already)
+    message = FakeMessage(f"/revoke {PAYMENT_ID}", OWNER_ID)
+    await handler.revoke_command(message)
+    assert "уже" in " ".join(message.answers).lower()
+
+
+async def test_revoke_of_an_unknown_payment_is_reported(refundable, monkeypatch):
+    async def _none(_charge_id):
+        return None
+
+    monkeypatch.setattr(handler.db, "get_stars_payment", _none)
+    message = FakeMessage("/revoke ch_no_such", OWNER_ID)
+    await handler.revoke_command(message)
+    assert "не найден" in " ".join(message.answers).lower()
+
+
+async def test_revoke_without_argument_shows_usage(refundable):
+    message = FakeMessage("/revoke", OWNER_ID)
+    await handler.revoke_command(message)
+    assert "/revoke" in " ".join(message.answers), "подсказка обязана называть саму команду"
+
+
+async def test_revoke_survives_an_unreadable_service(refundable, monkeypatch, caplog):
+    """Дни уже отобраны — чтение сервиса нужно только для текста ответа."""
+
+    async def _boom(_id):
+        raise RuntimeError("db connection lost")
+
+    monkeypatch.setattr(handler.db, "get_service", _boom)
+    message = FakeMessage(f"/revoke {PAYMENT_ID}", OWNER_ID)
+    with caplog.at_level(logging.ERROR):
+        await handler.revoke_command(message)
+
+    assert message.answers, "владелец бота обязан получить ответ, а не тишину"
+    assert PAYMENT_ID in caplog.text, "разбирать инцидент нужно по логу"
 
 
 # ── «Записаться в свой сервис» ───────────────────────────────────────────────

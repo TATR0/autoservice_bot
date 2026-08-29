@@ -24,7 +24,7 @@ import keyboards as kb
 import render
 from database import db
 from handlers.common import require_owner_service
-from validators import _UUID_RE
+from validators import is_uuid
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -54,7 +54,7 @@ def parse_payload(raw: str) -> tuple[str, int] | None:
     idservice, days = parts[1], parts[2]
     # services.idservice — колонка типа uuid: не-UUID строка дошла бы до
     # db.get_service и уронила бы asyncpg DataError вместо понятного отказа
-    if not _UUID_RE.match(idservice) or not days.isdecimal():
+    if not is_uuid(idservice) or not days.isdecimal():
         return None
     return idservice, int(days)
 

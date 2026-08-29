@@ -1,9 +1,13 @@
 """
-handlers/subscription.py — продление подписки владельцем бота.
+handlers/subscription.py — команды владельца бота над сроком подписки.
 
-Пока приёма денег нет, продлевает человек: /extend <idservice> <дней>. Когда
-появится провайдер, он позовёт тот же db.extend_subscription, только с другим
-source и с external_id для идемпотентности.
+/extend <idservice> <дней> продлевает вручную и со знаком минус отбирает дни;
+/refund <id списания> возвращает звёзды и отбирает выданные ими дни;
+/revoke <id списания> отбирает дни, когда звёзды Telegram уже отдал, а база в
+тот момент упала.
+
+Деньги принимает handlers/payment.py — он зовёт ту же db.extend_subscription,
+только с source="stars" и с external_id для идемпотентности.
 """
 
 from __future__ import annotations
@@ -30,7 +34,9 @@ USAGE = (
     "<code>/extend &lt;idservice&gt; &lt;дней&gt;</code>\n"
     f"Дней — от 1 до {MAX_DAYS}. Со знаком минус — отобрать дни.\n\n"
     "Возврат звёзд:\n"
-    "<code>/refund &lt;id списания&gt;</code>"
+    "<code>/refund &lt;id списания&gt;</code>\n\n"
+    "Отобрать дни, если звёзды уже вернулись, а база тогда упала:\n"
+    "<code>/revoke &lt;id списания&gt;</code>"
 )
 
 
@@ -66,7 +72,36 @@ async def extend_command(message: Message) -> None:
         await message.answer("❌ Сервис не найден или удалён.")
         return
 
-    svc = await db.get_service(idservice)
+    # Дни начислены и закоммичены — отсюда нельзя падать. Необработанное
+    # исключение уводит апдейт в ErrorLoggingMiddleware, а тот отвечает
+    # «попробуйте ещё раз»: повтор начислит дни второй раз, потому что ручное
+    # продление идёт без external_id и уникальный индекс его не ловит
+    try:
+        svc = await db.get_service(idservice)
+    except Exception:
+        logger.exception(
+            "Продление %s на %d дн. записано, но сервис не прочитать",
+            idservice, days,
+        )
+        svc = None
+    else:
+        if svc is None:
+            # Сервис удалили между начислением и чтением: extend_subscription
+            # нашёл его живым, get_service — уже нет
+            logger.error(
+                "Продление %s на %d дн. записано, но get_service вернул None",
+                idservice, days,
+            )
+
+    if svc is None:
+        await message.answer(
+            f"✅ Продлено на {days} дн.\n"
+            f"Подписка действует до {render.local_dt(paid_until)}.\n"
+            "Название сервиса не прочитать; повторять команду не нужно — "
+            "дни уже начислены."
+        )
+        return
+
     await message.answer(
         f"✅ «{h(svc['service_name'])}» продлён на {days} дн.\n"
         f"Подписка действует до {render.local_dt(paid_until, svc['timezone'])}."
@@ -126,8 +161,8 @@ async def refund_command(message: Message, bot: Bot) -> None:
         await message.answer(
             "⚠️ Звёзды вернулись плательщику, но дни подписки не отобраны — "
             "сбой базы. Повторный /refund не поможет: Telegram этот платёж "
-            "уже вернул. Отберите дни вручную:\n"
-            f"<code>/extend {payment['idservice']} -{payment['days']}</code>"
+            "уже вернул. Отберите дни, когда база ответит:\n"
+            f"<code>/revoke {h(parts[1])}</code>"
         )
         return
 
@@ -157,3 +192,61 @@ async def refund_command(message: Message, bot: Bot) -> None:
         f"{render.local_dt(paid_until, svc['timezone'])}."
     )
     await safe_send(bot, payment["granted_by"], render.refund_done(svc, paid_until))
+
+
+@router.message(Command("revoke"))
+async def revoke_command(message: Message) -> None:
+    """
+    Отобрать дни по платежу, звёзды за который уже ушли обратно.
+
+    Вторая половина возврата, отдельной командой. Нужна ровно в одном случае:
+    /refund отдал звёзды, а база в тот момент упала. Повторить /refund нельзя —
+    Telegram этот платёж уже вернул и откажет, — и дни так и остались бы у
+    сервиса.
+
+    Работает и по удалённому сервису, а /extend со знаком минус — нет:
+    extend_subscription ищет сервис условием idrecstatus=0, db.revoke_payment
+    намеренно без этого фильтра.
+
+    Повторять команду безопасно: отметку о возврате ставит условие в самом
+    UPDATE, второй раз дни не вычтутся. Плательщику отсюда не пишем: звёзды
+    возвращает Telegram, а не эта команда, и обещать за него нечего.
+    """
+    # Постороннему не отвечаем вовсе: знать о существовании команды ему незачем
+    if message.from_user.id not in config.BOT_OWNER_IDS:
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) != 2:
+        await message.answer(USAGE)
+        return
+
+    payment = await db.get_stars_payment(parts[1])
+    if payment is None:
+        await message.answer("❌ Платёж не найден.")
+        return
+
+    paid_until = await db.revoke_payment(str(payment["idpayment"]))
+    if paid_until is None:
+        await message.answer("Дни по этому платежу уже отобраны.")
+        return
+
+    # Дни отобраны — дальше только текст ответа, падать нельзя
+    try:
+        svc = await db.get_service(str(payment["idservice"]))
+    except Exception:
+        logger.exception(
+            "Изъятие дней %s: дни отобраны, но сервис %s не прочитать",
+            parts[1], payment["idservice"],
+        )
+        await message.answer("↩️ Дни отобраны.")
+        return
+
+    if svc is None:
+        await message.answer("↩️ Дни отобраны. Сервис удалён.")
+        return
+
+    await message.answer(
+        f"↩️ Дни отобраны. Срок сервиса «{h(svc['service_name'])}» — "
+        f"{render.local_dt(paid_until, svc['timezone'])}."
+    )

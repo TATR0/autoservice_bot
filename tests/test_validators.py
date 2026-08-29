@@ -2,7 +2,7 @@
 
 import pytest
 
-from validators import ValidationError, validate_catalog_ids, validate_price, validate_service_title, validate_uuid
+from validators import ValidationError, is_uuid, validate_catalog_ids, validate_price, validate_service_title, validate_uuid
 
 
 def test_title_strips_and_collapses_spaces():
@@ -36,6 +36,16 @@ def test_uuid_rejects_garbage():
 def test_uuid_rejects_empty():
     with pytest.raises(ValidationError):
         validate_uuid(None, field="Услуга")
+
+
+def test_is_uuid_answers_without_raising():
+    """Предикат для мест, где мусор — «не наше», а не ошибка пользователя."""
+    assert is_uuid("3f8b6c1e-9d2a-4b7c-8e1f-0a5b6c7d8e9f")
+    assert not is_uuid("'; DROP TABLE requests--")
+    assert not is_uuid(None)
+    assert not is_uuid(" 3f8b6c1e-9d2a-4b7c-8e1f-0a5b6c7d8e9f "), (
+        "предикат не подчищает строку: проверенное значение идёт в базу как есть"
+    )
 
 
 # ── Цена услуги ──────────────────────────────────────────────────────────────

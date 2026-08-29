@@ -226,7 +226,17 @@ async def telegram_webhook(
 ):
     # Проверяем и секрет в пути, и заголовок: без второго любой, кто угадает
     # URL, сможет слать боту поддельные апдейты от чужого имени.
-    if secret != config.WEBHOOK_SECRET or x_telegram_bot_api_secret_token != config.WEBHOOK_SECRET:
+    #
+    # Сравнение постоянного времени, как и для TICK_SECRET ниже. Практической
+    # атаки по времени на случайный токен через сеть нет, но два соседних
+    # сравнения секретов не должны выглядеть по-разному: следующий читатель
+    # решит, что где-то из них так можно.
+    # Заголовок ASGI отдаёт декодированным latin-1, поэтому в байты его
+    # возвращаем тем же способом; путь приходит обычной строкой.
+    expected = config.WEBHOOK_SECRET.encode()
+    if not hmac.compare_digest(secret.encode(), expected) or not hmac.compare_digest(
+        (x_telegram_bot_api_secret_token or "").encode("latin-1", "replace"), expected
+    ):
         raise HTTPException(status_code=403, detail="forbidden")
 
     update = Update.model_validate(await request.json(), context={"bot": bot})

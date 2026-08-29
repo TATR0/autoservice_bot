@@ -134,6 +134,26 @@ def test_webhook_rejects_wrong_secret(client):
     assert response.status_code == 403
 
 
+def test_webhook_rejects_right_url_without_header(client):
+    """
+    Угаданный URL сам по себе прав не даёт: заголовок Telegram обязателен.
+
+    Отдельным тестом, потому что защиты тут две, а падает обычно одна: пока
+    вторая проверка цела, утечка адреса вебхука в лог или в прокси не даёт
+    слать боту апдейты от чужого имени.
+    """
+    import config
+
+    assert client.post(
+        f"/webhook/{config.WEBHOOK_SECRET}", json={"update_id": 1}
+    ).status_code == 403
+    assert client.post(
+        f"/webhook/{config.WEBHOOK_SECRET}",
+        json={"update_id": 1},
+        headers={"X-Telegram-Bot-Api-Secret-Token": ""},
+    ).status_code == 403
+
+
 # ── Вебхук отвечает Telegram сразу ───────────────────────────────────────────
 
 def test_webhook_does_not_wait_for_handler(client, monkeypatch):

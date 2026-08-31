@@ -5,6 +5,7 @@ import asyncio
 import pytest
 from fastapi import HTTPException
 
+import config
 from ratelimit import DatabaseGate, RateLimiter, client_key
 
 
@@ -58,9 +59,20 @@ def test_retry_after_is_positive():
     assert limiter.retry_after("ip", now=130.0) >= 1
 
 
-def test_client_key_prefers_forwarded_header():
+def test_client_key_prefers_forwarded_header_behind_a_proxy(monkeypatch):
+    monkeypatch.setattr(config, "TRUST_PROXY", True)
     request = _FakeRequest({"x-forwarded-for": "9.9.9.9, 10.0.0.1"}, host="127.0.0.1")
     assert client_key(request) == "9.9.9.9"
+
+
+def test_client_key_ignores_the_header_without_a_proxy(monkeypatch):
+    """
+    Без прокси заголовок пишет клиент. Поверить ему — значит раздать по
+    свежему лимиту на каждую выдуманную строку.
+    """
+    monkeypatch.setattr(config, "TRUST_PROXY", False)
+    request = _FakeRequest({"x-forwarded-for": "9.9.9.9"}, host="127.0.0.1")
+    assert client_key(request) == "127.0.0.1"
 
 
 def test_client_key_falls_back_to_peer():

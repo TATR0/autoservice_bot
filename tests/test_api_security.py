@@ -106,8 +106,9 @@ def test_submit_endpoint_rate_limited(client):
     assert codes[-1] == 429
 
 
-def test_limits_are_per_client(client):
-    """Исчерпанный лимит одного адреса не блокирует остальных."""
+def test_limits_are_per_client(client, monkeypatch):
+    """За прокси исчерпанный лимит одного адреса не блокирует остальных."""
+    monkeypatch.setattr(app_module.config, "TRUST_PROXY", True)
     limit = app_module._lookup_limiter.limit
     for _ in range(limit + 2):
         client.get(
@@ -121,6 +122,26 @@ def test_limits_are_per_client(client):
         headers={"X-Forwarded-For": "10.0.0.2"},
     )
     assert other.status_code != 429
+
+
+def test_forwarded_header_is_ignored_without_a_proxy(client, monkeypatch):
+    """
+    Без прокси X-Forwarded-For пишет сам клиент.
+
+    Верить ему значит выдавать свежий лимит каждому, кто подставит новый
+    адрес в заголовок, — то есть не иметь лимита вовсе.
+    """
+    monkeypatch.setattr(app_module.config, "TRUST_PROXY", False)
+    limit = app_module._lookup_limiter.limit
+    codes = [
+        client.get(
+            "/api/services",
+            params={"city": "Москва"},
+            headers={"X-Forwarded-For": f"10.0.0.{i}"},
+        ).status_code
+        for i in range(limit + 5)
+    ]
+    assert codes[-1] == 429, "смена заголовка не должна обнулять счётчик"
 
 
 def test_docs_are_disabled(client):

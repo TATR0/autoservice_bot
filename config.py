@@ -76,6 +76,12 @@ def _flag(name: str, *, default: bool) -> bool:
 # отрицательный и с user id не совпадёт никогда
 BOT_OWNER_IDS: tuple[int, ...] = _int_list(os.getenv("BOT_OWNER_IDS", ""))
 
+# Верить ли заголовку X-Forwarded-For. Включать, только если перед ботом
+# действительно стоит обратный прокси (Caddy, nginx): иначе адрес клиента
+# в лимитах частоты назначает сам клиент, и лимит обходится одной строкой.
+# Без прокси все запросы придут с одного адреса — это и есть правда о них
+TRUST_PROXY: bool = _flag("TRUST_PROXY", default=False)
+
 # Секрет эндпоинта напоминаний. Пусто — эндпоинт закрыт совсем
 TICK_SECRET: str = os.getenv("TICK_SECRET", "").strip()
 

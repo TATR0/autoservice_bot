@@ -7,6 +7,7 @@
 """
 
 import uuid
+import warnings
 
 import pytest
 import pytest_asyncio
@@ -30,11 +31,29 @@ def subscription_enforced(monkeypatch):
     monkeypatch.setattr(config, "SUBSCRIPTION_ENFORCED", True)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def warn_when_tests_share_the_live_database():
+    """
+    Тесты чистят за собой настоящим DELETE — в боевой базе это вопрос времени.
+
+    Молча падать без TEST_DATABASE_URL нельзя: у проекта уже есть прогоны в
+    общей базе, и запретить их сегодня значит оставить сюиту без единого
+    зелёного прогона. Поэтому предупреждение, а не отказ.
+    """
+    if not config.TEST_DATABASE_URL and config.DATABASE_URL:
+        warnings.warn(
+            "TEST_DATABASE_URL не задан: тесты идут в ту же базу, что и бот. "
+            "Заведите отдельную базу и примените к ней schema.sql.",
+            stacklevel=1,
+        )
+
+
 @pytest_asyncio.fixture
 async def db_ready():
-    if not config.DATABASE_URL:
-        pytest.skip("DATABASE_URL не задан — тесты слоя БД пропущены")
-    await db.connect()
+    dsn = config.TEST_DATABASE_URL or config.DATABASE_URL
+    if not dsn:
+        pytest.skip("Ни TEST_DATABASE_URL, ни DATABASE_URL не заданы — тесты БД пропущены")
+    await db.connect(dsn)
     yield
     await db.close()
 

@@ -39,6 +39,11 @@ WEBAPP_URL: str = f"{BASE_URL}{WEBAPP_PATH}" if BASE_URL else ""
 # ── Supabase / PostgreSQL ────────────────────────────────────────────────────
 # ВАЖНО: строка Session Pooler'а, а не db.<ref>.supabase.co (тот IPv6-only).
 DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
+
+# База для тестов. Сюита чистит за собой настоящим DELETE, и делать это в
+# боевой базе — вопрос времени, а не осторожности. Пусто — тесты идут в
+# DATABASE_URL и предупреждают об этом на каждом прогоне
+TEST_DATABASE_URL: str = os.getenv("TEST_DATABASE_URL", "").strip()
 DB_POOL_MIN: int = int(os.getenv("DB_POOL_MIN") or 1)
 DB_POOL_MAX: int = int(os.getenv("DB_POOL_MAX") or 5)
 

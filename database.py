@@ -70,17 +70,25 @@ class Database:
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
-    async def connect(self) -> None:
+    async def connect(self, dsn: str | None = None) -> None:
+        """
+        Открыть пул. Без аргумента — к боевой базе из DATABASE_URL.
+
+        Аргумент нужен тестам: они ходят в свою базу, потому что чистят за
+        собой настоящим DELETE. Подставлять её через подмену config значило бы
+        зависеть от того, кто и когда прочитал переменную.
+        """
         if self._pool is not None:
             return
 
+        dsn = dsn or config.DATABASE_URL
         kwargs: dict[str, Any] = {}
         # Supabase требует TLS. Если режим не задан в DSN — включаем его явно.
-        if "sslmode" not in config.DATABASE_URL and not _is_local(config.DATABASE_URL):
+        if "sslmode" not in dsn and not _is_local(dsn):
             kwargs["ssl"] = "require"
 
         self._pool = await asyncpg.create_pool(
-            dsn=config.DATABASE_URL,
+            dsn=dsn,
             min_size=config.DB_POOL_MIN,
             max_size=config.DB_POOL_MAX,
             # Обязательно для transaction pooler'а Supabase (порт 6543),

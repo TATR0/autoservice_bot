@@ -54,3 +54,49 @@ def test_unknown_plan_is_not_invented():
     assert config.plan_by_days(7) is None
     assert config.plan_by_days(0) is None
     assert config.plan_by_days(-30) is None
+
+
+# ── Куда подключается пул ────────────────────────────────────────────────────
+
+async def test_connect_uses_the_dsn_it_was_given(monkeypatch):
+    """
+    Тесты ходят в свою базу, а не в боевую: они чистят за собой настоящим
+    DELETE. Проверяется сам механизм — что аргумент доходит до asyncpg.
+    """
+    import asyncpg
+
+    import database as database_module
+
+    seen = {}
+
+    async def _fake_pool(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(asyncpg, "create_pool", _fake_pool)
+    db = database_module.Database()
+    await db.connect("postgresql://postgres:postgres@localhost:5432/autoservice_test")
+
+    assert seen["dsn"].endswith("/autoservice_test")
+    assert "ssl" not in seen, "локальной базе TLS не навязываем"
+
+
+async def test_connect_without_a_dsn_takes_the_live_one(monkeypatch):
+    import asyncpg
+
+    import config
+    import database as database_module
+
+    seen = {}
+
+    async def _fake_pool(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(asyncpg, "create_pool", _fake_pool)
+    monkeypatch.setattr(config, "DATABASE_URL", "postgresql://user:pw@db.example.com:5432/postgres")
+    db = database_module.Database()
+    await db.connect()
+
+    assert seen["dsn"].endswith("@db.example.com:5432/postgres")
+    assert seen["ssl"] == "require", "удалённой базе TLS обязателен"

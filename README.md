@@ -268,6 +268,32 @@ python api.py
 
 ---
 
+## Тесты
+
+```bash
+.venv/Scripts/python.exe -m pytest -q      # Windows
+.venv/bin/python -m pytest -q              # Linux / macOS
+```
+
+Часть тестов работает с настоящей базой: создаёт сервисы, заявки и подписки, а
+после себя удаляет их. Поэтому у сюиты должна быть **своя** база, отдельная от
+боевой — иначе однажды прогон снесёт живые данные:
+
+```bash
+# отдельный проект Supabase или локальный PostgreSQL
+createdb autoservice_test
+psql autoservice_test -f schema.sql
+
+# в .env
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/autoservice_test
+```
+
+Без `TEST_DATABASE_URL` тесты идут в `DATABASE_URL` и на каждом прогоне пишут об
+этом предупреждение. Полный прогон против удалённой базы занимает 12–15 минут;
+локальная база проходит его за минуты.
+
+---
+
 ## Команды бота
 
 | Команда / Кнопка | Кто видит | Действие |

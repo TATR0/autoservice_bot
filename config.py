@@ -96,6 +96,12 @@ REMINDER_TICK_SECONDS: int = int(os.getenv("REMINDER_TICK_SECONDS") or 3600)
 # напоминания совсем: рассылка тогда не ходит в базу вовсе
 APPOINTMENT_REMINDER_HOURS: int = int(os.getenv("APPOINTMENT_REMINDER_HOURS") or 3)
 
+# Сколько дней хранить персональные данные в закрытых заявках. Ноль — хранить
+# бессрочно: срок назначает управляющий сервисом, а не мы за него. Когда срок
+# задан, старые заявки обезличиваются сами — строки остаются, имени, телефона,
+# машины и комментария в них больше нет
+PII_RETENTION_DAYS: int = int(os.getenv("PII_RETENTION_DAYS") or 0)
+
 
 class StarPlan(NamedTuple):
     """Тариф подписки: сколько дней, сколько звёзд и как назвать на кнопке."""

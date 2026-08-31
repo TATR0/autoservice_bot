@@ -59,11 +59,17 @@ async def service(db_ready) -> str:
 @pytest_asyncio.fixture
 async def make_request(db_ready):
     """Заявка на конкретное время. Услуга создаётся своя, чтобы не мешать тестам."""
-    async def _make(idservice: str, moment, *, client_uid: str | None = None):
+    async def _make(
+        idservice: str,
+        moment,
+        *,
+        client_uid: str | None = None,
+        client_tg_id: int = TEST_OWNER_ID,
+    ):
         item = await db.add_catalog_item(idservice, f"Работа {uuid.uuid4().hex[:6]}")
         request, _ = await db.create_request(
             idservice=idservice,
-            client_tg_id=TEST_OWNER_ID,
+            client_tg_id=client_tg_id,
             client_name="Тест",
             phone="+79990000000",
             brand="Toyota",

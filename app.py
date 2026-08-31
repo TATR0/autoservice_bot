@@ -32,11 +32,15 @@ import config
 import subscription
 from database import db
 from fsm_storage import build_storage
-from handlers import admin_actions, admin_mgmt, catalog, payment, register, requests, schedule, start
+from handlers import (
+    admin_actions, admin_mgmt, catalog, payment, privacy, register, requests,
+    schedule, start,
+)
 from handlers import subscription as subscription_handlers
 from handlers.requests import RequestRejected, create_request_flow
 from middlewares import ErrorLoggingMiddleware, UserMiddleware
 from notifications import send_reminders_forever, send_subscription_reminders
+from retention import purge_forever
 from ratelimit import DatabaseGate, RateLimiter, enforce
 from validators import ValidationError, format_phone, validate_uuid
 from webapp_auth import InitDataError, verify_init_data
@@ -82,6 +86,7 @@ dp.include_routers(
     catalog.router,
     schedule.router,
     payment.router,
+    privacy.router,
     subscription_handlers.router,
     admin_mgmt.router,
     admin_actions.router,
@@ -127,6 +132,8 @@ async def lifespan(app: FastAPI):
         [
             BotCommand(command="start", description="Главное меню"),
             BotCommand(command="menu", description="Выбрать активный сервис"),
+            # Право забрать свои данные бесполезно, если о нём никто не знает
+            BotCommand(command="forget_me", description="Удалить мои данные"),
         ],
         scope=BotCommandScopeDefault(),
     )
@@ -151,13 +158,17 @@ async def lifespan(app: FastAPI):
     reminders = asyncio.create_task(
         send_reminders_forever(bot, config.REMINDER_TICK_SECONDS)
     )
+    # Срок хранения персональных данных сторожит свой круг: чистка суточная,
+    # напоминания часовые, и общий таймер обоим не подходит
+    purge = asyncio.create_task(purge_forever())
 
     try:
         yield
     finally:
-        reminders.cancel()
-        with suppress(asyncio.CancelledError):
-            await reminders
+        for background in (reminders, purge):
+            background.cancel()
+            with suppress(asyncio.CancelledError):
+                await background
 
         if config.BASE_URL:
             try:

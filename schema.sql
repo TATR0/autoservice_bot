@@ -189,6 +189,11 @@ ALTER TABLE requests DROP COLUMN     IF EXISTS urgency;
 -- условием прямо в UPDATE
 ALTER TABLE requests ADD COLUMN IF NOT EXISTS reminder_sent_at timestamptz;
 
+-- Отметка об обезличивании: заявка остаётся как история загрузки сервиса, но
+-- имени, телефона, машины и комментария в ней больше нет. Ставится сроком
+-- хранения (PII_RETENTION_DAYS) или просьбой самого клиента
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS anonymized_at timestamptz;
+
 CREATE INDEX IF NOT EXISTS idx_requests_service ON requests (idservice);
 CREATE INDEX IF NOT EXISTS idx_requests_client  ON requests (idclienttg);
 CREATE INDEX IF NOT EXISTS idx_requests_status  ON requests (status);

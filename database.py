@@ -1198,6 +1198,77 @@ class Database:
                 client_tg_id, limit,
             )
 
+    # ── персональные данные ──────────────────────────────────────────────────
+
+    # Что именно считается персональными данными в заявке. Строки не удаляются:
+    # сервису нужна история загрузки, а найти по ней человека после этого
+    # UPDATE уже нельзя. Пустая строка, а не прочерк: пустое поле — пустое
+    # место, и заглушка в нём только притворялась бы данными
+    _ANONYMIZE_SET = (
+        "SET client_name='', phone='', brand='', model='', plate='',"
+        " comment='', idclienttg=NULL, anonymized_at=now(), updatedate=now()"
+    )
+
+    async def anonymize_old_requests(self, days: int) -> int:
+        """
+        Обезличить заявки старше days дней. Возвращает число обезличенных.
+
+        Хранить телефон и номер машины вечно незачем и небезопасно: утечка
+        базы через год после обращения бьёт по клиенту, который о сервисе уже
+        забыл. Активные заявки не трогаются: по ним человека ещё ждут.
+
+        days <= 0 — срок хранения не задан, и молча выдумывать его нельзя.
+        """
+        if days <= 0:
+            return 0
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                UPDATE requests {self._ANONYMIZE_SET}
+                 WHERE anonymized_at IS NULL
+                   AND createdate < now() - make_interval(days => $1::int)
+                   AND status <> ALL($2::text[])
+                RETURNING idrequests
+                """,
+                days, list(config.ACTIVE_STATUSES),
+            )
+        return len(rows)
+
+    async def forget_client(self, client_tg_id: int) -> tuple[int, int]:
+        """
+        Стереть данные человека по его просьбе.
+
+        Возвращает пару: сколько заявок обезличено и сколько активных
+        помешало. Ненулевое второе число означает, что не сделано ничего:
+        стереть телефон и машину у заявки, по которой человека ждут завтра,
+        значит сорвать его же запись, а не защитить его данные.
+
+        Профиль в users чистится тем же заходом, но появится снова, если
+        человек продолжит пользоваться ботом: UserMiddleware записывает имя и
+        username с каждым сообщением, и об этом ему сказано прямо в ответе.
+        """
+        async with self.pool.acquire() as conn, conn.transaction():
+            active = await conn.fetchval(
+                "SELECT count(*) FROM requests"
+                " WHERE idclienttg=$1 AND idrecstatus=0 AND status = ANY($2::text[])",
+                client_tg_id, list(config.ACTIVE_STATUSES),
+            )
+            if active:
+                return 0, active
+
+            rows = await conn.fetch(
+                f"UPDATE requests {self._ANONYMIZE_SET}"
+                " WHERE idclienttg=$1 AND anonymized_at IS NULL"
+                " RETURNING idrequests",
+                client_tg_id,
+            )
+            await conn.execute(
+                "UPDATE users SET username=NULL, first_name=NULL, last_name=NULL,"
+                " phone=NULL, updatedate=now() WHERE idusertg=$1",
+                client_tg_id,
+            )
+        return len(rows), 0
+
     # ── антиспам ─────────────────────────────────────────────────────────────
 
     async def seconds_since_last_request(self, client_tg_id: int) -> float | None:

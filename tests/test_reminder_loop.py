@@ -21,6 +21,20 @@ pytestmark = pytest.mark.asyncio
 PATIENCE = 5
 
 
+@pytest.fixture(autouse=True)
+def quiet_appointments(monkeypatch):
+    """
+    Круг напоминаний о записи в этих тестах молчит.
+
+    Здесь проверяются свойства самого будильника, а не рассылки; настоящий
+    круг без базы просто писал бы в лог исключение на каждом обороте.
+    """
+    async def _none(_bot):
+        return 0
+
+    monkeypatch.setattr(notifications, "send_appointment_reminders", _none)
+
+
 async def _stop(task: asyncio.Task) -> None:
     """Погасить цикл так же, как это делает lifespan приложения."""
     task.cancel()
@@ -126,3 +140,30 @@ async def test_reminder_carries_a_pay_button(monkeypatch):
 
     await notifications.send_subscription_reminders(None)
     assert sent and sent[0] == kb.kb_pay()
+
+
+async def test_a_failed_round_does_not_cost_the_other_one(monkeypatch):
+    """
+    Круги независимы.
+
+    Подписка и записи ходят в базу по-разному и падают по-разному, а клиент,
+    записанный на сегодня, не должен остаться без напоминания из-за того, что
+    у нас не сложилось с чьим-то сроком оплаты.
+    """
+    reminded = asyncio.Event()
+
+    async def _broken(_bot):
+        raise RuntimeError("база отвалилась")
+
+    async def _appointments(_bot):
+        reminded.set()
+        return 1
+
+    monkeypatch.setattr(notifications, "send_subscription_reminders", _broken)
+    monkeypatch.setattr(notifications, "send_appointment_reminders", _appointments)
+
+    task = asyncio.create_task(notifications.send_reminders_forever(None, 3600))
+    try:
+        await asyncio.wait_for(reminded.wait(), PATIENCE)
+    finally:
+        await _stop(task)

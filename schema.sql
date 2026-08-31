@@ -184,6 +184,11 @@ ALTER TABLE requests DROP COLUMN IF EXISTS service_type;
 ALTER TABLE requests DROP CONSTRAINT IF EXISTS chk_requests_urgency;
 ALTER TABLE requests DROP COLUMN     IF EXISTS urgency;
 
+-- Отметка об отправленном напоминании клиенту. Живёт в самой заявке, а не в
+-- отдельной таблице: напоминание у заявки одно, и право на него занимается
+-- условием прямо в UPDATE
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS reminder_sent_at timestamptz;
+
 CREATE INDEX IF NOT EXISTS idx_requests_service ON requests (idservice);
 CREATE INDEX IF NOT EXISTS idx_requests_client  ON requests (idclienttg);
 CREATE INDEX IF NOT EXISTS idx_requests_status  ON requests (status);

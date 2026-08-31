@@ -236,3 +236,53 @@ def test_refund_confirmation_does_not_claim_a_past_term_is_active():
     text = render.refund_done(_svc(datetime.now(timezone.utc)), past)
     assert "действует" not in text.lower()
     assert render.local_dt(past, "Europe/Moscow") in text
+
+
+# ── Напоминание клиенту о записи ─────────────────────────────────────────────
+
+def _appointment(**over):
+    row = {
+        "seq": 142,
+        "scheduled_at": datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc),
+        "brand": "Toyota",
+        "model": "Camry",
+        "service_name": "Гараж №1",
+        "timezone": "Europe/Moscow",
+        "service_number": "+79990000000",
+        "city": "Тестоград",
+        "location_service": "ул. Тестовая, 1",
+        "services_summary": "Замена масла",
+    }
+    row.update(over)
+    return row
+
+
+def test_reminder_names_the_time_in_the_service_timezone():
+    """
+    Клиент приезжает в сервис, а не на сервер: 12:00 UTC — это 15:00 в Москве,
+    и написать тут московское время обязательно.
+    """
+    text = render.appointment_reminder(_appointment())
+    assert "15:00" in text
+    assert "Гараж №1" in text
+
+
+def test_reminder_gives_the_address_and_the_phone():
+    text = render.appointment_reminder(_appointment())
+    assert "ул. Тестовая, 1" in text
+    assert "+7 (999) 000-00-00" in text, "телефон читается так же, как везде в боте"
+
+
+def test_reminder_does_not_invent_missing_fields():
+    """Правило проекта: пустое поле — пустое место, без прочерков и заглушек."""
+    text = render.appointment_reminder(
+        _appointment(services_summary=None, location_service="")
+    )
+    assert "—" not in text
+    assert "None" not in text
+
+
+def test_reminder_escapes_the_service_name():
+    text = render.appointment_reminder(_appointment(service_name="Аста & <Сервис>"))
+    assert "<Сервис>" not in text
+    assert "&lt;Сервис&gt;" in text

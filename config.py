@@ -91,6 +91,11 @@ SUBSCRIPTION_ENFORCED: bool = _flag("SUBSCRIPTION_ENFORCED", default=False)
 # настраивать на каждом новом сервере и он молча не работал бы, если забыли
 REMINDER_TICK_SECONDS: int = int(os.getenv("REMINDER_TICK_SECONDS") or 3600)
 
+# За сколько часов до записи напомнить клиенту. Три — поздно, чтобы забыть, и
+# рано, чтобы успеть отменить и освободить окно сервису. Ноль выключает
+# напоминания совсем: рассылка тогда не ходит в базу вовсе
+APPOINTMENT_REMINDER_HOURS: int = int(os.getenv("APPOINTMENT_REMINDER_HOURS") or 3)
+
 
 class StarPlan(NamedTuple):
     """Тариф подписки: сколько дней, сколько звёзд и как назвать на кнопке."""

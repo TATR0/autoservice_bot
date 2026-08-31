@@ -168,6 +168,38 @@ async def send_subscription_reminders(bot: Bot) -> int:
     return sent
 
 
+async def send_appointment_reminders(bot: Bot) -> int:
+    """
+    Напомнить клиентам о записи. Возвращает число писем.
+
+    Право на письмо занимается до отправки — как и в подписке: при сбое
+    теряется одно напоминание, а не клиент получает его каждый час до самой
+    записи.
+
+    К письму приложена кнопка отмены: напоминание нужно ровно затем, чтобы
+    человек либо приехал, либо освободил окно, и второе не должно требовать
+    похода в меню.
+    """
+    lead = config.APPOINTMENT_REMINDER_HOURS
+    if lead <= 0:
+        return 0
+
+    sent = 0
+    for req in await db.requests_for_appointment_reminders(lead):
+        idrequests = str(req["idrequests"])
+        if not await db.claim_appointment_reminder(idrequests):
+            continue
+        if await safe_send(
+            bot,
+            req["idclienttg"],
+            render.appointment_reminder(req),
+            reply_markup=kb.kb_client_request_actions(idrequests),
+        ):
+            sent += 1
+        await asyncio.sleep(BROADCAST_DELAY)
+    return sent
+
+
 async def send_reminders_forever(bot: Bot, interval: float) -> None:
     """
     Свой будильник вместо внешнего крона. Запускается вместе с приложением.
@@ -183,12 +215,20 @@ async def send_reminders_forever(bot: Bot, interval: float) -> None:
     Цикл не умирает: обрыв сети или базы через час стоит попробовать снова.
     """
     while True:
-        try:
-            sent = await send_subscription_reminders(bot)
-            if sent:
-                logger.info("Напоминания о подписке: отправлено %d", sent)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Круг напоминаний о подписке не отработал")
+        # Круги перечислены здесь, а не в константе модуля: так и подмена в
+        # тестах, и правка в бою видны в одном месте с самим циклом
+        for what, run_round in (
+            ("подписке", send_subscription_reminders),
+            ("записи", send_appointment_reminders),
+        ):
+            try:
+                sent = await run_round(bot)
+                if sent:
+                    logger.info("Напоминания о %s: отправлено %d", what, sent)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Круги независимы: упавшая подписка не должна стоить клиентам
+                # напоминания о записи
+                logger.exception("Круг напоминаний о %s не отработал", what)
         await asyncio.sleep(interval)

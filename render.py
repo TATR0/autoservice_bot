@@ -264,6 +264,32 @@ def request_line_for_staff(req, tz: str | None = None) -> str:
     )
 
 
+def appointment_reminder(req) -> str:
+    """
+    Напоминание клиенту о его записи.
+
+    Время — в часовом поясе сервиса: клиент приезжает в сервис, а не на
+    сервер. Пустые поля строки не занимают: прочерк вместо услуги ничего не
+    сообщает, а место занимает.
+    """
+    lines = [
+        f"⏰ <b>Напоминание о записи</b> {request_number(req['seq'])}",
+        "",
+        f"<b>{h(req['service_name'])}</b>",
+        f"🗓 {local_dt(req['scheduled_at'], req['timezone'])}",
+    ]
+    if req["services_summary"]:
+        lines.append(f"🔧 {h(req['services_summary'])}")
+    address = ", ".join(part for part in (req["city"], req["location_service"]) if part)
+    if address:
+        lines.append(f"📍 {h(address)}")
+    if req["service_number"]:
+        lines.append(f"☎️ {h(format_phone(req['service_number']))}")
+    lines.append("")
+    lines.append("Не сможете приехать? Отмените запись кнопкой ниже, окно освободится.")
+    return "\n".join(lines)
+
+
 def request_line_for_client(req) -> str:
     return (
         f"{request_number(req['seq'])} 🚗 <b>{h(req['brand'])} {h(req['model'])}</b>\n"

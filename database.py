@@ -723,6 +723,65 @@ class Database:
             )
         return row is not None
 
+    async def requests_for_appointment_reminders(
+        self, lead_hours: int
+    ) -> list[asyncpg.Record]:
+        """
+        Заявки, по которым клиенту пора напомнить о записи.
+
+        Отсекается всё, о чём напоминать не надо: отменённая и закрытая
+        заявка, удалённый сервис, клиент без Telegram и клиент,
+        заблокировавший бота. Просроченная подписка сервиса напоминание не
+        отменяет: клиент записан на своё время, а расчёты сервиса с нами его
+        не касаются.
+
+        Последнее условие — про свежие заявки: если человек сам выбрал окно
+        ближе, чем за lead_hours, напоминать ему через минуту не о чем.
+        """
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT r.idrequests, r.seq, r.idclienttg, r.scheduled_at,
+                       r.brand, r.model,
+                       s.service_name, s.timezone, s.service_number,
+                       s.city, s.location_service
+                      ,(SELECT string_agg(rs.title, ', ' ORDER BY rs.position)
+                          FROM request_services rs
+                         WHERE rs.idrequests = r.idrequests) AS services_summary
+                FROM requests r
+                JOIN services s ON s.idservice = r.idservice AND s.idrecstatus = 0
+                LEFT JOIN users u ON u.idusertg = r.idclienttg
+                WHERE r.idrecstatus = 0
+                  AND r.idclienttg IS NOT NULL
+                  AND r.reminder_sent_at IS NULL
+                  AND r.status = ANY($2::text[])
+                  AND r.scheduled_at IS NOT NULL
+                  AND r.scheduled_at > now()
+                  AND r.scheduled_at < now() + make_interval(hours => $1::int)
+                  AND r.createdate < r.scheduled_at - make_interval(hours => $1::int)
+                  AND coalesce(u.is_blocked, false) = false
+                ORDER BY r.scheduled_at
+                """,
+                lead_hours, list(config.ACTIVE_STATUSES),
+            )
+
+    async def claim_appointment_reminder(self, idrequests: str) -> bool:
+        """
+        Занять право напомнить о записи. False — напоминание уже уходило.
+
+        Отметка ставится условием в самом UPDATE, а не проверкой перед ним:
+        тем же приёмом, что и право на письмо о подписке. Два процесса с
+        циклом рассылки не должны разбудить клиента дважды.
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE requests SET reminder_sent_at=now()"
+                " WHERE idrequests=$1 AND reminder_sent_at IS NULL"
+                " RETURNING idrequests",
+                idrequests,
+            )
+        return row is not None
+
     def service_link(self, idservice: str) -> str:
         return f"https://t.me/{config.BOT_USERNAME}?start=SVC_{idservice}"
 

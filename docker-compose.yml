@@ -32,3 +32,21 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Снимок базы раз в сутки. Отдельным сервисом, а не задачей в системе:
+  # бэкап, который надо не забыть настроить руками, однажды не настроят.
+  # Тег образа — не ниже версии сервера: pg_dump старше базы дампить откажется.
+  backup:
+    image: postgres:17-alpine
+    container_name: autoservice_backup
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./backups:/backups
+      - ./scripts/backup_db.sh:/usr/local/bin/backup_db.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/backup_db.sh", "--loop"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -268,6 +268,35 @@ python api.py
 
 ---
 
+## Резервные копии
+
+Снимки базы делает сервис `backup` из `docker-compose.yml` — он поднимается
+вместе с ботом по `docker compose up -d`, настраивать ничего не нужно. Раз в
+`BACKUP_INTERVAL_HOURS` он кладёт в `./backups` файл
+`autoservice-YYYYMMDD-HHMMSS.dump` и удаляет всё старше последних `BACKUP_KEEP`
+штук. Если снимок не получился, владельцу бота приходит сообщение в Telegram:
+молчащий бэкап хуже отсутствующего.
+
+Снимок вне очереди:
+
+```bash
+docker compose run --rm --entrypoint /bin/sh backup /usr/local/bin/backup_db.sh
+```
+
+Восстановление (перезальёт данные — сначала убедитесь, что берёте нужный файл):
+
+```bash
+docker compose stop app
+docker compose run --rm --entrypoint /bin/sh backup -c   'pg_restore --clean --if-exists --no-owner --no-privileges      -d "$DATABASE_URL" /backups/autoservice-20260830-030000.dump'
+docker compose start app
+```
+
+Папка `./backups` лежит на том же диске, что и бот: она спасает от ошибочного
+`DELETE` и неудачной миграции, но не от потери сервера. Раз в неделю копируйте
+её к себе — `scp -r vps:/opt/autoservice_bot/backups .`
+
+---
+
 ## Тесты
 
 ```bash

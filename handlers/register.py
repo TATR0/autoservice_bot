@@ -19,7 +19,15 @@ import keyboards as kb
 import render
 from database import db
 from handlers.common import set_active_service, show_main_menu
-from validators import ValidationError, clean_text, normalize_city, normalize_phone
+from notifications import alert_owners
+from validators import (
+    ValidationError,
+    clean_text,
+    format_phone,
+    h,
+    normalize_city,
+    normalize_phone,
+)
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -32,6 +40,33 @@ class RegService(StatesGroup):
     phone = State()
     city = State()
     address = State()
+
+
+async def _announce(message: Message, svc) -> None:
+    """
+    Сообщить владельцу бота о новом сервисе.
+
+    Это единственное событие, после которого в системе заводится чужой
+    бизнес: увидеть его надо в тот же день, а не при следующем разборе базы.
+    Персональных данных клиентов тут нет — только карточка самого сервиса и
+    к кому идти с вопросами.
+
+    Своей аварией письмо регистрацию не портит: сервис уже создан, и
+    управляющий не должен из-за недоставленной новости увидеть ошибку.
+    """
+    try:
+        owner = await db.get_user(message.from_user.id)
+        await alert_owners(
+            message.bot,
+            "🆕 <b>Новый сервис</b>\n"
+            f"{h(svc['service_name'])}, {h(svc['city'])}\n"
+            f"Телефон: {h(format_phone(svc['service_number']))}\n"
+            f"Управляющий: {h(db.user_title(owner, message.from_user.id))}, "
+            f"id <code>{message.from_user.id}</code>\n\n"
+            f"<code>{svc['idservice']}</code>",
+        )
+    except Exception:
+        logger.exception("Письмо владельцу бота о новом сервисе %s не ушло", svc["idservice"])
 
 
 @router.message(Command("register_service"), StateFilter(default_state))
@@ -156,6 +191,7 @@ async def reg_address(message: Message, state: FSMContext) -> None:
     await set_active_service(state, idservice)
 
     await message.answer(render.registration_summary(svc, db.service_link(idservice)))
+    await _announce(message, svc)
     await show_main_menu(
         message, state, greeting="Меню управляющего готово к работе 👇"
     )

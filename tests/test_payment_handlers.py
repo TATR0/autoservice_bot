@@ -191,6 +191,8 @@ class FakePaidMessage:
     def __init__(self, payload: str, user_id: int = 999_000_001, **kwargs):
         self.successful_payment = FakePayment(payload, **kwargs)
         self.from_user = type("User", (), {"id": user_id})()
+        # Через message.bot хендлер зовёт письмо владельцу бота
+        self.bot = object()
         self.answers = []
 
     async def answer(self, text, **kwargs):
@@ -343,3 +345,68 @@ async def test_unreadable_service_after_credit_is_not_called_a_delay(
     )
     assert message.answers[0].startswith("✅")
     assert "ch_read" in caplog.text, "charge_id обязан попасть в лог для разбора инцидента"
+
+
+# ── Владелец бота узнаёт о деньгах без товара ────────────────────────────────
+# Все три аварии ниже кончаются одним: человек заплатил, а дней не получил.
+# Лог об этом знает, но в лог не смотрят без повода — а повод как раз в логе.
+
+
+@pytest.fixture
+def alerts(monkeypatch):
+    """Письмо владельцу бота подменяем списком: адресация проверена в test_alerts."""
+    texts = []
+
+    async def _alert(_bot, text):
+        texts.append(text)
+        return 1
+
+    monkeypatch.setattr(payment, "alert_owners", _alert)
+    return texts
+
+
+async def test_broken_payload_alerts_the_owner(applied, alerts):
+    message = FakePaidMessage("мусор", charge_id="ch_junk")
+    await payment.paid(message)
+    assert len(alerts) == 1, "деньги списаны, счёт не распознан — владелец обязан узнать"
+    assert "ch_junk" in alerts[0], "без id списания звёзды не вернуть"
+
+
+async def test_credit_failure_alerts_the_owner(applied_raises, alerts):
+    message = FakePaidMessage(payment.make_payload(SERVICE_ID, 30), charge_id="ch_boom")
+    await payment.paid(message)
+    assert len(alerts) == 1
+    assert "ch_boom" in alerts[0]
+    assert SERVICE_ID in alerts[0], "чинить придётся конкретному сервису"
+    assert "30" in alerts[0], "сколько дней доначислить — часть задачи"
+
+
+async def test_missing_service_alerts_the_owner(applied_missing_service, alerts):
+    """Платёж за несуществующий сервис — единственный случай, где надо вернуть звёзды."""
+    message = FakePaidMessage(payment.make_payload(SERVICE_ID, 30), charge_id="ch_none")
+    await payment.paid(message)
+    assert len(alerts) == 1
+    assert "ch_none" in alerts[0]
+
+
+async def test_successful_payment_does_not_alert(applied, alerts):
+    """
+    Успешная оплата — не авария. Письмо на каждую покупку приучает
+    пролистывать письма, и настоящую аварию пролистают вместе с ними.
+    """
+    await payment.paid(FakePaidMessage(payment.make_payload(SERVICE_ID, 30)))
+    assert alerts == []
+
+
+async def test_alert_failure_does_not_cost_the_payer_an_answer(applied_raises, monkeypatch):
+    """
+    Владелец бота может заблокировать своего же бота, а Telegram — ответить
+    ошибкой. Плательщик тут ни при чём: ответ ему уже нельзя не отправить.
+    """
+    async def _boom(_bot, _text):
+        raise RuntimeError("telegram down")
+
+    monkeypatch.setattr(payment, "alert_owners", _boom)
+    message = FakePaidMessage(payment.make_payload(SERVICE_ID, 30), charge_id="ch_x")
+    await payment.paid(message)
+    assert message.answers, "ответ плательщику важнее письма владельцу"

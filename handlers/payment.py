@@ -24,7 +24,8 @@ import keyboards as kb
 import render
 from database import db
 from handlers.common import require_owner_service
-from validators import is_uuid
+from notifications import alert_owners
+from validators import h, is_uuid
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -34,6 +35,20 @@ PAYLOAD_PREFIX = "sub"
 # Две ветки после успешного начисления отвечают одинаково — дни начислены, а
 # названия сервиса нет. Текст один на обе, чтобы они не разошлись правками
 CREDITED_WITHOUT_NAME = "✅ Оплата прошла, дни начислены."
+
+
+async def _alert(message: Message, text: str) -> None:
+    """
+    Позвать владельца бота руками разбирать платёж.
+
+    Своей аварией это письмо не должно ронять обработку платежа: плательщику
+    уже ответили, и последнее, чем стоит заканчивать оплату, — исключение
+    из-за того, что владелец заблокировал собственного бота.
+    """
+    try:
+        await alert_owners(message.bot, text)
+    except Exception:
+        logger.exception("Письмо владельцу бота об аварии платежа не ушло")
 
 
 def make_payload(idservice: str, days: int) -> str:
@@ -157,6 +172,13 @@ async def paid(message: Message) -> None:
             "⚠️ Оплата прошла, но счёт не удалось распознать. "
             "Напишите нам — разберёмся вручную."
         )
+        await _alert(
+            message,
+            "🆘 <b>Оплата без зачисления</b>\n"
+            f"Списание: <code>{h(charge_id)}</code>\n"
+            f"Счёт не распознан: <code>{h(payment_info.invoice_payload or '')}</code>\n\n"
+            f"Дни не начислены. Вернуть звёзды: <code>/refund {h(charge_id)}</code>",
+        )
         return
 
     idservice, days = parsed
@@ -189,6 +211,15 @@ async def paid(message: Message) -> None:
             "⚠️ Оплата прошла, зачисление задержалось. "
             "Мы уже видим платёж и разберёмся."
         )
+        await _alert(
+            message,
+            "🆘 <b>Оплата без зачисления</b>\n"
+            f"Списание: <code>{h(charge_id)}</code>\n"
+            f"Сервис: <code>{h(idservice)}</code>, дней: {days}\n\n"
+            "Зачисление упало, и начислено или нет — по этому месту не видно. "
+            "Сверьте срок сервиса и при необходимости продлите "
+            f"<code>/extend {h(idservice)} {days}</code>.",
+        )
         return
 
     if applied is None:
@@ -199,6 +230,13 @@ async def paid(message: Message) -> None:
         await message.answer(
             "⚠️ Оплата прошла, но сервис не найден. "
             "Напишите нам — вернём звёзды."
+        )
+        await _alert(
+            message,
+            "🆘 <b>Оплата за несуществующий сервис</b>\n"
+            f"Списание: <code>{h(charge_id)}</code>\n"
+            f"Сервис: <code>{h(idservice)}</code>, дней: {days}\n\n"
+            f"Начислять некуда — вернуть звёзды: <code>/refund {h(charge_id)}</code>",
         )
         return
 

@@ -79,6 +79,28 @@ async def broadcast(
     return delivered
 
 
+async def alert_owners(bot: Bot, text: str) -> int:
+    """
+    Сообщить владельцу бота об аварии, которую придётся разбирать руками.
+
+    Лог для этого не годится: в него не смотрят без повода, а повод —
+    как раз то, о чём лог и молчит. Возвращается число доставленных писем.
+
+    Без BOT_OWNER_IDS письмо уходит в мастер-чат: он заведён для
+    недоставленного и остаётся последним адресом, где есть кому прочитать.
+    Когда владелец известен, дублировать туда незачем — мастер-чат вполне
+    может оказаться группой с посторонними.
+    """
+    targets = config.BOT_OWNER_IDS or (
+        (config.MASTER_CHAT_ID,) if config.MASTER_CHAT_ID else ()
+    )
+    delivered = 0
+    for chat_id in targets:
+        if await safe_send(bot, chat_id, text):
+            delivered += 1
+    return delivered
+
+
 async def notify_staff(
     bot: Bot,
     idservice: str,

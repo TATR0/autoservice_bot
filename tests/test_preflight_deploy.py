@@ -1,0 +1,96 @@
+"""
+Проверка окружения перед выкатом на VPS.
+
+Проверяется именно чистая часть — разбор переменных: она отвечает за то,
+пустят ли выкат вообще, а ошибка здесь либо остановит рабочий выкат зря,
+либо пропустит нерабочий.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+from preflight_deploy import STOP, check_env  # noqa: E402
+
+GOOD = {
+    "BOT_TOKEN": "1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+    "BOT_USERNAME": "autoservice_bot",
+    "DATABASE_URL": "postgresql://postgres:pw@aws-0-eu.pooler.supabase.com:5432/postgres",
+    "BASE_URL": "https://bot.example.com",
+    "DOMAIN": "bot.example.com",
+    "WEBHOOK_SECRET": "sJ9_lQeQ2mX7nT4vB8kZpR1yUcW0aHgE",
+    "ACME_EMAIL": "owner@example.com",
+    "TRUST_PROXY": "true",
+    "BOT_OWNER_IDS": "12345",
+}
+
+
+def blockers(env):
+    return [p.text for p in check_env(env) if p.level == STOP]
+
+
+def test_a_filled_env_passes():
+    assert check_env(GOOD) == []
+
+
+def test_missing_token_blocks():
+    assert blockers({**GOOD, "BOT_TOKEN": ""})
+
+
+def test_a_token_that_is_not_a_token_blocks():
+    """Скопированный не из того места токен ловится здесь, а не в логах."""
+    assert blockers({**GOOD, "BOT_TOKEN": "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"})
+
+
+def test_placeholder_secret_blocks():
+    """
+    Строка из .env.example — самое частое, что забывают заменить, и самое
+    дорогое: секрет вебхука публично известен, апдейты боту шлёт кто угодно.
+    """
+    assert blockers({**GOOD, "WEBHOOK_SECRET": "замените-на-случайную-строку"})
+
+
+def test_short_secret_blocks():
+    assert blockers({**GOOD, "WEBHOOK_SECRET": "abc123"})
+
+
+def test_secret_with_odd_characters_blocks():
+    """Секрет уходит в URL вебхука: пробел или слэш ломают сам адрес."""
+    assert blockers({**GOOD, "WEBHOOK_SECRET": "секрет с пробелом и /слэшем"})
+
+
+def test_http_base_url_blocks():
+    """Telegram ставит вебхук только на https."""
+    assert blockers({**GOOD, "BASE_URL": "http://bot.example.com"})
+
+
+def test_base_url_must_match_the_domain():
+    """
+    Иначе Caddy получит сертификат на один адрес, а вебхук встанет на
+    другой — бот поднимется и будет молчать.
+    """
+    assert blockers({**GOOD, "BASE_URL": "https://old.example.com"})
+
+
+def test_proxy_without_trust_blocks():
+    """За Caddy все запросы придут с одного адреса и попадут в один счётчик."""
+    assert blockers({**GOOD, "TRUST_PROXY": "false"})
+
+
+def test_a_number_that_is_not_a_number_blocks():
+    """
+    Иначе контейнер падает при импорте config с ValueError и уходит в
+    перезапуск — по логам это выглядит как что угодно, кроме опечатки.
+    """
+    assert blockers({**GOOD, "BACKUP_KEEP": "четырнадцать"})
+
+
+def test_empty_numbers_are_fine():
+    assert check_env({**GOOD, "BACKUP_KEEP": ""}) == []
+
+
+def test_empty_owner_ids_warn_but_do_not_block():
+    problems = check_env({**GOOD, "BOT_OWNER_IDS": ""})
+    assert problems, "про пустой BOT_OWNER_IDS надо сказать"
+    assert not blockers({**GOOD, "BOT_OWNER_IDS": ""}), "но выкат это не останавливает"

@@ -2,9 +2,12 @@
 # Локальная разработка и self-hosted деплой.
 # БД — Supabase (внешняя), локального postgres нет.
 #
-# Запуск:
+# Запуск локально:
 #   cp .env.example .env   # заполнить переменные
 #   docker compose up --build
+#
+# Выкат на VPS — одной командой, она добавит HTTPS через Caddy:
+#   ./scripts/deploy.sh
 #
 # Для локальной отладки вебхука нужен публичный HTTPS-адрес:
 #   ngrok http 8080  →  подставить URL в BASE_URL
@@ -19,8 +22,10 @@ services:
     container_name: autoservice_bot
     restart: unless-stopped
     env_file: .env
+    # Только localhost: наружу приложение смотрит через Caddy, а этот адрес
+    # остаётся для curl с самой машины, когда надо понять, кто именно молчит
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]

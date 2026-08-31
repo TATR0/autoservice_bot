@@ -67,56 +67,84 @@ autoservice_bot/
 
 ---
 
-### 3. Разместить WebApp-фронтенд
+### 3. Поднять бота на VPS
 
-Файл `webapp/index.html` — это фронтенд для записи клиентов.  
-Telegram требует **HTTPS**. Самый простой вариант — **GitHub Pages**.
+Нужен сервер с публичным IP (одного гигабайта памяти достаточно) и домен, у
+которого A-запись смотрит на этот IP. HTTPS обязателен: на http Telegram
+вебхук не поставит.
 
-1. Создать репозиторий (можно приватный с GitHub Pro, или публичный)
-2. Положить `webapp/index.html` в корень (или в папку `docs/`)
-3. **Settings → Pages → Source: Deploy from a branch → main / root**
-4. Получить URL: `https://your-name.github.io/repo-name`
-5. В `index.html` заменить значение `window.API_BASE`:
-   ```js
-   const API_BASE = "https://your-api.onrender.com";
-   ```
+```bash
+# 1. Docker (Ubuntu / Debian)
+curl -fsSL https://get.docker.com | sh
+
+# 2. Код
+git clone <репозиторий> /opt/autoservice_bot
+cd /opt/autoservice_bot
+
+# 3. Настройки
+cp .env.example .env
+nano .env    # BOT_TOKEN, DATABASE_URL, DOMAIN, BASE_URL, WEBHOOK_SECRET, BOT_OWNER_IDS
+
+# 4. Выкат
+./scripts/deploy.sh
+```
+
+`deploy.sh` собирает образ, проверяет `.env` и схему базы, поднимает бота
+вместе с Caddy, дожидается ответа `/healthz` и спрашивает у Telegram, встал ли
+вебхук. Обновление — та же команда: `git pull && ./scripts/deploy.sh`. Сборка
+идёт до остановки работающего бота, поэтому неудачная сборка ничего не гасит.
+
+Наружу открыты только 80 и 443 — их слушает Caddy; сам бот доступен лишь с
+самой машины по `127.0.0.1:8080`. Брандмауэр:
+
+```bash
+ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw enable
+```
+
+Сертификат Caddy выпускает и продлевает сам, ключи лежат в томе `caddy_data`.
+Порт 80 нужен не только для редиректа: по нему проходит проверка домена, без
+которой сертификат не выдадут.
+
+Конфигурация для Render осталась в `render.yaml` — на VPS она не используется
+и ничему не мешает.
 
 ---
 
-### 4. Деплой на Render
+### 4. Форма записи
 
-#### Вариант A — два сервиса (рекомендуется)
-
-**Сервис 1 — бот** (Background Worker)
-- **Build command:** `pip install -r requirements.txt`
-- **Start command:** `python bot.py`
-
-**Сервис 2 — API** (Web Service)
-- **Build command:** `pip install -r requirements.txt`
-- **Start command:** `uvicorn api:app --host 0.0.0.0 --port $PORT`
-
-#### Вариант B — один сервис (через Procfile)
-
-Создать файл `Procfile` в корне:
-```
-web: uvicorn api:app --host 0.0.0.0 --port $PORT
-worker: python bot.py
-```
-Render поддерживает `Procfile` — оба процесса запустятся из одного репо.
+Отдельный хостинг фронтенду не нужен: `app.py` монтирует папку `webapp/` на
+`/app/`, и форма открывается по адресу `BASE_URL/app/` — на том же домене, что
+и API. Это не только проще: при другом домене пришлось бы ослаблять CSP,
+которая сейчас разрешает запросы только к своему источнику.
 
 ---
 
-### 5. Переменные окружения (Environment Variables на Render)
+### 5. Переменные окружения
 
-| Переменная | Описание | Пример |
+| Переменная | Обязательна | Что это |
 |---|---|---|
-| `BOT_TOKEN` | Токен от BotFather | `1234567890:AAA...` |
-| `BOT_USERNAME` | Username бота без @ | `my_autoservice_bot` |
-| `DATABASE_URL` | Строка подключения Supabase | `postgresql://postgres:...` |
-| `WEBAPP_URL` | URL GitHub Pages | `https://you.github.io/repo` |
-| `WEBAPP_ORIGIN` | Для CORS в api.py | `https://you.github.io` |
-| `MASTER_CHAT_ID` | Чат для «потерянных» заявок | `123456789` (опционально) |
+| `BOT_TOKEN` | да | Токен от @BotFather |
+| `DATABASE_URL` | да | Строка подключения Supabase (Session Pooler) |
+| `DOMAIN` | да | Имя домена без схемы: `bot.example.com` |
+| `BASE_URL` | да | Он же целиком: `https://bot.example.com` |
+| `WEBHOOK_SECRET` | да | Случайная строка: и часть URL, и заголовок Telegram |
+| `BOT_USERNAME` | да | Без `@`; из него собираются ссылки `t.me/<bot>?start=...` |
+| `BOT_OWNER_IDS` | да | Кому доступны `/extend`, `/refund`, `/revoke` |
+| `TRUST_PROXY` | за Caddy — да | Откуда брать адрес клиента для лимитов частоты |
+| `ACME_EMAIL` | желательно | Письмо, если с сертификатом что-то не так |
+| `MASTER_CHAT_ID` | нет | Чат для «потерянных» заявок |
+| `TEST_DATABASE_URL` | нет | База для прогона тестов, отдельная от боевой |
 
+Полный список с пояснениями — в `.env.example`. Что из этого не заполнено или
+заполнено неправдой, скажет проверка перед выкатом:
+
+```bash
+docker compose run --rm --no-deps app python scripts/preflight_deploy.py
+```
+
+Её же вызывает `deploy.sh`, поэтому забытый плейсхолдер секрета или домен, не
+совпавший с `BASE_URL`, останавливают выкат, а не всплывают потом молчанием
+бота.
 ---
 
 ### Подписка сервиса
@@ -271,11 +299,18 @@ cp .env.example .env
 
 # 5. Применить схему в Supabase (SQL Editor) из schema.sql
 
-# 6. Запустить бота
-python bot.py
+# 6. Запустить: бот, API и форма записи — один процесс
+uvicorn app:app --host 127.0.0.1 --port 8080
+```
 
-# 7. Запустить API (в отдельном терминале, если нужен WebApp)
-python api.py
+Без `BASE_URL` вебхук не ставится и апдейтов бот не получает — для отладки
+самого API это нормально, а чтобы поговорить с ботом, нужен публичный HTTPS
+(`ngrok http 8080` и его адрес в `BASE_URL`).
+
+То же самое в контейнере, ближе к бою:
+
+```bash
+docker compose up --build
 ```
 
 ---

@@ -1,0 +1,43 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Надстройка для VPS: HTTPS через Caddy.
+#
+# Отдельным файлом, а не профилем в основном compose: локальная разработка
+# ходит на http://localhost:8080 и домена не имеет, а выкат без HTTPS
+# бессмыслен — Telegram не поставит вебхук на http.
+#
+# Применяется вместе с основным файлом, и делает это scripts/deploy.sh:
+#   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: autoservice_caddy
+    restart: unless-stopped
+    # 80 нужен не только для редиректа: по нему проходит проверка домена,
+    # без которой сертификат не выпустят
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # сертификаты: без тома их выпишут заново на каждый выкат
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    depends_on:
+      - app
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy_data:
+  caddy_config:
+  caddy_logs:

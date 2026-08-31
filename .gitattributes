@@ -1,0 +1,7 @@
+# Скрипты выката запускаются на Linux. Возьмись они с VPS с CRLF —
+# оболочка ответит «bad interpreter: /bin/sh^M», и понять это по сообщению
+# практически невозможно.
+*.sh text eol=lf
+Caddyfile text eol=lf
+*.yml text eol=lf
+schema.sql text eol=lf

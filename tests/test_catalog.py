@@ -26,7 +26,7 @@ async def test_get_catalog_item_returns_own_item(service):
 async def test_get_catalog_item_rejects_foreign_service(service, db_ready):
     """Услугу чужого сервиса подставить в заявку нельзя."""
     other = await db.create_service(
-        name="Тест чужой", phone="+79990000001", city="Тестоград",
+        name=f"Тест чужой {uuid.uuid4().hex[:8]}", phone="+79990000001", city="Тестоград",
         address="ул. Чужая, 2", owner_tg_id=999_000_002,
     )
     try:
@@ -42,7 +42,7 @@ async def test_create_request_flow_rejects_foreign_catalog_item(service, db_read
     create_request_flow, а не в форме на клиенте. Дёргаем сам флоу, а не
     db.create_request напрямую, иначе эта защита остаётся непокрытой."""
     other = await db.create_service(
-        name="Тест чужой 2", phone="+79990000004", city="Тестоград",
+        name=f"Тест чужой 2 {uuid.uuid4().hex[:8]}", phone="+79990000004", city="Тестоград",
         address="ул. Чужая, 4", owner_tg_id=999_000_004,
     )
     try:
@@ -286,7 +286,7 @@ async def test_set_catalog_item_price_clears_it(service):
 async def test_set_catalog_item_price_rejects_foreign_service(service, db_ready):
     """Цену чужой услуги менять нельзя."""
     other = await db.create_service(
-        name="Тест чужой цены", phone="+79990000020", city="Тестоград",
+        name=f"Тест чужой цены {uuid.uuid4().hex[:8]}", phone="+79990000020", city="Тестоград",
         address="ул. Чужая, 3", owner_tg_id=999_000_020,
     )
     try:
@@ -322,7 +322,7 @@ async def test_get_catalog_items_can_include_deleted(service):
 
 async def test_get_catalog_items_rejects_foreign_service(service, db_ready):
     other = await db.create_service(
-        name="Тест чужой выборки", phone="+79990000021", city="Тестоград",
+        name=f"Тест чужой выборки {uuid.uuid4().hex[:8]}", phone="+79990000021", city="Тестоград",
         address="ул. Чужая, 4", owner_tg_id=999_000_021,
     )
     try:

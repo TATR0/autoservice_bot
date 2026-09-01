@@ -14,7 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from preflight_deploy import STOP, check_env  # noqa: E402
 
 GOOD = {
-    "BOT_TOKEN": "1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
+    # Не «похожий на настоящий»: сканер секретов GitHub ловит форму
+    # <цифры>:AA<34 символа> и поднимает тревогу на образец из документации
+    "BOT_TOKEN": "1234567890:TEST-token-for-tests-only-000000",
     "BOT_USERNAME": "autoservice_bot",
     "DATABASE_URL": "postgresql://autoservice:s3cret@db:5432/autoservice?sslmode=disable",
     "POSTGRES_USER": "autoservice",
@@ -43,7 +45,7 @@ def test_missing_token_blocks():
 
 def test_a_token_that_is_not_a_token_blocks():
     """Скопированный не из того места токен ловится здесь, а не в логах."""
-    assert blockers({**GOOD, "BOT_TOKEN": "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"})
+    assert blockers({**GOOD, "BOT_TOKEN": "TEST-token-for-tests-only-000000"})
 
 
 def test_placeholder_secret_blocks():

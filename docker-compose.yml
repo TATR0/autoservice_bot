@@ -1,6 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Локальная разработка и self-hosted деплой.
-# БД — Supabase (внешняя), локального postgres нет.
+# База — своя, в соседнем контейнере: данные автосервисов и телефоны клиентов
+# лежат на вашем сервере и никуда больше не ходят.
 #
 # Запуск локально:
 #   cp .env.example .env   # заполнить переменные
@@ -15,6 +16,32 @@
 
 services:
 
+  # База. Наружу не публикуется совсем: к ней ходят только контейнеры проекта,
+  # поэтому пароль не защищает её от интернета — интернета она не видит.
+  db:
+    image: postgres:17-alpine
+    container_name: autoservice_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-autoservice}
+      POSTGRES_USER: ${POSTGRES_USER:-autoservice}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?не задан — заполните .env, проще всего ./scripts/init_env.sh}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Схема применяется сама при создании пустой базы. На последующих
+      # выкатах её же прогоняет deploy.sh: schema.sql идемпотентный
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-autoservice} -d ${POSTGRES_DB:-autoservice}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   app:
     build:
       context: .
@@ -22,6 +49,9 @@ services:
     container_name: autoservice_bot
     restart: unless-stopped
     env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
     # Только localhost: наружу приложение смотрит через Caddy, а этот адрес
     # остаётся для curl с самой машины, когда надо понять, кто именно молчит
     ports:
@@ -46,6 +76,9 @@ services:
     container_name: autoservice_backup
     restart: unless-stopped
     env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
       - ./backups:/backups
       - ./scripts/backup_db.sh:/usr/local/bin/backup_db.sh:ro
@@ -55,3 +88,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  # Данные базы. Живут отдельно от контейнеров: docker compose down их не
+  # трогает. Удаляет только явное docker compose down -v
+  pgdata:

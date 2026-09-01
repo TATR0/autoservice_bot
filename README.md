@@ -1,7 +1,7 @@
 # 🚗 AutoService Bot
 
 Телеграм-бот для онлайн-записи в автосервис.  
-Стек: **Python + aiogram 3 + asyncpg + FastAPI + Supabase + Render**
+Стек: **Python + aiogram 3 + asyncpg + FastAPI + PostgreSQL**, всё в Docker на своём VPS
 
 ---
 
@@ -14,7 +14,7 @@ autoservice_bot/
 ├── config.py           # все переменные окружения
 ├── database.py         # asyncpg-слой, все SQL-запросы
 ├── keyboards.py        # все клавиатуры бота
-├── schema.sql          # SQL-схема для Supabase
+├── schema.sql          # SQL-схема, применяется сама при выкате
 ├── requirements.txt
 ├── .env.example
 ├── handlers/
@@ -54,16 +54,27 @@ autoservice_bot/
 
 ---
 
-### 2. Создать базу данных в Supabase
+### 2. База данных
 
-1. Зарегистрироваться на [supabase.com](https://supabase.com)
-2. Создать новый проект
-3. Открыть **SQL Editor** и выполнить содержимое `schema.sql`
-4. Открыть **Project Settings → Database → Connection string (URI)**
-5. Скопировать строку вида:
-   ```
-   postgresql://postgres:<password>@db.<project>.supabase.co:5432/postgres
-   ```
+Заводить ничего не нужно: PostgreSQL поднимается рядом с ботом, контейнером
+`db` из `docker-compose.yml`. Наружу он не смотрит вовсе — ни порта, ни
+доступа с чужой машины; ходят к нему только контейнеры проекта. Данные лежат
+в томе `pgdata` и переживают `docker compose down`, пересборку и обновление
+образа; удаляет их только явное `docker compose down -v`.
+
+`schema.sql` применяется сам: при первом старте — из
+`/docker-entrypoint-initdb.d`, дальше на каждом выкате, потому что скрипт
+идемпотентный и забытая миграция выглядит как случайно пропавшая половина
+бота.
+
+Пароль базы генерирует `./scripts/init_env.sh` (шаг 3) и подставляет его
+сразу в `POSTGRES_PASSWORD` и в `DATABASE_URL`. Если правите руками — правьте
+в обоих местах: расхождение проверка перед выкатом покажет, но исправлять его
+за вас не станет.
+
+Внешняя база тоже годится — впишите её строку в `DATABASE_URL`, и контейнер
+`db` просто останется невостребованным. Про переезд с такой базы на свою — в
+разделе «Резервные копии».
 
 ---
 
@@ -82,16 +93,16 @@ git clone <репозиторий> /opt/autoservice_bot
 cd /opt/autoservice_bot
 
 # 3. Настройки
-cp .env.example .env
-nano .env    # BOT_TOKEN, DATABASE_URL, DOMAIN, BASE_URL, WEBHOOK_SECRET, BOT_OWNER_IDS
+./scripts/init_env.sh    # создаст .env, сгенерирует секрет вебхука и пароль базы
+nano .env                # BOT_TOKEN, BOT_USERNAME, DOMAIN, BASE_URL, ACME_EMAIL, BOT_OWNER_IDS
 
 # 4. Выкат
 ./scripts/deploy.sh
 ```
 
-`deploy.sh` собирает образ, проверяет `.env` и схему базы, поднимает бота
-вместе с Caddy, дожидается ответа `/healthz` и спрашивает у Telegram, встал ли
-вебхук. Обновление — та же команда: `git pull && ./scripts/deploy.sh`. Сборка
+`deploy.sh` собирает образ, поднимает базу и применяет к ней `schema.sql`,
+проверяет `.env` и схему, поднимает бота вместе с Caddy, дожидается ответа
+`/healthz` и спрашивает у Telegram, встал ли вебхук. Обновление — та же команда: `git pull && ./scripts/deploy.sh`. Сборка
 идёт до остановки работающего бота, поэтому неудачная сборка ничего не гасит.
 
 Наружу открыты только 80 и 443 — их слушает Caddy; сам бот доступен лишь с
@@ -124,7 +135,9 @@ ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw enable
 | Переменная | Обязательна | Что это |
 |---|---|---|
 | `BOT_TOKEN` | да | Токен от @BotFather |
-| `DATABASE_URL` | да | Строка подключения Supabase (Session Pooler) |
+| `DATABASE_URL` | да | Строка подключения; для своей базы — `...@db:5432/...?sslmode=disable` |
+| `POSTGRES_PASSWORD` | да | Пароль базы в контейнере; тот же, что в `DATABASE_URL` |
+| `POSTGRES_USER` `POSTGRES_DB` | нет | По умолчанию `autoservice` и там, и там |
 | `DOMAIN` | да | Имя домена без схемы: `bot.example.com` |
 | `BASE_URL` | да | Он же целиком: `https://bot.example.com` |
 | `WEBHOOK_SECRET` | да | Случайная строка: и часть URL, и заголовок Telegram |
@@ -297,7 +310,8 @@ pip install -r requirements.txt
 cp .env.example .env
 # Заполнить .env своими значениями
 
-# 5. Применить схему в Supabase (SQL Editor) из schema.sql
+# 5. Применить схему к своей базе
+psql "$DATABASE_URL" -f schema.sql
 
 # 6. Запустить: бот, API и форма записи — один процесс
 uvicorn app:app --host 127.0.0.1 --port 8080
@@ -330,17 +344,31 @@ docker compose up --build
 docker compose run --rm --entrypoint /bin/sh backup /usr/local/bin/backup_db.sh
 ```
 
-Восстановление (перезальёт данные — сначала убедитесь, что берёте нужный файл):
+Восстановление — `import_dump.sh`. Он спросит подтверждение, сам снимет копию
+того, что затрёт, зальёт дамп и догонит схему до текущей версии:
 
 ```bash
 docker compose stop app
-docker compose run --rm --entrypoint /bin/sh backup -c   'pg_restore --clean --if-exists --no-owner --no-privileges      -d "$DATABASE_URL" /backups/autoservice-20260830-030000.dump'
+./scripts/import_dump.sh backups/autoservice-20260830-030000.dump
 docker compose start app
 ```
 
 Папка `./backups` лежит на том же диске, что и бот: она спасает от ошибочного
 `DELETE` и неудачной миграции, но не от потери сервера. Раз в неделю копируйте
 её к себе — `scp -r vps:/opt/autoservice_bot/backups .`
+
+**Переезд с внешней базы.** Тем же сервисом снимается дамп чужой базы, тем же
+скриптом заливается в свою:
+
+```bash
+docker compose run --rm -e BACKUP_DATABASE_URL="postgresql://...supabase.com:5432/postgres"   --entrypoint /bin/sh backup /usr/local/bin/backup_db.sh
+./scripts/import_dump.sh backups/autoservice-<дата>.dump
+nano .env            # DATABASE_URL → postgresql://autoservice:<пароль>@db:5432/autoservice?sslmode=disable
+./scripts/deploy.sh
+```
+
+Бота на время переезда лучше остановить (`docker compose stop app`): заявка,
+пришедшая между снимком и заливкой, останется в старой базе.
 
 ---
 
@@ -384,12 +412,19 @@ docker compose start app
 боевой — иначе однажды прогон снесёт живые данные:
 
 ```bash
-# отдельный проект Supabase или локальный PostgreSQL
+# на машине разработчика — свой PostgreSQL
 createdb autoservice_test
 psql autoservice_test -f schema.sql
 
 # в .env
 TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/autoservice_test
+```
+
+На сервере то же самое делается второй базой в том же контейнере:
+
+```bash
+docker compose exec db createdb -U autoservice autoservice_test
+docker compose exec -T db psql -U autoservice -d autoservice_test -q < schema.sql
 ```
 
 Без `TEST_DATABASE_URL` тесты идут в `DATABASE_URL` и на каждом прогоне пишут об

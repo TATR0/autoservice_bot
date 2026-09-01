@@ -20,6 +20,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import unquote, urlsplit
 
 STOP = "стоп"
 WARN = "!"
@@ -51,6 +52,10 @@ REQUIRED_SCHEMA = {
     "subscription_reminders": ("stage",),
     "fsm_storage": ("state",),
 }
+
+# Имя сервиса базы в docker-compose.yml. Такой хост в строке подключения
+# означает: база своя, в соседнем контейнере, и про неё есть что проверить
+INTERNAL_DB_HOST = "db"
 
 TRUE_WORDS = ("1", "true", "yes", "on", "да")
 QUOTES = '"' + chr(39)
@@ -85,6 +90,8 @@ def check_env(env: Mapping[str, str]) -> list[Problem]:
         stop("DATABASE_URL не задан")
     elif not dsn.startswith("postgres"):
         stop("DATABASE_URL должен начинаться с postgresql://")
+    else:
+        problems += check_internal_database(dsn, env)
 
     base = value("BASE_URL")
     domain = value("DOMAIN")
@@ -132,6 +139,63 @@ def check_env(env: Mapping[str, str]) -> list[Problem]:
         warn("BOT_USERNAME не задан: ссылки t.me/<bot>?start=... будут битыми")
     if not value("ACME_EMAIL"):
         warn("ACME_EMAIL пуст: центр сертификации не предупредит письмом, если что-то сломается")
+
+    return problems
+
+
+def check_internal_database(dsn: str, env: Mapping[str, str]) -> list[Problem]:
+    """
+    Сходится ли строка подключения с тем, как поднимется контейнер db.
+
+    База в контейнере создаётся один раз, по POSTGRES_*, и потом эти
+    переменные ни на что не влияют. Если DATABASE_URL разошёлся с ними хоть
+    в одном символе, бот молча не подключится — а выглядеть это будет как
+    «бот не работает», без единого намёка на пароль.
+    """
+    parsed = urlsplit(dsn)
+    if parsed.hostname != INTERNAL_DB_HOST:
+        # Внешняя база — про неё здесь ничего не известно, и это нормально
+        return []
+
+    problems: list[Problem] = []
+
+    def stop(text: str) -> None:
+        problems.append(Problem(STOP, text))
+
+    def value(name: str, default: str) -> str:
+        return (env.get(name) or "").strip() or default
+
+    password = unquote(parsed.password or "")
+    expected_password = (env.get("POSTGRES_PASSWORD") or "").strip()
+    if not expected_password or expected_password in PLACEHOLDERS:
+        stop("POSTGRES_PASSWORD не задан — сгенерировать: ./scripts/init_env.sh")
+    elif password != expected_password:
+        stop(
+            "пароль в DATABASE_URL не совпадает с POSTGRES_PASSWORD: база "
+            "поднимется с одним паролем, а бот придёт с другим"
+        )
+
+    expected_user = value("POSTGRES_USER", "autoservice")
+    user = parsed.username or "—"
+    if user != expected_user:
+        stop(
+            f"пользователь в DATABASE_URL ({user}) не тот, что создаст "
+            f"контейнер (POSTGRES_USER={expected_user})"
+        )
+
+    expected_name = value("POSTGRES_DB", "autoservice")
+    name = parsed.path.lstrip("/") or "—"
+    if name != expected_name:
+        stop(
+            f"база в DATABASE_URL ({name}) не та, что создаст контейнер "
+            f"(POSTGRES_DB={expected_name})"
+        )
+
+    if "sslmode=disable" not in parsed.query:
+        stop(
+            "к базе в контейнере нужен ?sslmode=disable: без него драйвер "
+            "потребует TLS, которого у соседнего контейнера нет"
+        )
 
     return problems
 

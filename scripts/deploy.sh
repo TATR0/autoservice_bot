@@ -23,15 +23,47 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 if [ ! -f .env ]; then
-    echo "Нет .env. Возьмите за основу пример и заполните:"
-    echo "    cp .env.example .env && nano .env"
+    echo "Нет .env. Заполнить пример и сгенерировать секреты:"
+    echo "    ./scripts/init_env.sh"
     exit 1
 fi
+
+# Имя базы и пользователь нужны здесь для pg_isready и psql. Умолчания те же,
+# что в docker-compose.yml: пустая строка в .env не должна ломать проверку
+PGDB=$(grep "^POSTGRES_DB=" .env | head -n 1 | cut -d= -f2- || true)
+PGUSER=$(grep "^POSTGRES_USER=" .env | head -n 1 | cut -d= -f2- || true)
+[ -n "$PGDB" ] || PGDB="autoservice"
+[ -n "$PGUSER" ] || PGUSER="autoservice"
 
 say "Сборка образа"
 # Собираем до остановки старого контейнера: неудачная сборка не должна
 # оставлять сервер без работающего бота
 $COMPOSE build
+
+say "База"
+# Раньше бота: ему в неё подключаться, а проверке схемы — читать её
+$COMPOSE up -d db
+attempt=0
+until $COMPOSE exec -T db pg_isready -U "$PGUSER" -d "$PGDB" >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge 30 ]; then
+        echo "База не поднялась за 60 секунд. Логи:"
+        $COMPOSE logs --tail 50 db
+        exit 1
+    fi
+    sleep 2
+done
+echo "Отвечает."
+
+if grep -q "^DATABASE_URL=.*@db:" .env; then
+    say "Схема"
+    # Каждый выкат: schema.sql идемпотентный, а забытая миграция выглядит
+    # как случайно пропавшая половина бота
+    $COMPOSE exec -T db psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDB" -q < schema.sql
+    echo "Применена."
+else
+    echo "DATABASE_URL смотрит не в контейнер db — схему не трогаю."
+fi
 
 say "Проверка окружения и схемы базы"
 # В контейнере, а не на хосте: там уже есть asyncpg и тот же самый .env
@@ -63,4 +95,4 @@ say "Готово"
 $COMPOSE ps
 echo ""
 echo "Логи:      $COMPOSE logs -f app"
-echo "Остановка: $COMPOSE down"
+echo "Остановка: $COMPOSE down    (данные базы остаются в томе pgdata)"

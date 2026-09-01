@@ -16,7 +16,10 @@ from preflight_deploy import STOP, check_env  # noqa: E402
 GOOD = {
     "BOT_TOKEN": "1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw",
     "BOT_USERNAME": "autoservice_bot",
-    "DATABASE_URL": "postgresql://postgres:pw@aws-0-eu.pooler.supabase.com:5432/postgres",
+    "DATABASE_URL": "postgresql://autoservice:s3cret@db:5432/autoservice?sslmode=disable",
+    "POSTGRES_USER": "autoservice",
+    "POSTGRES_DB": "autoservice",
+    "POSTGRES_PASSWORD": "s3cret",
     "BASE_URL": "https://bot.example.com",
     "DOMAIN": "bot.example.com",
     "WEBHOOK_SECRET": "sJ9_lQeQ2mX7nT4vB8kZpR1yUcW0aHgE",
@@ -94,3 +97,45 @@ def test_empty_owner_ids_warn_but_do_not_block():
     problems = check_env({**GOOD, "BOT_OWNER_IDS": ""})
     assert problems, "про пустой BOT_OWNER_IDS надо сказать"
     assert not blockers({**GOOD, "BOT_OWNER_IDS": ""}), "но выкат это не останавливает"
+
+
+def test_password_that_does_not_match_the_container_blocks():
+    """
+    Контейнер создаёт базу один раз, по POSTGRES_PASSWORD. Разошлись —
+    бот не подключится, и в логах будет только «пароль не подошёл».
+    """
+    assert blockers({**GOOD, "POSTGRES_PASSWORD": "другой"})
+
+
+def test_placeholder_database_password_blocks():
+    assert blockers({**GOOD, "POSTGRES_PASSWORD": "замените-на-случайную-строку"})
+
+
+def test_wrong_user_or_database_name_blocks():
+    """Такой роли и такой базы в контейнере просто не появится."""
+    assert blockers({**GOOD, "POSTGRES_USER": "postgres"})
+    assert blockers({**GOOD, "POSTGRES_DB": "postgres"})
+
+
+def test_container_database_needs_sslmode_disable():
+    """
+    У соседнего контейнера нет TLS, а драйвер по умолчанию его требует.
+    Соединение не состоится, и виновата будет «сеть».
+    """
+    assert blockers({
+        **GOOD,
+        "DATABASE_URL": "postgresql://autoservice:s3cret@db:5432/autoservice",
+    })
+
+
+def test_external_database_is_left_alone():
+    """
+    Строку до чужой базы проверять нечем: POSTGRES_* к ней отношения не
+    имеют, и требовать их совпадения было бы неправдой.
+    """
+    external = {
+        **GOOD,
+        "DATABASE_URL": "postgresql://postgres:pw@aws-0-eu.pooler.supabase.com:5432/postgres",
+        "POSTGRES_PASSWORD": "",
+    }
+    assert check_env(external) == []

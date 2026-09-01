@@ -9,8 +9,7 @@
 
 ```
 autoservice_bot/
-├── bot.py              # точка входа (polling)
-├── api.py              # FastAPI REST (для WebApp)
+├── app.py              # точка входа: бот, REST для формы и статика — один процесс
 ├── config.py           # все переменные окружения
 ├── database.py         # asyncpg-слой, все SQL-запросы
 ├── keyboards.py        # все клавиатуры бота
@@ -23,8 +22,15 @@ autoservice_bot/
 │   ├── admin_mgmt.py   # добавить / удалить администратора
 │   ├── requests.py     # WebApp-заявки + «Мои заявки»
 │   └── admin_actions.py# статусы, просмотр, fallback
-└── webapp/
-    └── index.html      # Telegram WebApp (фронтенд)
+├── webapp/
+│   └── index.html      # Telegram WebApp (фронтенд)
+├── docker-compose.yml  # бот, база, резервные копии
+├── docker-compose.vps.yml  # надстройка для VPS: HTTPS через Caddy
+└── scripts/
+    ├── init_env.sh     # .env: сгенерировать секреты перед первым выкатом
+    ├── deploy.sh       # выкат и обновление одной командой
+    ├── import_dump.sh  # залить дамп: переезд и восстановление
+    └── backup_db.sh    # снимки базы, запускается сервисом backup
 ```
 
 ---

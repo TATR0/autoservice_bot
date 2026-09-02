@@ -245,7 +245,7 @@ def validate() -> None:
     if not BASE_URL:
         logger.warning(
             "BASE_URL не задан — вебхук не будет установлен, кнопки WebApp скрыты. "
-            "Для продакшена задайте BASE_URL=https://<ваш-сервис>.onrender.com"
+            "Для продакшена задайте BASE_URL=https://<ваш-домен> — тот же, что в DOMAIN"
         )
     if not BOT_USERNAME:
         logger.warning("BOT_USERNAME не задан — ссылки вида t.me/<bot>?start=... будут битыми.")

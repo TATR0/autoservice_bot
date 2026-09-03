@@ -141,3 +141,38 @@ def test_external_database_is_left_alone():
         "POSTGRES_PASSWORD": "",
     }
     assert check_env(external) == []
+
+
+def test_a_port_telegram_does_not_use_blocks():
+    """
+    Вебхук на 9443 Telegram примет в set_webhook и не станет доставлять на
+    него ни одного апдейта. Молча — виноватым будет выглядеть код бота.
+    """
+    assert blockers({**GOOD, "BASE_URL": "https://bot.example.com:9443"})
+
+
+def test_a_port_telegram_uses_is_fine():
+    """8443 — запасной порт для случая, когда 443 на сервере уже занят."""
+    assert check_env({
+        **GOOD,
+        "BASE_URL": "https://bot.example.com:8443",
+        "HTTPS_PORT": "8443",
+    }) == []
+
+
+def test_https_port_must_match_the_base_url():
+    """Caddy слушал бы один порт, а Telegram стучался в другой."""
+    assert blockers({
+        **GOOD,
+        "BASE_URL": "https://bot.example.com:8443",
+        "HTTPS_PORT": "443",
+    })
+
+
+def test_port_does_not_break_the_domain_comparison():
+    """Порт в адресе — не повод считать, что имя разошлось с DOMAIN."""
+    assert blockers({
+        **GOOD,
+        "BASE_URL": "https://other.duckdns.org:8443",
+        "HTTPS_PORT": "8443",
+    })

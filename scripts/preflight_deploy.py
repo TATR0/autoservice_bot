@@ -41,6 +41,7 @@ NUMERIC = (
     "STARS_PRICE_1M", "STARS_PRICE_3M", "STARS_PRICE_12M",
     "FREE_PLAN_SERVICE_LIMIT", "REQUEST_COOLDOWN_SECONDS", "MAX_ACTIVE_REQUESTS",
     "INIT_DATA_MAX_AGE", "INVITE_TTL_DAYS", "BACKUP_INTERVAL_HOURS", "BACKUP_KEEP",
+    "HTTPS_PORT",
 )
 
 # Что должно быть в базе после schema.sql. Не вся схема — те места, где
@@ -52,6 +53,11 @@ REQUIRED_SCHEMA = {
     "subscription_reminders": ("stage",),
     "fsm_storage": ("state",),
 }
+
+# Куда Telegram соглашается доставлять вебхук. Любой другой порт он примет
+# в set_webhook и молча не станет использовать: бот останется без апдейтов,
+# и виноватым будет выглядеть код
+WEBHOOK_PORTS = (443, 80, 88, 8443)
 
 # Имя сервиса базы в docker-compose.yml. Такой хост в строке подключения
 # означает: база своя, в соседнем контейнере, и про неё есть что проверить
@@ -99,11 +105,8 @@ def check_env(env: Mapping[str, str]) -> list[Problem]:
         stop("BASE_URL не задан — вебхук не встанет, и бот не получит ни одного апдейта")
     elif not base.startswith("https://"):
         stop("BASE_URL должен быть https: Telegram ставит вебхук только на него")
-    elif domain and base.rstrip("/") != f"https://{domain}":
-        stop(
-            f"BASE_URL ({base}) не совпадает с DOMAIN ({domain}): сертификат "
-            "выпишется на один адрес, а вебхук встанет на другой"
-        )
+    else:
+        problems += check_base_url(base, domain, env)
 
     if not domain:
         stop("DOMAIN не задан — Caddy не поймёт, на какое имя выпускать сертификат")
@@ -139,6 +142,47 @@ def check_env(env: Mapping[str, str]) -> list[Problem]:
         warn("BOT_USERNAME не задан: ссылки t.me/<bot>?start=... будут битыми")
     if not value("ACME_EMAIL"):
         warn("ACME_EMAIL пуст: центр сертификации не предупредит письмом, если что-то сломается")
+
+    return problems
+
+
+def check_base_url(base: str, domain: str, env: Mapping[str, str]) -> list[Problem]:
+    """
+    Тот ли адрес у бота: имя, порт и согласие порта с тем, что слушает Caddy.
+
+    Порт в BASE_URL появляется, когда 443 на сервере уже занят чем-то другим
+    (VPN, чужой веб-сервер). Тогда важны обе половины: Telegram доставляет
+    вебхук не на любой порт, а Caddy должен слушать ровно тот, что в адресе.
+    """
+    problems: list[Problem] = []
+
+    def stop(text: str) -> None:
+        problems.append(Problem(STOP, text))
+
+    try:
+        parsed = urlsplit(base.rstrip("/"))
+        port = parsed.port or 443
+    except ValueError:
+        return [Problem(STOP, f"BASE_URL не разбирается как адрес: {base}")]
+
+    if domain and parsed.hostname != domain:
+        stop(
+            f"BASE_URL ({base}) не совпадает с DOMAIN ({domain}): сертификат "
+            "выпишется на один адрес, а вебхук встанет на другой"
+        )
+
+    if port not in WEBHOOK_PORTS:
+        stop(
+            f"порт {port} в BASE_URL: Telegram доставляет вебхук только на "
+            f"{', '.join(str(known) for known in WEBHOOK_PORTS)}"
+        )
+
+    listening = (env.get("HTTPS_PORT") or "").strip()
+    if listening.isdigit() and int(listening) != port:
+        stop(
+            f"HTTPS_PORT={listening}, а в BASE_URL порт {port}: Telegram "
+            "постучится туда, где никто не слушает"
+        )
 
     return problems
 

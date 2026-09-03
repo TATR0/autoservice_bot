@@ -1,14 +1,29 @@
 # HTTPS для бота. Сертификат Caddy получает и продлевает сам — ни cron,
 # ни certbot не нужны, потому что забытое продление выглядит как «бот умер».
 #
-# {$DOMAIN} и {$ACME_EMAIL} подставляются из .env через docker-compose.vps.yml.
+# {$DOMAIN}, {$ACME_EMAIL} и {$HTTPS_PORT} подставляются из .env через
+# docker-compose.vps.yml.
 
 {
 	email {$ACME_EMAIL}
+	http_port 80
+	# Обычно 443. Другой порт нужен, когда 443 на сервере уже занят: Telegram
+	# доставляет вебхук на 443, 80, 88 и 8443, из них и выбирать
+	https_port {$HTTPS_PORT:443}
 }
 
-{$DOMAIN} {
+https://{$DOMAIN}:{$HTTPS_PORT:443} {
 	encode zstd gzip
+
+	# Проверка домена только через порт 80. Второй способ, TLS-ALPN, ходит на
+	# 443 всегда — на нестандартном порту он молча не сработает, а неудачные
+	# проверки Let's Encrypt считает и однажды перестанет их принимать
+	tls {
+		issuer acme {
+			email {$ACME_EMAIL}
+			disable_tlsalpn_challenge
+		}
+	}
 
 	# Бот наружу не смотрит: порт 8080 слушает только внутренняя сеть compose
 	reverse_proxy app:8080

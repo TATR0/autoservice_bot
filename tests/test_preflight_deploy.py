@@ -22,10 +22,10 @@ GOOD = {
     "POSTGRES_USER": "autoservice",
     "POSTGRES_DB": "autoservice",
     "POSTGRES_PASSWORD": "s3cret",
-    "BASE_URL": "https://bot.example.com",
-    "DOMAIN": "bot.example.com",
+    "BASE_URL": "https://bot.myservice.ru",
+    "DOMAIN": "bot.myservice.ru",
     "WEBHOOK_SECRET": "sJ9_lQeQ2mX7nT4vB8kZpR1yUcW0aHgE",
-    "ACME_EMAIL": "owner@example.com",
+    "ACME_EMAIL": "owner@myservice.ru",
     "TRUST_PROXY": "true",
     "BOT_OWNER_IDS": "12345",
 }
@@ -67,7 +67,7 @@ def test_secret_with_odd_characters_blocks():
 
 def test_http_base_url_blocks():
     """Telegram ставит вебхук только на https."""
-    assert blockers({**GOOD, "BASE_URL": "http://bot.example.com"})
+    assert blockers({**GOOD, "BASE_URL": "http://bot.myservice.ru"})
 
 
 def test_base_url_must_match_the_domain():
@@ -75,7 +75,7 @@ def test_base_url_must_match_the_domain():
     Иначе Caddy получит сертификат на один адрес, а вебхук встанет на
     другой — бот поднимется и будет молчать.
     """
-    assert blockers({**GOOD, "BASE_URL": "https://old.example.com"})
+    assert blockers({**GOOD, "BASE_URL": "https://old.myservice.ru"})
 
 
 def test_proxy_without_trust_blocks():
@@ -148,14 +148,14 @@ def test_a_port_telegram_does_not_use_blocks():
     Вебхук на 9443 Telegram примет в set_webhook и не станет доставлять на
     него ни одного апдейта. Молча — виноватым будет выглядеть код бота.
     """
-    assert blockers({**GOOD, "BASE_URL": "https://bot.example.com:9443"})
+    assert blockers({**GOOD, "BASE_URL": "https://bot.myservice.ru:9443"})
 
 
 def test_a_port_telegram_uses_is_fine():
     """8443 — запасной порт для случая, когда 443 на сервере уже занят."""
     assert check_env({
         **GOOD,
-        "BASE_URL": "https://bot.example.com:8443",
+        "BASE_URL": "https://bot.myservice.ru:8443",
         "HTTPS_PORT": "8443",
     }) == []
 
@@ -164,7 +164,7 @@ def test_https_port_must_match_the_base_url():
     """Caddy слушал бы один порт, а Telegram стучался в другой."""
     assert blockers({
         **GOOD,
-        "BASE_URL": "https://bot.example.com:8443",
+        "BASE_URL": "https://bot.myservice.ru:8443",
         "HTTPS_PORT": "443",
     })
 
@@ -176,3 +176,26 @@ def test_port_does_not_break_the_domain_comparison():
         "BASE_URL": "https://other.duckdns.org:8443",
         "HTTPS_PORT": "8443",
     })
+
+
+def test_domain_from_the_example_file_blocks():
+    """
+    bot.example.com — имя из документации: сертификат на него не выпустят.
+
+    Без этой проверки выкат проходит, а Caddy потом сутками ломится в
+    Let's Encrypt, и понять почему можно только из его логов.
+    """
+    assert blockers({**GOOD, "DOMAIN": "bot.example.com",
+                     "BASE_URL": "https://bot.example.com"})
+
+
+def test_acme_email_from_the_example_file_blocks():
+    assert blockers({**GOOD, "ACME_EMAIL": "owner@example.com"})
+
+
+def test_acme_email_without_at_blocks():
+    assert blockers({**GOOD, "ACME_EMAIL": "owner"})
+
+
+def test_ordinary_acme_email_is_fine():
+    assert blockers({**GOOD, "ACME_EMAIL": "k@duck.com"}) == []

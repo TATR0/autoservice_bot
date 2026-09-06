@@ -33,6 +33,12 @@ PLACEHOLDERS = frozenset({
     "https://your-service.onrender.com",
 })
 
+# Имена из RFC 2606: их нельзя ни зарегистрировать, ни подтвердить. Let's
+# Encrypt отказывает и домену, и почте с таким адресом — а Caddy будет
+# ломиться раз за разом, и это единственное, что помешает выкату
+EXAMPLE_HOSTS = ("example.com", "example.org", "example.net")
+EXAMPLE_TLDS = (".example", ".invalid", ".test", ".localhost")
+
 # Пусто — допустимо (сработает умолчание), мусор — нет: config читает их
 # через int() прямо при импорте, и контейнер уходит в перезапуск
 NUMERIC = (
@@ -112,6 +118,9 @@ def check_env(env: Mapping[str, str]) -> list[Problem]:
         stop("DOMAIN не задан — Caddy не поймёт, на какое имя выпускать сертификат")
     elif "/" in domain or domain.startswith("http"):
         stop(f"DOMAIN — только имя, без схемы и пути: было «{domain}»")
+    elif is_example_host(domain):
+        stop(f"DOMAIN={domain} — это пример из .env.example, а не ваш домен: "
+             "на такое имя сертификат не выпишут")
 
     secret = value("WEBHOOK_SECRET")
     if not secret or secret in PLACEHOLDERS:
@@ -140,10 +149,24 @@ def check_env(env: Mapping[str, str]) -> list[Problem]:
         warn("BOT_OWNER_IDS пуст: /extend, /refund и /revoke не ответят никому")
     if not value("BOT_USERNAME") or value("BOT_USERNAME") in PLACEHOLDERS:
         warn("BOT_USERNAME не задан: ссылки t.me/<bot>?start=... будут битыми")
-    if not value("ACME_EMAIL"):
+    email = value("ACME_EMAIL")
+    if not email:
         warn("ACME_EMAIL пуст: центр сертификации не предупредит письмом, если что-то сломается")
+    elif "@" not in email or is_example_host(email.rsplit("@", 1)[1]):
+        stop(f"ACME_EMAIL={email} — Let's Encrypt такую почту не принимает "
+             "(«contact email has forbidden domain»), и сертификата не будет")
 
     return problems
+
+
+def is_example_host(host: str) -> bool:
+    """Имя из документации, которое не станет настоящим адресом."""
+    host = host.strip().lower().rstrip(".")
+    return (
+        host in EXAMPLE_HOSTS
+        or any(host.endswith("." + known) for known in EXAMPLE_HOSTS)
+        or host.endswith(EXAMPLE_TLDS)
+    )
 
 
 def check_base_url(base: str, domain: str, env: Mapping[str, str]) -> list[Problem]:

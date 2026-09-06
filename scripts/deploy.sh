@@ -35,6 +35,24 @@ PGUSER=$(grep "^POSTGRES_USER=" .env | head -n 1 | cut -d= -f2- || true)
 [ -n "$PGDB" ] || PGDB="autoservice"
 [ -n "$PGUSER" ] || PGUSER="autoservice"
 
+# Порт HTTPS занимают чаще, чем кажется: VPN, панель, чужой веб-сервер.
+# Docker сообщит об этом сам, но уже после сборки и остановки бота
+HTTPSPORT=$(grep "^HTTPS_PORT=" .env | head -n 1 | cut -d= -f2- || true)
+[ -n "$HTTPSPORT" ] || HTTPSPORT=443
+# Если наш Caddy уже работает, порт занят им — это не помеха, а норма
+if ! docker ps -q --filter name=autoservice_caddy --filter status=running | grep -q . &&
+   command -v ss >/dev/null 2>&1 &&
+   ss -ltn "sport = :$HTTPSPORT" 2>/dev/null | tail -n +2 | grep -q .; then
+    echo "Порт $HTTPSPORT уже занят:"
+    ss -ltnp "sport = :$HTTPSPORT" 2>/dev/null | tail -n +2
+    echo ""
+    echo "Caddy на него не встанет. Выберите свободный порт из тех, куда"
+    echo "Telegram доставляет вебхук — 443, 80, 88, 8443 — и впишите в .env:"
+    echo "    HTTPS_PORT=8443"
+    echo "    BASE_URL=https://<ваш-домен>:8443"
+    exit 1
+fi
+
 say "Сборка образа"
 # Собираем до остановки старого контейнера: неудачная сборка не должна
 # оставлять сервер без работающего бота

@@ -69,6 +69,16 @@ else
     echo "WEBHOOK_SECRET: уже задан, не трогаю"
 fi
 
+# .env мог быть создан до того, как порт стал настройкой. Умолчание — то же
+# самое, что было зашито раньше, так что поведение не меняется
+if [ -z "$(get HTTPS_PORT)" ]; then
+    put HTTPS_PORT 443
+    echo "HTTPS_PORT: не было в .env, поставил 443"
+    changed=1
+else
+    echo "HTTPS_PORT: уже задан, не трогаю"
+fi
+
 password=$(get POSTGRES_PASSWORD)
 if is_unset "$password"; then
     password=$(random)

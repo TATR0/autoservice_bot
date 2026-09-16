@@ -22,6 +22,11 @@ services:
     image: postgres:17-alpine
     container_name: autoservice_db
     restart: unless-stopped
+    # 127.0.0.1, а не 0.0.0.0: порт видит только сама машина и тот, кто пришёл
+    # на неё по SSH — этого хватает pgAdmin через туннель. Без адреса впереди
+    # docker открыл бы базу всему интернету в обход ufw
+    ports:
+      - "127.0.0.1:${DB_LOCAL_PORT:-5432}:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-autoservice}
       POSTGRES_USER: ${POSTGRES_USER:-autoservice}

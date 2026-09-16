@@ -63,8 +63,9 @@ autoservice_bot/
 ### 2. База данных
 
 Заводить ничего не нужно: PostgreSQL поднимается рядом с ботом, контейнером
-`db` из `docker-compose.yml`. Наружу он не смотрит вовсе — ни порта, ни
-доступа с чужой машины; ходят к нему только контейнеры проекта. Данные лежат
+`db` из `docker-compose.yml`. Из интернета он недоступен: порт открыт только
+на `127.0.0.1` самой машины, то есть для контейнеров проекта и для того, кто
+пришёл на сервер по SSH. Данные лежат
 в томе `pgdata` и переживают `docker compose down`, пересборку и обновление
 образа; удаляет их только явное `docker compose down -v`.
 
@@ -81,6 +82,38 @@ autoservice_bot/
 Внешняя база тоже годится — впишите её строку в `DATABASE_URL`, и контейнер
 `db` просто останется невостребованным. Про переезд с такой базы на свою — в
 разделе «Резервные копии».
+
+#### Заглянуть в базу с ноутбука
+
+Открывать порт наружу для этого не нужно и не стоит: SSH уже даёт защищённый
+канал, а pgAdmin умеет ходить через него сам.
+
+**pgAdmin 4.** Правая кнопка на `Servers` → `Register` → `Server`:
+
+| Вкладка | Поле | Значение |
+|---|---|---|
+| General | Name | любое, скажем `autoservice VPS` |
+| Connection | Host name/address | `127.0.0.1` |
+| Connection | Port | `5432` |
+| Connection | Maintenance database | `autoservice` |
+| Connection | Username | `autoservice` |
+| Connection | Password | из `POSTGRES_PASSWORD` в `.env` на сервере |
+| SSH Tunnel | Use SSH tunneling | включить |
+| SSH Tunnel | Tunnel host | IP вашей VPS |
+| SSH Tunnel | Tunnel port / Username | `22` / `root` |
+| SSH Tunnel | Authentication | пароль или файл ключа |
+
+`127.0.0.1` в Connection — это не ваш ноутбук: адрес читается уже со стороны
+сервера, куда pgAdmin попал по SSH.
+
+**psql или любой другой клиент.** Прокинуть порт руками и ходить на него:
+
+```bash
+ssh -L 55432:127.0.0.1:5432 root@<ip-вашей-vps>
+psql -h 127.0.0.1 -p 55432 -U autoservice -d autoservice
+```
+
+Пароль посмотреть на сервере: `grep ^POSTGRES_PASSWORD= .env`.
 
 ---
 

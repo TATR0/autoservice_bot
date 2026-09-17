@@ -25,28 +25,28 @@ def test_owner_ids_are_a_tuple_by_default():
 
 
 def test_three_plans_are_configured():
-    assert [p.days for p in config.STAR_PLANS] == [30, 90, 365]
+    assert [p.days for p in config.PLANS] == [30, 90, 365]
 
 
 def test_a_year_is_a_year():
     """365, а не 360: через год управляющий пересчитает и будет прав."""
-    assert config.STAR_PLANS[-1].days == 365
+    assert config.PLANS[-1].days == 365
 
 
 def test_prices_are_whole_stars():
     """Звёзды не дробятся: дробная цена — это счёт, который Telegram не примет."""
-    for plan in config.STAR_PLANS:
+    for plan in config.PLANS:
         assert isinstance(plan.stars, int) and plan.stars > 0
 
 
 def test_every_plan_has_a_human_label():
     """«365 дней» на кнопке читается хуже, чем «12 месяцев»."""
-    for plan in config.STAR_PLANS:
+    for plan in config.PLANS:
         assert plan.label.strip()
 
 
 def test_plan_is_found_by_days():
-    assert config.plan_by_days(90).stars == config.STAR_PLANS[1].stars
+    assert config.plan_by_days(90).stars == config.PLANS[1].stars
 
 
 def test_unknown_plan_is_not_invented():

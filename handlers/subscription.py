@@ -21,6 +21,7 @@ from aiogram.types import Message
 import config
 import render
 from database import db
+from handlers.payment import parse_payload
 from notifications import safe_send
 from validators import ValidationError, h, validate_uuid
 
@@ -33,6 +34,8 @@ USAGE = (
     "Продление подписки:\n"
     "<code>/extend &lt;idservice&gt; &lt;дней&gt;</code>\n"
     f"Дней — от 1 до {MAX_DAYS}. Со знаком минус — отобрать дни.\n\n"
+    "Оплата переводом — меткой платежа целиком:\n"
+    "<code>/extend sub:&lt;idservice&gt;:&lt;дней&gt;</code>\n\n"
     "Возврат звёзд:\n"
     "<code>/refund &lt;id списания&gt;</code>\n\n"
     "Отобрать дни, если звёзды уже вернулись, а база тогда упала:\n"
@@ -47,23 +50,32 @@ async def extend_command(message: Message) -> None:
         return
 
     parts = (message.text or "").split()
-    if len(parts) != 3:
+    if len(parts) == 2:
+        # Метка платежа целиком: sub:<idservice>:<дней>. Владелец копирует её
+        # из истории переводов ЮMoney как есть — делить строку руками значит
+        # однажды ошибиться в чужом uuid и продлить не тот сервис
+        parsed = parse_payload(parts[1])
+        if parsed is None or not 1 <= parsed[1] <= MAX_DAYS:
+            await message.answer(USAGE)
+            return
+        idservice, days = parsed
+    elif len(parts) == 3:
+        try:
+            idservice = validate_uuid(parts[1], field="Сервис")
+        except ValidationError as exc:
+            await message.answer(f"❌ {exc}")
+            return
+
+        raw = parts[2]
+        negative = raw.startswith("-")
+        digits = raw[1:] if negative else raw
+        if not digits.isdecimal() or not 1 <= int(digits) <= MAX_DAYS:
+            await message.answer(USAGE)
+            return
+        days = -int(digits) if negative else int(digits)
+    else:
         await message.answer(USAGE)
         return
-
-    try:
-        idservice = validate_uuid(parts[1], field="Сервис")
-    except ValidationError as exc:
-        await message.answer(f"❌ {exc}")
-        return
-
-    raw = parts[2]
-    negative = raw.startswith("-")
-    digits = raw[1:] if negative else raw
-    if not digits.isdecimal() or not 1 <= int(digits) <= MAX_DAYS:
-        await message.answer(USAGE)
-        return
-    days = -int(digits) if negative else int(digits)
 
     paid_until = await db.extend_subscription(
         idservice, days=days, granted_by=message.from_user.id

@@ -114,26 +114,51 @@ APPOINTMENT_REMINDER_HOURS: int = int(os.getenv("APPOINTMENT_REMINDER_HOURS") or
 PII_RETENTION_DAYS: int = int(os.getenv("PII_RETENTION_DAYS") or 0)
 
 
-class StarPlan(NamedTuple):
-    """Тариф подписки: сколько дней, сколько звёзд и как назвать на кнопке."""
+# Чем платят за подписку. stars — счёт Telegram: деньги приходят сами и дни
+# начисляются без участия человека, но магазины Apple и Google забирают около
+# трети суммы. yoomoney — ссылка на перевод: комиссия в разы меньше, зато
+# Telegram о платеже не знает, и дни начисляет владелец бота командой /extend
+PAYMENT_STARS = "stars"
+PAYMENT_YOOMONEY = "yoomoney"
+PAYMENT_METHOD: str = (os.getenv("PAYMENT_METHOD") or PAYMENT_STARS).strip().lower()
+
+# Номер кошелька ЮMoney, на который придёт перевод. Нужен только при
+# PAYMENT_METHOD=yoomoney, и без него экран оплаты честно скажет, что оплата
+# не настроена, вместо ссылки в никуда
+YOOMONEY_WALLET: str = (os.getenv("YOOMONEY_WALLET") or "").strip()
+
+
+class Plan(NamedTuple):
+    """Тариф подписки: срок, обе цены и как назвать на кнопке."""
     days: int
-    stars: int
+    stars: int   # цена в звёздах Telegram
+    rubles: int  # цена в рублях — для оплаты переводом
     label: str
 
 
 # Подпись лежит рядом с числами, а не собирается из дней: «12 месяцев» читается
 # лучше, чем «365 дней», а делить дни на тридцать ради подписи — врать в мелочах.
 # Цены целые: звёзды не дробятся. Добавить четвёртый тариф — дописать строку
-STAR_PLANS: tuple[StarPlan, ...] = (
-    StarPlan(30, int(os.getenv("STARS_PRICE_1M") or 150), "1 месяц"),
-    StarPlan(90, int(os.getenv("STARS_PRICE_3M") or 400), "3 месяца"),
-    StarPlan(365, int(os.getenv("STARS_PRICE_12M") or 1350), "12 месяцев"),
+PLANS: tuple[Plan, ...] = (
+    Plan(30, int(os.getenv("STARS_PRICE_1M") or 150),
+         int(os.getenv("PRICE_1M") or 590), "1 месяц"),
+    Plan(90, int(os.getenv("STARS_PRICE_3M") or 400),
+         int(os.getenv("PRICE_3M") or 1490), "3 месяца"),
+    Plan(365, int(os.getenv("STARS_PRICE_12M") or 1350),
+         int(os.getenv("PRICE_12M") or 4490), "12 месяцев"),
 )
 
 
-def plan_by_days(days: int) -> StarPlan | None:
+def plan_by_days(days: int) -> Plan | None:
     """Тариф по числу дней. None — такого тарифа нет, цену взять неоткуда."""
-    return next((plan for plan in STAR_PLANS if plan.days == days), None)
+    return next((plan for plan in PLANS if plan.days == days), None)
+
+
+def plan_price(plan: Plan) -> str:
+    """Цена тарифа тем способом, которым сейчас платят."""
+    if PAYMENT_METHOD == PAYMENT_YOOMONEY:
+        return f"{plan.rubles} ₽"
+    return f"{plan.stars} ⭐"
 
 # ── Лимиты и антиспам ────────────────────────────────────────────────────────
 FREE_PLAN_SERVICE_LIMIT: int = int(os.getenv("FREE_PLAN_SERVICE_LIMIT") or 1)

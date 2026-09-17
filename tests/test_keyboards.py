@@ -115,7 +115,7 @@ def test_admin_menu_has_no_subscription_button():
 
 def test_every_plan_gets_a_button():
     rows = kb.kb_tariffs().inline_keyboard
-    assert len([b for row in rows for b in row]) == len(config.STAR_PLANS)
+    assert len([b for row in rows for b in row]) == len(config.PLANS)
 
 
 def test_tariff_button_carries_days_not_price():
@@ -126,13 +126,13 @@ def test_tariff_button_carries_days_not_price():
     прошлогодней цене.
     """
     first = kb.kb_tariffs().inline_keyboard[0][0]
-    assert first.callback_data == f"subscr:buy:{config.STAR_PLANS[0].days}"
+    assert first.callback_data == f"subscr:buy:{config.PLANS[0].days}"
 
 
 def test_tariff_button_shows_the_price():
     first = kb.kb_tariffs().inline_keyboard[0][0]
-    assert str(config.STAR_PLANS[0].stars) in first.text
-    assert config.STAR_PLANS[0].label in first.text
+    assert str(config.PLANS[0].stars) in first.text
+    assert config.PLANS[0].label in first.text
 
 
 def test_pay_button_opens_the_tariff_screen():

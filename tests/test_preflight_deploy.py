@@ -199,3 +199,29 @@ def test_acme_email_without_at_blocks():
 
 def test_ordinary_acme_email_is_fine():
     assert blockers({**GOOD, "ACME_EMAIL": "k@duck.com"}) == []
+
+
+def test_yoomoney_without_a_wallet_blocks():
+    """
+    Иначе это выясняется в момент, когда управляющий нажал «Оплатить»:
+    экран тарифов открывается, а ссылку собрать не из чего.
+    """
+    assert blockers({**GOOD, "PAYMENT_METHOD": "yoomoney"})
+
+
+def test_yoomoney_with_a_wallet_is_fine():
+    assert blockers({**GOOD, "PAYMENT_METHOD": "yoomoney",
+                     "YOOMONEY_WALLET": "4100111122223333"}) == []
+
+
+def test_unknown_payment_method_blocks():
+    assert blockers({**GOOD, "PAYMENT_METHOD": "qiwi"})
+
+
+def test_stars_need_no_wallet():
+    assert blockers({**GOOD, "PAYMENT_METHOD": "stars"}) == []
+
+
+def test_free_price_blocks_because_the_form_will_not_open():
+    assert blockers({**GOOD, "PAYMENT_METHOD": "yoomoney",
+                     "YOOMONEY_WALLET": "4100111122223333", "PRICE_3M": "0"})

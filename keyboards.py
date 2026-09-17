@@ -280,10 +280,20 @@ def kb_tariffs() -> InlineKeyboardMarkup:
     """
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f"{plan.label} — {plan.stars} ⭐",
+            text=f"{plan.label} — {config.plan_price(plan)}",
             callback_data=f"subscr:buy:{plan.days}",
         )]
-        for plan in config.STAR_PLANS
+        for plan in config.PLANS
+    ])
+
+
+def kb_pay_link(url: str) -> InlineKeyboardMarkup:
+    """
+    Кнопка на форму ЮMoney. Ссылкой, а не callback: страницу оплаты открывает
+    браузер, и бот в этот момент из цепочки выходит совсем.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Перейти к оплате", url=url)]
     ])
 
 

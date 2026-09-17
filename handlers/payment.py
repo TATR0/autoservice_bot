@@ -22,6 +22,7 @@ from aiogram.types import CallbackQuery, LabeledPrice, Message, PreCheckoutQuery
 import config
 import keyboards as kb
 import render
+import yoomoney
 from database import db
 from handlers.common import require_owner_service
 from notifications import alert_owners
@@ -115,12 +116,64 @@ async def buy_plan(callback: CallbackQuery, state: FSMContext) -> None:
     if svc is None:
         return
 
+    if config.PAYMENT_METHOD == config.PAYMENT_YOOMONEY:
+        await _send_payment_link(callback.message, svc, plan)
+        return
+
     await callback.message.answer_invoice(
         title=render.invoice_title(svc),
         description=render.invoice_description(plan),
         payload=make_payload(str(svc["idservice"]), plan.days),
         currency="XTR",
         prices=[LabeledPrice(label=plan.label, amount=plan.stars)],
+    )
+
+
+async def _send_payment_link(message: Message, svc, plan) -> None:
+    """
+    Оплата переводом: ссылка с подставленной суммой вместо счёта Telegram.
+
+    Telegram о таком платеже не узнаёт, поэтому дни начисляет владелец бота
+    руками. Чтобы это не превращалось в расследование, письмо ему уходит
+    сразу — с готовой командой, которую останется выполнить, когда деньги
+    придут на кошелёк.
+    """
+    label = make_payload(str(svc["idservice"]), plan.days)
+    try:
+        url = yoomoney.quickpay_link(
+            config.YOOMONEY_WALLET,
+            rubles=plan.rubles,
+            label=label,
+            target=render.payment_target(svc, plan),
+        )
+    except ValueError:
+        # Кошелёк не настроен. Управляющий в этом не виноват и починить не
+        # может — отправляем его к людям, а не к форме с пустым получателем
+        logger.exception("Оплата переводом не настроена: YOOMONEY_WALLET пуст")
+        await message.answer(
+            "Оплата сейчас недоступна — мы уже чиним. "
+            "Подписка не прервётся, пока разбираемся."
+        )
+        await _alert(
+            message,
+            "🆘 <b>Оплата не настроена</b>\n"
+            "Управляющий открыл тарифы, а ссылку собрать не из чего: "
+            "не задан <code>YOOMONEY_WALLET</code>.",
+        )
+        return
+
+    await message.answer(
+        render.payment_link_screen(svc, plan),
+        reply_markup=kb.kb_pay_link(url),
+        disable_web_page_preview=True,
+    )
+    await _alert(
+        message,
+        "💳 <b>Открыта оплата переводом</b>\n"
+        f"Сервис: «{h(svc['service_name'])}»\n"
+        f"Тариф: {plan.label} — {plan.rubles} ₽\n"
+        f"Метка платежа: <code>{h(label)}</code>\n\n"
+        f"Когда перевод придёт: <code>/extend {h(label)}</code>",
     )
 
 

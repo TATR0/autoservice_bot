@@ -455,3 +455,23 @@ async def test_own_form_opens_while_the_subscription_holds(own_service):
     message = FakeMessage(kb.BTN_BOOK_OWN, OWNER_ID)
     await requests_handler.open_booking_form(message, None)
     assert "истекла" not in " ".join(message.answers)
+
+
+async def test_owner_extends_by_payment_label(extended):
+    """
+    Метка из истории переводов ЮMoney копируется целиком: делить её руками —
+    лишний повод ошибиться в чужом uuid и продлить не тот сервис.
+    """
+    message = FakeMessage(f"/extend sub:{SERVICE_ID}:30", OWNER_ID)
+    await handler.extend_command(message)
+    assert extended == [(SERVICE_ID, 30, OWNER_ID)]
+
+
+async def test_broken_label_credits_nothing(extended):
+    for raw in (f"sub:{SERVICE_ID}", "sub:not-a-uuid:30", f"sub:{SERVICE_ID}:x",
+                f"other:{SERVICE_ID}:30", f"sub:{SERVICE_ID}:0",
+                f"sub:{SERVICE_ID}:99999999"):
+        message = FakeMessage(f"/extend {raw}", OWNER_ID)
+        await handler.extend_command(message)
+        assert extended == [], raw
+        assert message.answers, raw

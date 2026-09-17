@@ -39,12 +39,17 @@ PLACEHOLDERS = frozenset({
 EXAMPLE_HOSTS = ("example.com", "example.org", "example.net")
 EXAMPLE_TLDS = (".example", ".invalid", ".test", ".localhost")
 
+# Чем платят за подписку. Опечатка в имени способа означала бы экран оплаты,
+# который не открывается ни счётом, ни ссылкой
+PAYMENT_METHODS = ("stars", "yoomoney")
+
 # Пусто — допустимо (сработает умолчание), мусор — нет: config читает их
 # через int() прямо при импорте, и контейнер уходит в перезапуск
 NUMERIC = (
     "DB_POOL_MIN", "DB_POOL_MAX", "MASTER_CHAT_ID", "TRIAL_DAYS",
     "REMINDER_TICK_SECONDS", "APPOINTMENT_REMINDER_HOURS", "PII_RETENTION_DAYS",
     "STARS_PRICE_1M", "STARS_PRICE_3M", "STARS_PRICE_12M",
+    "PRICE_1M", "PRICE_3M", "PRICE_12M",
     "FREE_PLAN_SERVICE_LIMIT", "REQUEST_COOLDOWN_SECONDS", "MAX_ACTIVE_REQUESTS",
     "INIT_DATA_MAX_AGE", "INVITE_TTL_DAYS", "BACKUP_INTERVAL_HOURS", "BACKUP_KEEP",
     "HTTPS_PORT",
@@ -156,6 +161,38 @@ def check_env(env: Mapping[str, str]) -> list[Problem]:
         stop(f"ACME_EMAIL={email} — Let's Encrypt такую почту не принимает "
              "(«contact email has forbidden domain»), и сертификата не будет")
 
+    problems += check_payment(env)
+
+    return problems
+
+
+def check_payment(env: Mapping[str, str]) -> list[Problem]:
+    """
+    Чем платят за подписку и всё ли для этого есть.
+
+    Пустой кошелёк выясняется иначе только в момент, когда управляющий нажал
+    «Оплатить»: экран тарифов открывается, а ссылке взяться неоткуда.
+    """
+    method = (env.get("PAYMENT_METHOD") or "stars").strip().lower()
+    if method not in PAYMENT_METHODS:
+        return [Problem(STOP, f"PAYMENT_METHOD={method} — такого способа нет, "
+                              f"выбирайте из: {', '.join(PAYMENT_METHODS)}")]
+
+    if method != "yoomoney":
+        return []
+
+    problems: list[Problem] = []
+    if not (env.get("YOOMONEY_WALLET") or "").strip():
+        problems.append(Problem(
+            STOP,
+            "PAYMENT_METHOD=yoomoney, а YOOMONEY_WALLET пуст: ссылку на оплату "
+            "собрать не из чего, и заплатить будет нельзя",
+        ))
+    for name in ("PRICE_1M", "PRICE_3M", "PRICE_12M"):
+        raw = (env.get(name) or "").strip()
+        if raw.isdigit() and int(raw) == 0:
+            problems.append(Problem(
+                STOP, f"{name}=0: форма оплаты с нулевой суммой не открывается"))
     return problems
 
 

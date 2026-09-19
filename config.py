@@ -127,6 +127,11 @@ PAYMENT_METHOD: str = (os.getenv("PAYMENT_METHOD") or PAYMENT_STARS).strip().low
 # не настроена, вместо ссылки в никуда
 YOOMONEY_WALLET: str = (os.getenv("YOOMONEY_WALLET") or "").strip()
 
+# Секрет HTTP-уведомлений ЮMoney: им подписан каждый входящий перевод, и
+# только он отличает настоящее уведомление от подделки — адрес приёмника
+# угадать несложно. Пусто — приём закрыт совсем, и дни начисляются руками
+YOOMONEY_NOTIFY_SECRET: str = (os.getenv("YOOMONEY_NOTIFY_SECRET") or "").strip()
+
 
 class Plan(NamedTuple):
     """Тариф подписки: срок, обе цены и как назвать на кнопке."""

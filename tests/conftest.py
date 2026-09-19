@@ -58,9 +58,30 @@ async def db_ready():
     await db.close()
 
 
+async def _forget_test_owner() -> None:
+    """
+    Убрать сервисы тестового владельца, оставшиеся от упавших прогонов.
+
+    Пробный период даётся человеку один раз, и забытый сервис августовского
+    прогона означает, что сегодняшний тест про триал упадёт не по делу.
+    Владелец здесь выдуманный, живых данных под ним нет и быть не может.
+    """
+    async with db.pool.acquire() as conn:
+        stale = [
+            row["idservice"] for row in await conn.fetch(
+                "SELECT idservice FROM services WHERE owner_id=$1", TEST_OWNER_ID
+            )
+        ]
+        for idservice in stale:
+            # requests ссылается на services через ON DELETE SET NULL
+            await conn.execute("DELETE FROM requests WHERE idservice=$1", idservice)
+            await conn.execute("DELETE FROM services WHERE idservice=$1", idservice)
+
+
 @pytest_asyncio.fixture
 async def service(db_ready) -> str:
     """Временный сервис. Удаляется вместе с каталогом и заявками после теста."""
+    await _forget_test_owner()
     idservice = await db.create_service(
         name=f"Тест {uuid.uuid4().hex[:8]}",
         phone="+79990000000",

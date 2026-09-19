@@ -14,6 +14,10 @@ yoomoney.py — ссылка на оплату подписки переводо
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+from decimal import Decimal, InvalidOperation
+from typing import Mapping, NamedTuple
 from urllib.parse import urlencode
 
 # Адрес формы. confirm.xml — исторический путь, он же работает и сегодня;
@@ -55,3 +59,88 @@ def quickpay_link(wallet: str, *, rubles: int, label: str, target: str) -> str:
         "need-address": "false",
     }
     return f"{QUICKPAY_URL}?{urlencode(params)}"
+
+
+# ── Уведомление о переводе ───────────────────────────────────────────────────
+#
+# ЮMoney стучится на наш адрес при каждом входящем переводе. Адрес этот
+# публичный, и единственное, что отличает настоящее уведомление от выдуманного
+# кем угодно, — подпись секретом. Поэтому проверка подписи здесь не «на всякий
+# случай»: без неё любой желающий продлевал бы себе подписку строкой в curl.
+
+# Порядок полей задан ЮMoney и менять его нельзя: подпись считается по строке,
+# склеенной именно так. Секрет встаёт предпоследним, перед label
+SIGNED_FIELDS = (
+    "notification_type", "operation_id", "amount", "currency",
+    "datetime", "sender", "codepro",
+)
+
+
+class NotificationError(Exception):
+    """Уведомление не наше или испорчено. Деньги по нему не начисляются."""
+
+
+class Notification(NamedTuple):
+    """Разобранное уведомление о переводе."""
+    operation_id: str   # id операции у ЮMoney, по нему отсекаются повторы
+    amount: Decimal     # сколько зачислено на кошелёк, уже без комиссии
+    label: str          # наша метка: sub:<idservice>:<дней>
+    sender: str         # номер кошелька отправителя, пусто при оплате картой
+    codepro: bool       # перевод с защитным кодом — деньги ещё не наши
+    unaccepted: bool    # перевод ждёт принятия — тоже ещё не наши
+    test: bool          # кнопка «проверить» в настройках ЮMoney
+
+
+def _flag(raw: str) -> bool:
+    """ЮMoney шлёт булевы значения строками «true»/«false»."""
+    return (raw or "").strip().lower() == "true"
+
+
+def signature(form: Mapping[str, str], secret: str) -> str:
+    """
+    Подпись уведомления: sha1 от полей, склеенных через «&», с секретом внутри.
+
+    Отсутствующее поле — пустая строка, а не ошибка: ЮMoney не присылает
+    sender при оплате картой, и подпись считается ровно по пустому месту.
+    """
+    parts = [str(form.get(name) or "") for name in SIGNED_FIELDS]
+    parts.append(secret)
+    parts.append(str(form.get("label") or ""))
+    return hashlib.sha1("&".join(parts).encode("utf-8")).hexdigest()
+
+
+def parse_notification(form: Mapping[str, str], secret: str) -> Notification:
+    """
+    Проверить подпись и разобрать уведомление. NotificationError — не наше.
+
+    Сумма читается Decimal, а не float: деньги в двоичной дроби — это способ
+    однажды не досчитаться копейки и не понять почему.
+    """
+    if not secret:
+        raise NotificationError("Приём уведомлений выключен: нет секрета")
+
+    expected = signature(form, secret)
+    got = str(form.get("sha1_hash") or "")
+    # compare_digest, а не ==: сравнение строк отваливается на первом
+    # несовпавшем символе, и по времени ответа подпись подбирается побайтно
+    if not hmac.compare_digest(expected, got.lower()):
+        raise NotificationError("Подпись не сошлась")
+
+    operation_id = str(form.get("operation_id") or "").strip()
+    if not operation_id:
+        raise NotificationError("Уведомление без operation_id")
+
+    try:
+        amount = Decimal(str(form.get("amount") or "0"))
+    except InvalidOperation:
+        raise NotificationError(f"Сумма не читается: {form.get('amount')!r}") from None
+
+    return Notification(
+        operation_id=operation_id,
+        amount=amount,
+        label=str(form.get("label") or "").strip(),
+        sender=str(form.get("sender") or "").strip(),
+        codepro=_flag(form.get("codepro", "")),
+        unaccepted=_flag(form.get("unaccepted", "")),
+        test=_flag(form.get("test_notification", "")),
+    )

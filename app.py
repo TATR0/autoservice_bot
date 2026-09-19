@@ -17,6 +17,7 @@ import os
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qsl
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -24,12 +25,13 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.types import BotCommand, BotCommandScopeDefault, Update
 from fastapi import FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import config
 import subscription
+import yoomoney
 from database import db
 from fsm_storage import build_storage
 from handlers import (
@@ -447,6 +449,46 @@ async def subscriptions_tick(x_tick_secret: str | None = Header(default=None)):
     # это время значит отнимать соединение у клиентов ради ожидания сети
     sent = await send_subscription_reminders(bot)
     return {"sent": sent}
+
+
+@app.post("/yoomoney/notify")
+async def yoomoney_notify(request: Request):
+    """
+    Уведомление ЮMoney о переводе на кошелёк: дни начисляются сами.
+
+    Адрес публичный и ничем не спрятан — защищает только подпись секретом.
+    Пустой секрет закрывает приём совсем: иначе стенд с незаполненной
+    переменной продлевал бы подписку любому, кто пришлёт форму.
+
+    ЮMoney ждёт 200 и повторяет доставку часами, если его не получит. Поэтому
+    200 отвечаем и на разобранное, и на непонятое: повтор того, чего мы не
+    поняли, понятнее не станет, а владельцу бота письмо уже ушло. Неверная
+    подпись — 403: такое уведомление мы не признаём своим никогда.
+    """
+    if not config.YOOMONEY_NOTIFY_SECRET:
+        logger.warning("Уведомление ЮMoney при пустом YOOMONEY_NOTIFY_SECRET")
+        raise HTTPException(status_code=404, detail="not found")
+
+    # parse_qsl, а не request.form(): разбор формы в starlette требует
+    # python-multipart, и ради одного плоского urlencoded-тела тащить в образ
+    # ещё одну библиотеку незачем. errors=replace — испорченная кодировка
+    # должна кончиться непрошедшей подписью, а не пятисоткой
+    raw = (await request.body()).decode("utf-8", "replace")
+    form = dict(parse_qsl(raw, keep_blank_values=True))
+    try:
+        notice = yoomoney.parse_notification(form, config.YOOMONEY_NOTIFY_SECRET)
+    except yoomoney.NotificationError as exc:
+        logger.warning("Уведомление ЮMoney отклонено: %s", exc)
+        raise HTTPException(status_code=403, detail="forbidden") from None
+
+    # Без _db_gate — по той же причине, что и тик напоминаний: зачисление
+    # между походами в базу переписывается с Telegram, и держать слот всё это
+    # время значит отнимать соединение у клиентов ради ожидания сети. Наплыва
+    # тут быть не может: уведомления шлёт ЮMoney, и каждое подписано
+    result = await payment.credit_transfer(bot, notice)
+    logger.info("ЮMoney: перевод %s — %s", notice.operation_id, result)
+    # Тело ЮMoney не читает, важен только код ответа
+    return Response(status_code=200)
 
 
 # ── Служебное ────────────────────────────────────────────────────────────────

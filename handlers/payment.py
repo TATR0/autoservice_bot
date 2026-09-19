@@ -1,5 +1,5 @@
 """
-handlers/payment.py — оплата подписки звёздами Telegram.
+handlers/payment.py — оплата подписки: звёзды Telegram и перевод на ЮMoney.
 
 Экран тарифов открывается двумя путями (кнопкой меню и кнопкой из письма) и
 ведёт в одно место. Счёт формируется в момент нажатия, поэтому кнопка из
@@ -12,8 +12,9 @@ handlers/payment.py — оплата подписки звёздами Telegram.
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import default_state
@@ -25,7 +26,7 @@ import render
 import yoomoney
 from database import db
 from handlers.common import require_owner_service
-from notifications import alert_owners
+from notifications import alert_owners, safe_send
 from validators import h, is_uuid
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ PAYLOAD_PREFIX = "sub"
 CREDITED_WITHOUT_NAME = "✅ Оплата прошла, дни начислены."
 
 
-async def _alert(message: Message, text: str) -> None:
+async def _alert_bot(bot: Bot, text: str) -> None:
     """
     Позвать владельца бота руками разбирать платёж.
 
@@ -47,9 +48,14 @@ async def _alert(message: Message, text: str) -> None:
     из-за того, что владелец заблокировал собственного бота.
     """
     try:
-        await alert_owners(message.bot, text)
+        await alert_owners(bot, text)
     except Exception:
         logger.exception("Письмо владельцу бота об аварии платежа не ушло")
+
+
+async def _alert(message: Message, text: str) -> None:
+    """То же письмо, когда под рукой сообщение, а не бот."""
+    await _alert_bot(message.bot, text)
 
 
 def make_payload(idservice: str, days: int) -> str:
@@ -319,3 +325,119 @@ async def paid(message: Message) -> None:
     await message.answer(
         render.payment_done(svc, days=days, restored=applied.restored)
     )
+
+
+# ── Перевод на кошелёк ───────────────────────────────────────────────────────
+
+# Сколько от цены тарифа должно дойти, чтобы считать его оплаченным. ЮMoney
+# берёт комиссию с некоторых способов оплаты, и требовать копейка в копейку
+# значило бы отбивать честные платежи. Заметно меньшую сумму зачитывать нельзя:
+# ссылку на оплату видно целиком, и сумму в ней подменяют одной правкой адреса
+MIN_PAID_SHARE = Decimal("0.9")
+
+
+async def credit_transfer(bot: Bot, notice: yoomoney.Notification) -> str:
+    """
+    Зачесть перевод на кошелёк. Возвращает короткий итог для лога.
+
+    Деньги уже на кошельке, поэтому молча закончить нельзя ни на одной ветке:
+    либо начисляем дни, либо зовём владельца бота разобрать руками. Повторную
+    доставку того же уведомления отсекает db.extend_subscription: право на
+    начисление занято уникальным индексом по (source, external_id).
+    """
+    if notice.test:
+        # Кнопка «Проверить» в настройках ЮMoney: денег нет, метки нет
+        logger.info("ЮMoney: тестовое уведомление")
+        return "test"
+
+    if notice.codepro or notice.unaccepted:
+        # Перевод с защитным кодом или ждущий принятия: на кошелёк он ещё не
+        # лёг, и начислять дни за него значит выдать товар до оплаты
+        logger.warning("ЮMoney: перевод %s не принят", notice.operation_id)
+        await _alert_bot(
+            bot,
+            "⏳ <b>Перевод ждёт принятия</b>\n"
+            f"Операция: <code>{h(notice.operation_id)}</code>\n"
+            f"Метка: <code>{h(notice.label)}</code>\n\n"
+            "Дни не начислены. Примите перевод в ЮMoney — уведомление придёт "
+            "заново, и начисление пройдёт само.",
+        )
+        return "unaccepted"
+
+    parsed = parse_payload(notice.label)
+    if parsed is None:
+        # Перевод без нашей метки: например, человек отправил деньги сам, не
+        # по ссылке. Кому начислять — отсюда не видно
+        logger.error("ЮMoney: перевод %s с чужой меткой %r",
+                     notice.operation_id, notice.label)
+        await _alert_bot(
+            bot,
+            "🆘 <b>Перевод без метки</b>\n"
+            f"Операция: <code>{h(notice.operation_id)}</code>\n"
+            f"Сумма: {notice.amount} ₽\n"
+            f"Метка: <code>{h(notice.label)}</code>\n\n"
+            "Начислять некуда: метка не наша. Разберитесь по истории переводов.",
+        )
+        return "unknown-label"
+
+    idservice, days = parsed
+    plan = config.plan_by_days(days)
+    if plan is not None and notice.amount < plan.rubles * MIN_PAID_SHARE:
+        logger.error("ЮMoney: за тариф %d ₽ пришло %s", plan.rubles, notice.amount)
+        await _alert_bot(
+            bot,
+            "🆘 <b>Пришло меньше цены тарифа</b>\n"
+            f"Операция: <code>{h(notice.operation_id)}</code>\n"
+            f"Тариф: {plan.label} — {plan.rubles} ₽, пришло {notice.amount} ₽\n"
+            f"Метка: <code>{h(notice.label)}</code>\n\n"
+            "Дни не начислены. Если платёж честный: "
+            f"<code>/extend {h(notice.label)}</code>",
+        )
+        return "underpaid"
+
+    try:
+        paid_until = await db.extend_subscription(
+            idservice, days=days, source="yoomoney", external_id=notice.operation_id,
+        )
+    except Exception:
+        logger.exception("ЮMoney: сбой зачисления перевода %s", notice.operation_id)
+        await _alert_bot(
+            bot,
+            "🆘 <b>Перевод без зачисления</b>\n"
+            f"Операция: <code>{h(notice.operation_id)}</code>\n"
+            f"Сумма: {notice.amount} ₽\n\n"
+            "Зачисление упало. Сверьте срок сервиса и при необходимости: "
+            f"<code>/extend {h(notice.label)}</code>",
+        )
+        return "failed"
+
+    if paid_until is None:
+        # Сервис удалён. Воскрешать его, как при оплате звёздами, нельзя:
+        # звёзды возвращаются командой, а перевод — только руками
+        logger.error("ЮMoney: перевод %s за несуществующий сервис %s",
+                     notice.operation_id, idservice)
+        await _alert_bot(
+            bot,
+            "🆘 <b>Перевод за несуществующий сервис</b>\n"
+            f"Операция: <code>{h(notice.operation_id)}</code>\n"
+            f"Сервис: <code>{h(idservice)}</code>, дней: {days}\n\n"
+            "Начислять некуда — вернуть деньги придётся переводом.",
+        )
+        return "no-service"
+
+    # Дни начислены. Дальше — только письма, и их сбой ничего не отменяет
+    svc = await db.get_service(idservice)
+    if svc is None:
+        logger.error("ЮMoney: дни начислены, но сервис %s не читается", idservice)
+        return "ok"
+
+    await safe_send(bot, svc["owner_id"],
+                    render.payment_done(svc, days=days, restored=False))
+    await _alert_bot(
+        bot,
+        "✅ <b>Перевод зачислен</b>\n"
+        f"Сервис: «{h(svc['service_name'])}»\n"
+        f"Сумма: {notice.amount} ₽, дней: {days}\n"
+        f"Операция: <code>{h(notice.operation_id)}</code>",
+    )
+    return "ok"

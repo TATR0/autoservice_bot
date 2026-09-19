@@ -199,26 +199,47 @@ class Database:
                 _new_id(), idservice, owner_tg_id,
             )
             # Пробный период — это просто срок, проставленный при регистрации:
-            # отдельной сущности «триал» нет и заводить её незачем
+            # отдельной сущности «триал» нет и заводить её незачем.
+            #
+            # Даётся он человеку, а не сервису, и ровно один раз. Иначе
+            # бесплатная работа бота продлевается регистрацией нового сервиса
+            # каждые пять дней, и подписку можно не покупать никогда.
+            # Удалённые сервисы в проверке тоже считаются: «удалить и завести
+            # заново» — тот же обход, только в два шага
+            used_trial = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM subscription_payments p
+                    JOIN services s ON s.idservice = p.idservice
+                    WHERE s.owner_id = $1 AND p.source = 'trial'
+                )
+                """,
+                owner_tg_id,
+            )
             # datetime.now(UTC), а не now(timezone.utc): параметр timezone
             # этой функции затеняет одноимённый модуль
-            paid_until = subscription.extend(None, datetime.now(UTC), config.TRIAL_DAYS)
-            await conn.execute(
-                "UPDATE services SET paid_until=$2 WHERE idservice=$1",
-                idservice, paid_until,
+            paid_until = (
+                None if used_trial
+                else subscription.extend(None, datetime.now(UTC), config.TRIAL_DAYS)
             )
-            await conn.execute(
-                """
-                INSERT INTO subscription_payments (idservice, days, paid_until, source)
-                VALUES ($1,$2,$3,'trial')
-                """,
-                idservice, config.TRIAL_DAYS, paid_until,
-            )
+            if paid_until is not None:
+                await conn.execute(
+                    "UPDATE services SET paid_until=$2 WHERE idservice=$1",
+                    idservice, paid_until,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO subscription_payments (idservice, days, paid_until, source)
+                    VALUES ($1,$2,$3,'trial')
+                    """,
+                    idservice, config.TRIAL_DAYS, paid_until,
+                )
             # Пока триал не длиннее окна предупреждения, стадия «5d» подошла бы
             # прямо в секунду регистрации — гасим её заранее занятой отметкой.
             # Дату называет приветствие. Если триал удлинить, гасить нечего:
-            # due_stage сам вернёт None, а заглушка съела бы настоящее письмо
-            if config.TRIAL_DAYS <= subscription.REMIND_LEAD_DAYS:
+            # due_stage сам вернёт None, а заглушка съела бы настоящее письмо.
+            # Без триала гасить тем более нечего: срока нет, писем о нём не будет
+            if paid_until is not None and config.TRIAL_DAYS <= subscription.REMIND_LEAD_DAYS:
                 await conn.execute(
                     """
                     INSERT INTO subscription_reminders (idservice, paid_until, stage)

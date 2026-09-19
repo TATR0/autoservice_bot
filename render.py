@@ -104,6 +104,16 @@ def subscription_line(svc) -> str:
     """
     now = datetime.now(timezone.utc)
     paid_until = svc["paid_until"]
+    # Срока не выдавали ни разу: пробный период человек использовал на другом
+    # своём сервисе. «Истекла» про такую подписку — неправда, её не начинали
+    if paid_until is None:
+        if subscription.is_active(paid_until, now):
+            return ""
+        return (
+            "⛔️ <b>Подписка не оплачена.</b> Сервис скрыт из поиска, "
+            "новые записи не принимаются.\n"
+            f"{_SURVIVORS}" + _renew_hint()
+        )
     if subscription.is_active(paid_until, now):
         if subscription.due_stage(paid_until, now) is None:
             return ""
@@ -148,7 +158,10 @@ def tariff_screen(svc) -> str:
     # истинен всегда, и просроченный сервис получил бы дату в прошлом со словом
     # «действует». «Оплачена до» — правда и когда срок идёт, и когда он прошёл,
     # но отключение ещё не введено в действие
-    if subscription.is_active(paid_until, now):
+    if paid_until is None:
+        # Пробный период уже использован на другом сервисе — оплата с первого дня
+        head = "💳 Подписка ещё не оплачена."
+    elif subscription.is_active(paid_until, now):
         head = f"💳 Подписка оплачена до {local_dt(paid_until, svc['timezone'])}."
     else:
         head = (
@@ -349,11 +362,18 @@ def service_card(svc, *, link: str, role: str, admins_text: str) -> str:
 def registration_summary(svc, link: str) -> str:
     # Пока подписка не введена в действие, пробный период ничем не кончается —
     # называть его дату значит обещать отключение, которого не будет
-    trial = (
-        f"<b>Пробный период:</b> до {local_dt(svc['paid_until'], svc['timezone'])}\n\n"
-        if config.SUBSCRIPTION_ENFORCED
-        else ""
-    )
+    if not config.SUBSCRIPTION_ENFORCED:
+        trial = ""
+    elif svc["paid_until"] is None:
+        # Пробный период даётся человеку один раз: второй сервис того же
+        # управляющего начинает работать сразу после оплаты. Сказать об этом
+        # надо здесь, иначе он узнает это сам, когда сервис не найдётся в поиске
+        trial = (
+            "<b>Пробный период:</b> уже использован на другом вашем сервисе — "
+            "этот заработает после оплаты\n\n"
+        )
+    else:
+        trial = f"<b>Пробный период:</b> до {local_dt(svc['paid_until'], svc['timezone'])}\n\n"
     return (
         "✅ <b>Сервис зарегистрирован!</b>\n\n"
         f"<b>Название:</b> {h(svc['service_name'])}\n"

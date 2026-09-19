@@ -364,6 +364,67 @@ async def test_a_longer_trial_keeps_its_five_day_warning(db_ready, monkeypatch):
             await conn.execute("DELETE FROM services WHERE idservice=$1", idservice)
 
 
+async def _register(owner: int) -> str:
+    return await db.create_service(
+        name=f"Тест {_uuid.uuid4().hex[:8]}",
+        phone="+79990000000",
+        city="Тестоград",
+        address="ул. Тестовая, 1",
+        owner_tg_id=owner,
+    )
+
+
+async def _drop(*ids: str) -> None:
+    async with db.pool.acquire() as conn:
+        for idservice in ids:
+            await conn.execute("DELETE FROM services WHERE idservice=$1", idservice)
+
+
+async def test_trial_is_given_to_a_person_not_to_a_service(db_ready):
+    """
+    Второй сервис того же управляющего начинается без пробного периода.
+
+    Иначе бесплатная работа продлевается регистрацией нового сервиса каждые
+    пять дней, и подписку можно не покупать никогда.
+    """
+    owner = 999_000_201
+    first = await _register(owner)
+    second = await _register(owner)
+    try:
+        assert (await db.get_service(first))["paid_until"] is not None
+        assert (await db.get_service(second))["paid_until"] is None
+    finally:
+        await _drop(first, second)
+
+
+async def test_deleting_the_service_does_not_return_the_trial(db_ready):
+    """«Удалить и завести заново» — тот же обход, только в два шага."""
+    owner = 999_000_202
+    first = await _register(owner)
+    try:
+        async with db.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE services SET idrecstatus=-1 WHERE idservice=$1", first
+            )
+        second = await _register(owner)
+        try:
+            assert (await db.get_service(second))["paid_until"] is None
+        finally:
+            await _drop(second)
+    finally:
+        await _drop(first)
+
+
+async def test_another_person_gets_their_own_trial(db_ready):
+    """Проверка считает триалы по владельцу — чужие сервисы ей не помеха."""
+    first = await _register(999_000_203)
+    second = await _register(999_000_204)
+    try:
+        assert (await db.get_service(second))["paid_until"] is not None
+    finally:
+        await _drop(first, second)
+
+
 # ── Поиск ────────────────────────────────────────────────────────────────────
 
 

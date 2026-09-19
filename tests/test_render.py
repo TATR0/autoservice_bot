@@ -120,6 +120,22 @@ def test_expired_line_says_what_stopped_and_what_did_not():
     assert "уже записанные" in line.lower()
 
 
+def test_service_without_a_trial_is_not_called_expired():
+    """
+    Пробный период даётся человеку один раз, и второй сервис начинается вовсе
+    без срока. «Истекла» про такую подписку — неправда: её не начинали, и
+    управляющий пошёл бы искать платёж, которого не было.
+    """
+    line = render.subscription_line(_svc(None))
+    assert "не оплачена" in line
+    assert "истекла" not in line.lower()
+
+
+def test_screens_of_a_service_without_a_trial_do_not_crash():
+    """Пустая дата не должна доходить до форматирования: там она падает."""
+    assert "не оплачена" in render.tariff_screen(_svc(None))
+
+
 def test_reminder_mentions_the_deadline_and_the_survivors():
     svc = _svc(datetime.now(timezone.utc) + timedelta(hours=20))
     text = render.subscription_reminder(subscription.STAGE_24H, svc)

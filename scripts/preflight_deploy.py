@@ -193,6 +193,15 @@ def check_payment(env: Mapping[str, str]) -> list[Problem]:
         if raw.isdigit() and int(raw) == 0:
             problems.append(Problem(
                 STOP, f"{name}=0: форма оплаты с нулевой суммой не открывается"))
+    # Не стоп: без секрета оплата работает, только дни начисляются руками.
+    # Молчать об этом нельзя — разница видна не в логах, а в том, что в шесть
+    # утра заплативший ждёт, пока владелец бота проснётся
+    if not (env.get("YOOMONEY_NOTIFY_SECRET") or "").strip():
+        problems.append(Problem(
+            WARN,
+            "YOOMONEY_NOTIFY_SECRET пуст: ЮMoney не сможет сообщить об оплате, "
+            "и дни придётся начислять командой /extend вручную",
+        ))
     return problems
 
 

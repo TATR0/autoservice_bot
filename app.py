@@ -478,7 +478,17 @@ async def yoomoney_notify(request: Request):
     try:
         notice = yoomoney.parse_notification(form, config.YOOMONEY_NOTIFY_SECRET)
     except yoomoney.NotificationError as exc:
-        logger.warning("Уведомление ЮMoney отклонено: %s", exc)
+        # Номер операции и метку пишем и у отклонённого: за ним могут стоять
+        # настоящие деньги — например, когда секрет в .env разошёлся с тем,
+        # что на странице ЮMoney. Без этих двух полей в журнале не видно, кому
+        # начислять дни руками. Значения не проверены подписью, поэтому
+        # обрезаны: в журнал не должно влезать чужое полотно
+        logger.warning(
+            "Уведомление ЮMoney отклонено: %s; операция %r, метка %r",
+            exc,
+            str(form.get("operation_id") or "")[:64],
+            str(form.get("label") or "")[:64],
+        )
         raise HTTPException(status_code=403, detail="forbidden") from None
 
     # Без _db_gate — по той же причине, что и тик напоминаний: зачисление

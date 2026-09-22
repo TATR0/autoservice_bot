@@ -495,8 +495,13 @@ async def yoomoney_notify(request: Request):
         # обрезанным или не доехало вовсе
         guess = yoomoney.diagnose(form, raw, config.YOOMONEY_NOTIFY_SECRET)
         logger.warning(
-            "Подпись: длина секрета %d, догадка — %s",
-            len(config.YOOMONEY_NOTIFY_SECRET), guess or "ни одна не подошла",
+            "Подпись: длина секрета %d, догадка — %s; поля %s; тип %r",
+            len(config.YOOMONEY_NOTIFY_SECRET),
+            guess or "ни одна не подошла",
+            # Имена полей, без значений: по ним видно, тем ли способом ЮMoney
+            # подписывает уведомление и той ли формой оно вообще пришло
+            sorted(form)[:20],
+            str(request.headers.get("content-type") or "")[:64],
         )
         raise HTTPException(status_code=403, detail="forbidden") from None
 

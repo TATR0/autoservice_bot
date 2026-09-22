@@ -24,10 +24,18 @@ INTERVAL_HOURS="${BACKUP_INTERVAL_HOURS:-24}"
 TICK_HOURS="${BACKUP_OFFSITE_TICK_HOURS:-1}"
 CONFIG="${BACKUP_RCLONE_CONFIG:-/config/rclone/rclone.conf}"
 
-# Метка неудачи. Письмо уходит на переходе «было хорошо — стало плохо»:
-# иначе отключившееся на неделю хранилище пишет владельцу каждый час, и на
-# восьмой день он перестаёт читать эти письма вовсе — вместе с настоящими
-FAILED="/tmp/offsite-failed"
+# Сколько хранилищу позволено быть недоступным, прежде чем звать владельца.
+# Домашняя машина по ночам выключена, и это не поломка: жаловаться на каждый
+# неудавшийся круг значит приучить читать эти письма по диагонали. Двое
+# суток — срок, за который включённый хоть раз компьютер копии заберёт
+GRACE_HOURS="${BACKUP_OFFSITE_GRACE_HOURS:-48}"
+
+# Когда в последний раз вывоз удался. В томе, а не в /tmp: перезапуск
+# контейнера не должен сбрасывать отсчёт молчания
+STATE_DIR="${BACKUP_STATE_DIR:-/state}"
+LAST_OK="$STATE_DIR/last-success"
+# Метка отправленного письма: пока беда та же, второго письма не будет
+ALERTED="$STATE_DIR/alerted"
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') offsite: $*"
@@ -53,18 +61,38 @@ alert() {
     done
 }
 
+# Сколько часов прошло с последнего удачного вывоза. Неудача — не удавался ни
+# разу: тогда дело не в выключенном компьютере, а в ненастроенном хранилище,
+# и ждать с письмом нечего
+quiet_for() {
+    [ -f "$LAST_OK" ] || return 1
+    last=$(cat "$LAST_OK" 2>/dev/null || echo 0)
+    echo $(( ( $(date +%s) - last ) / 3600 ))
+}
+
 fail() {
     log "$1"
-    if [ ! -f "$FAILED" ]; then
-        : > "$FAILED"
-        alert "⚠️ Копии базы не уезжают с сервера: $1. Логи: docker logs autoservice_offsite"
+    # Пока не вышел запас молчания — только строка в журнале. Выключенный на
+    # ночь компьютер это ровно тот случай
+    if hours=$(quiet_for); then
+        [ "$hours" -lt "$GRACE_HOURS" ] && return 1
+        why="копии не уезжали $hours ч: $1"
+    else
+        why="копии не уезжали ни разу: $1"
+    fi
+
+    if [ ! -f "$ALERTED" ]; then
+        : > "$ALERTED"
+        alert "⚠️ Резервные копии базы не покидают сервер. $why Логи: docker logs autoservice_offsite"
     fi
     return 1
 }
 
-recovered() {
-    [ -f "$FAILED" ] || return 0
-    rm -f "$FAILED"
+succeeded() {
+    mkdir -p "$STATE_DIR" 2>/dev/null || true
+    date +%s > "$LAST_OK" 2>/dev/null || true
+    [ -f "$ALERTED" ] || return 0
+    rm -f "$ALERTED"
     alert "✅ Копии базы снова уезжают в хранилище."
 }
 
@@ -98,7 +126,7 @@ round() {
         return 1
     fi
 
-    recovered
+    succeeded
     log "вывезено, свежий снимок: $fresh"
 }
 

@@ -110,6 +110,9 @@ services:
       # и вместо понятного «нет настроек rclone» вышла бы невнятная ошибка
       - ./secrets:/config/rclone:ro
       - ./scripts/backup_offsite.sh:/usr/local/bin/backup_offsite.sh:ro
+      # Когда вывоз удался в последний раз. В томе, а не в контейнере:
+      # перезапуск не должен сбрасывать отсчёт молчания и слать письмо заново
+      - offsite_state:/state
     entrypoint: ["/bin/sh", "/usr/local/bin/backup_offsite.sh", "--loop"]
     logging:
       driver: "json-file"
@@ -121,3 +124,5 @@ volumes:
   # Данные базы. Живут отдельно от контейнеров: docker compose down их не
   # трогает. Удаляет только явное docker compose down -v
   pgdata:
+  # Отметки вывоза копий: когда удалось в последний раз и звали ли владельца
+  offsite_state:

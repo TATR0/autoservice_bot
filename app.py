@@ -476,7 +476,9 @@ async def yoomoney_notify(request: Request):
     raw = (await request.body()).decode("utf-8", "replace")
     form = dict(parse_qsl(raw, keep_blank_values=True))
     try:
-        notice = yoomoney.parse_notification(form, config.YOOMONEY_NOTIFY_SECRET)
+        notice = yoomoney.parse_notification(
+            form, config.YOOMONEY_NOTIFY_SECRET, raw,
+        )
     except yoomoney.NotificationError as exc:
         # Номер операции и метку пишем и у отклонённого: за ним могут стоять
         # настоящие деньги — например, когда секрет в .env разошёлся с тем,

@@ -7,6 +7,7 @@
 """
 
 import hashlib
+import hmac
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from urllib.parse import parse_qsl, quote, urlencode
@@ -60,7 +61,110 @@ def expected_hash(data: dict) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
+def signed(**overrides) -> dict:
+    """
+    Уведомление с действующей подписью sign.
+
+    Набор полей списан с боевого стенда: sha1_hash ЮMoney больше не шлёт,
+    зато появились bill_id и operation_label — а подпись считается по всем
+    полям подряд, так что лишнее поле ломает её так же, как переставленное.
+    """
+    data = {
+        "notification_type": "p2p-incoming",
+        "operation_id": OPERATION,
+        "amount": "590.00",
+        "currency": "643",
+        "datetime": "2026-09-20T12:00:00Z",
+        "sender": "410011112222333",
+        "codepro": "false",
+        "label": f"sub:{SERVICE_ID}:30",
+        "bill_id": "",
+        "operation_label": "8433227333052831",
+        "test_notification": "false",
+    }
+    data.update(overrides)
+    data["sign"] = expected_sign(data)
+    return data
+
+
+def expected_sign(data: dict) -> str:
+    """
+    Подпись по документации: все параметры, кроме sign, по алфавиту, в виде
+    «ключ=значение» через «&», значения в URL-кодировке; HMAC-SHA256 в HEX.
+    """
+    base = "&".join(
+        f"{key}={quote(str(value), safe='')}"
+        for key, value in sorted(data.items()) if key != "sign"
+    )
+    return hmac.new(
+        SECRET.encode("utf-8"), base.encode("utf-8"), hashlib.sha256,
+    ).hexdigest()
+
+
 # ── Подпись ──────────────────────────────────────────────────────────────────
+
+def test_current_signature_is_hmac_over_every_field():
+    data = signed()
+    assert yoomoney.hmac_signature(data, SECRET) == data["sign"]
+
+
+def test_notification_signed_the_new_way_is_accepted():
+    """Действующая подпись ЮMoney — sign, и деньги приходят именно с ней."""
+    notice = yoomoney.parse_notification(signed(), SECRET)
+    assert notice.operation_id == OPERATION
+
+
+def test_extra_field_is_part_of_the_current_signature():
+    """
+    sign считается по всем полям, а не по списку: подменить operation_label
+    или bill_id по дороге нельзя, даже если сами мы их не читаем.
+    """
+    data = signed()
+    data["operation_label"] = "другая"
+    with pytest.raises(yoomoney.NotificationError):
+        yoomoney.parse_notification(data, SECRET)
+
+
+def test_forged_sign_is_rejected():
+    data = signed()
+    data["sign"] = "0" * 64
+    with pytest.raises(yoomoney.NotificationError):
+        yoomoney.parse_notification(data, SECRET)
+
+
+def test_changed_sum_breaks_the_current_signature():
+    data = signed()
+    data["amount"] = "1.00"
+    with pytest.raises(yoomoney.NotificationError):
+        yoomoney.parse_notification(data, SECRET)
+
+
+def test_plus_sent_as_is_does_not_break_the_signature():
+    """
+    Разбор формы обращает плюс в пробел, а подписан он был плюсом — так
+    приходит смещение часового пояса. Считать только по разобранным
+    значениям значит отвергать настоящие уведомления.
+    """
+    data = signed(datetime="2026-09-20T12:00:00+04:00")
+    del data["sign"]
+    # Тело, в котором значения оставлены как есть: плюс остался плюсом
+    raw = "&".join(f"{key}={value}" for key, value in sorted(data.items()))
+    raw += "&sign=" + hmac.new(
+        SECRET.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256,
+    ).hexdigest()
+
+    form = dict(parse_qsl(raw, keep_blank_values=True))
+    assert form["datetime"].endswith(" 04:00"), "плюс должен был стать пробелом"
+    assert yoomoney.parse_notification(form, SECRET, raw).operation_id == OPERATION
+
+
+def test_unsigned_notification_is_rejected():
+    """Ни sign, ни sha1_hash — значит уведомление прислал кто угодно."""
+    data = signed()
+    del data["sign"]
+    with pytest.raises(yoomoney.NotificationError):
+        yoomoney.parse_notification(data, SECRET, urlencode(data))
+
 
 def test_signature_follows_the_documented_field_order():
     data = form()
@@ -124,6 +228,16 @@ def test_diagnosis_names_undecoded_values():
     data["sha1_hash"] = yoomoney.signature(encoded, SECRET)
 
     assert "не раскодированы" in yoomoney.diagnose(data, body(data), SECRET)
+
+
+def test_diagnosis_names_a_missing_signature():
+    """
+    Установка, настроенная по старой документации, ждёт sha1_hash и получает
+    отказ на каждом переводе. Имя поля в журнале — это вся разгадка.
+    """
+    data = signed()
+    del data["sign"]
+    assert "ни sign" in yoomoney.diagnose(data, body(data), SECRET)
 
 
 def test_diagnosis_admits_when_it_has_no_answer():
@@ -293,6 +407,11 @@ def client(monkeypatch):
 def test_endpoint_accepts_a_signed_notification(client):
     response = client.post("/yoomoney/notify", data=form())
     assert response.status_code == 200
+
+
+def test_endpoint_accepts_the_current_signature(client):
+    """Ровно то, что приходит с боевого стенда: sign и ни одного sha1_hash."""
+    assert client.post("/yoomoney/notify", data=signed()).status_code == 200
 
 
 def test_endpoint_refuses_a_forged_notification(client):

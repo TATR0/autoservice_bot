@@ -17,8 +17,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 from decimal import Decimal, InvalidOperation
-from typing import Mapping, NamedTuple
-from urllib.parse import urlencode
+from typing import Iterable, Mapping, NamedTuple
+from urllib.parse import quote, urlencode
 
 # Адрес формы. confirm.xml — исторический путь, он же работает и сегодня;
 # конечная страница одна и та же
@@ -68,8 +68,14 @@ def quickpay_link(wallet: str, *, rubles: int, label: str, target: str) -> str:
 # кем угодно, — подпись секретом. Поэтому проверка подписи здесь не «на всякий
 # случай»: без неё любой желающий продлевал бы себе подписку строкой в curl.
 
-# Порядок полей задан ЮMoney и менять его нельзя: подпись считается по строке,
-# склеенной именно так. Секрет встаёт предпоследним, перед label
+# Подписей у ЮMoney две. Действующая — sign: HMAC-SHA256 от всех параметров
+# уведомления, кроме самой подписи. Устаревшая — sha1_hash по жёсткому списку
+# полей; с 18 мая 2026 ЮMoney её больше не присылает, но проверку оставляем:
+# она стоит десяти строк, а установка, где уведомления настроены давно, не
+# должна перестать работать из-за нашего обновления.
+#
+# Порядок полей старой подписи задан ЮMoney и менять его нельзя: секрет встаёт
+# предпоследним, перед label
 SIGNED_FIELDS = (
     "notification_type", "operation_id", "amount", "currency",
     "datetime", "sender", "codepro",
@@ -109,6 +115,55 @@ def signature(form: Mapping[str, str], secret: str) -> str:
     return hashlib.sha1("&".join(parts).encode("utf-8")).hexdigest()
 
 
+def raw_pairs(raw: str) -> list[tuple[str, str]]:
+    """Пары «ключ=значение» из тела запроса, ровно как их прислали."""
+    pairs = []
+    for part in raw.split("&"):
+        if not part:
+            continue
+        key, _, value = part.partition("=")
+        pairs.append((key, value))
+    return pairs
+
+
+def _hmac_hex(base: str, secret: str) -> str:
+    return hmac.new(
+        secret.encode("utf-8"), base.encode("utf-8"), hashlib.sha256,
+    ).hexdigest()
+
+
+def _joined(pairs: Iterable[tuple[str, str]]) -> str:
+    """Подписываемая строка: без sign, по алфавиту, «ключ=значение» через «&»."""
+    return "&".join(
+        f"{key}={value}" for key, value in sorted(pairs) if key != "sign"
+    )
+
+
+def hmac_signature(form: Mapping[str, str], secret: str) -> str:
+    """
+    Действующая подпись ЮMoney: HMAC-SHA256 в HEX нижнего регистра.
+
+    Значения кодируются заново по RFC 3986 — так велит документация. Ключи
+    оставляем как есть: имена параметров у ЮMoney простые, кодировать в них
+    нечего, а лишнее кодирование только разошлось бы с их строкой.
+    """
+    pairs = [(key, quote(str(value), safe="")) for key, value in form.items()]
+    return _hmac_hex(_joined(pairs), secret)
+
+
+def hmac_signature_as_sent(raw: str, secret: str) -> str:
+    """
+    То же, но значения берутся из тела нетронутыми.
+
+    Нужна потому, что «перекодировать заново» и «оставить как прислали» — не
+    одно и то же: пробел приходит плюсом, а возвращается как %20, и подпись
+    разошлась бы на ровном месте. Обе строки посчитаны с секретом, так что
+    признать уведомление по любой из них не ослабляет проверку: подделать
+    нельзя ни ту, ни другую.
+    """
+    return _hmac_hex(_joined(raw_pairs(raw)), secret)
+
+
 def diagnose(form: Mapping[str, str], raw: str, secret: str) -> str:
     """
     Чем объяснить несошедшуюся подпись. Пусто — ни одна догадка не подошла.
@@ -119,12 +174,34 @@ def diagnose(form: Mapping[str, str], raw: str, secret: str) -> str:
     приходится на месте. Догадки перебираются только для журнала; принимает
     платёж по-прежнему одна и та же документированная формула.
     """
-    given = str(form.get("sha1_hash") or "").lower()
-    if not given:
-        return "в уведомлении вовсе нет sha1_hash"
-    if hmac.compare_digest(signature(form, secret), given):
+    if signature_holds(form, secret, raw):
         # Уведомление отвергнуто не подписью, а чем-то после неё
         return "подпись как раз сошлась, дело не в ней"
+
+    sign = str(form.get("sign") or "").lower()
+    if sign:
+        # Единственное, что здесь можно перепутать, — как готовятся значения:
+        # ЮMoney кодирует их по RFC 3986, а разбор формы это кодирование снял
+        guesses = {
+            "значения подписаны без кодирования": _hmac_hex(
+                _joined(list(form.items())), secret,
+            ),
+            "подписан и сам sign": _hmac_hex(
+                "&".join(
+                    f"{key}={quote(str(value), safe='')}"
+                    for key, value in sorted(form.items())
+                ),
+                secret,
+            ),
+        }
+        for explanation, expected in guesses.items():
+            if hmac.compare_digest(expected, sign):
+                return explanation
+        return ""
+
+    given = str(form.get("sha1_hash") or "").lower()
+    if not given:
+        return "в уведомлении нет ни sign, ни sha1_hash"
 
     # Значения как есть в теле, без раскодирования процентов и плюсов: если
     # ЮMoney подписывает их до кодирования, разойдётся ровно здесь
@@ -153,7 +230,32 @@ def diagnose(form: Mapping[str, str], raw: str, secret: str) -> str:
     return ""
 
 
-def parse_notification(form: Mapping[str, str], secret: str) -> Notification:
+def signature_holds(form: Mapping[str, str], secret: str, raw: str = "") -> bool:
+    """
+    Подписано ли уведомление нашим секретом.
+
+    Сначала действующая подпись sign, потом устаревшая sha1_hash — ровно в
+    таком порядке: старую ЮMoney больше не присылает, и установка, где она
+    ещё приходит, не должна закрыться из-за нашего обновления.
+    """
+    # compare_digest, а не ==: сравнение строк отваливается на первом
+    # несовпавшем символе, и по времени ответа подпись подбирается побайтно
+    sign = str(form.get("sign") or "").lower()
+    if sign:
+        candidates = [hmac_signature(form, secret)]
+        if raw:
+            candidates.append(hmac_signature_as_sent(raw, secret))
+        return any(hmac.compare_digest(one, sign) for one in candidates)
+
+    legacy = str(form.get("sha1_hash") or "").lower()
+    if legacy:
+        return hmac.compare_digest(signature(form, secret), legacy)
+    return False
+
+
+def parse_notification(
+    form: Mapping[str, str], secret: str, raw: str = "",
+) -> Notification:
     """
     Проверить подпись и разобрать уведомление. NotificationError — не наше.
 
@@ -163,11 +265,7 @@ def parse_notification(form: Mapping[str, str], secret: str) -> Notification:
     if not secret:
         raise NotificationError("Приём уведомлений выключен: нет секрета")
 
-    expected = signature(form, secret)
-    got = str(form.get("sha1_hash") or "")
-    # compare_digest, а не ==: сравнение строк отваливается на первом
-    # несовпавшем символе, и по времени ответа подпись подбирается побайтно
-    if not hmac.compare_digest(expected, got.lower()):
+    if not signature_holds(form, secret, raw):
         raise NotificationError("Подпись не сошлась")
 
     operation_id = str(form.get("operation_id") or "").strip()

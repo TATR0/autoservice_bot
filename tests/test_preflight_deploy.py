@@ -28,6 +28,7 @@ GOOD = {
     "ACME_EMAIL": "owner@myservice.ru",
     "TRUST_PROXY": "true",
     "BOT_OWNER_IDS": "12345",
+    "BACKUP_REMOTE": "yadisk:autoservice-backups",
 }
 
 
@@ -99,6 +100,16 @@ def test_empty_owner_ids_warn_but_do_not_block():
     problems = check_env({**GOOD, "BOT_OWNER_IDS": ""})
     assert problems, "про пустой BOT_OWNER_IDS надо сказать"
     assert not blockers({**GOOD, "BOT_OWNER_IDS": ""}), "но выкат это не останавливает"
+
+
+def test_backups_that_never_leave_the_machine_warn():
+    """
+    Копии рядом с базой спасают от ошибки, но не от пропавшего диска.
+    Выкат из-за этого не останавливаем: бот работает и так.
+    """
+    env = {**GOOD, "BACKUP_REMOTE": ""}
+    assert check_env(env), "про невывезенные копии надо сказать"
+    assert not blockers(env), "но выкат это не останавливает"
 
 
 def test_password_that_does_not_match_the_container_blocks():

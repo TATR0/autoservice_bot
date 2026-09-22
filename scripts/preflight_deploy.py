@@ -154,6 +154,12 @@ def check_env(env: Mapping[str, str]) -> list[Problem]:
         warn("BOT_OWNER_IDS пуст: /extend, /refund и /revoke не ответят никому")
     if not value("BOT_USERNAME") or value("BOT_USERNAME") in PLACEHOLDERS:
         warn("BOT_USERNAME не задан: ссылки t.me/<bot>?start=... будут битыми")
+    # Не стоп: бот работает и без вывоза копий. Но разница между «копии
+    # есть» и «копии есть, пока цел этот диск» выясняется в единственный
+    # день, когда она важна, и выясняется поздно
+    if not value("BACKUP_REMOTE"):
+        warn("BACKUP_REMOTE пуст: снимки базы остаются на этой же машине — "
+             "пропавший сервер унесёт их вместе с базой")
     email = value("ACME_EMAIL")
     if not email:
         warn("ACME_EMAIL пуст: центр сертификации не предупредит письмом, если что-то сломается")

@@ -94,6 +94,29 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Вывоз копий с машины. Снимки сервиса backup лежат на том же диске, что и
+  # база: пропавший сервер унесёт их вместе с ней. Здесь они уезжают туда,
+  # куда указывает BACKUP_REMOTE. Пусто — контейнер спит и ничего не делает:
+  # учётные данные чужого хранилища завести за владельца нельзя.
+  offsite:
+    image: rclone/rclone:1
+    container_name: autoservice_offsite
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Только на чтение: вывоз не должен уметь испортить то, что вывозит
+      - ./backups:/backups:ro
+      # Каталог, а не файл: отсутствующий файл docker подменил бы каталогом,
+      # и вместо понятного «нет настроек rclone» вышла бы невнятная ошибка
+      - ./secrets:/config/rclone:ro
+      - ./scripts/backup_offsite.sh:/usr/local/bin/backup_offsite.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/backup_offsite.sh", "--loop"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   # Данные базы. Живут отдельно от контейнеров: docker compose down их не
   # трогает. Удаляет только явное docker compose down -v

@@ -9,6 +9,7 @@
 import hashlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from urllib.parse import parse_qsl, quote, urlencode
 
 import pytest
 
@@ -100,6 +101,46 @@ def test_amount_is_decimal_not_float():
     notice = yoomoney.parse_notification(form(amount="1490.00"), SECRET)
     assert notice.amount == Decimal("1490.00")
     assert isinstance(notice.amount, Decimal)
+
+
+# ── Объяснение несошедшейся подписи ──────────────────────────────────────────
+#
+# Эти проверки — про диагностику живой установки, а не про приём денег:
+# принимает платёж по-прежнему одна документированная формула.
+
+def body(data: dict) -> str:
+    """Тело запроса так, как его шлёт ЮMoney: значения в процентах."""
+    return urlencode(data)
+
+
+def test_diagnosis_names_undecoded_values():
+    """
+    Если ЮMoney подписывает значения до кодирования, наш разбор формы даёт
+    другую строку — и владелец должен прочесть об этом словами, а не гадать.
+    """
+    data = form()
+    # Подпись, посчитанная по сырым значениям: двоеточия метки в процентах
+    encoded = {k: quote(str(v), safe="") for k, v in data.items()}
+    data["sha1_hash"] = yoomoney.signature(encoded, SECRET)
+
+    assert "не раскодированы" in yoomoney.diagnose(data, body(data), SECRET)
+
+
+def test_diagnosis_admits_when_it_has_no_answer():
+    """Выдуманная подпись объяснения не имеет, и придумывать его нельзя."""
+    data = form()
+    data["sha1_hash"] = "0" * 40
+    assert yoomoney.diagnose(data, body(data), SECRET) == ""
+
+
+def test_diagnosis_says_when_the_signature_was_fine():
+    """
+    Уведомление отвергают не только подписью: без operation_id оно тоже не
+    наше. Свалить это на подпись значит отправить владельца искать секрет,
+    с которым всё в порядке.
+    """
+    data = form()
+    assert "сошлась" in yoomoney.diagnose(data, body(data), SECRET)
 
 
 # ── Зачисление ───────────────────────────────────────────────────────────────

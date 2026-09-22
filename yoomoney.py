@@ -109,6 +109,50 @@ def signature(form: Mapping[str, str], secret: str) -> str:
     return hashlib.sha1("&".join(parts).encode("utf-8")).hexdigest()
 
 
+def diagnose(form: Mapping[str, str], raw: str, secret: str) -> str:
+    """
+    Чем объяснить несошедшуюся подпись. Пусто — ни одна догадка не подошла.
+
+    Нужна ровно один раз в жизни установки: когда уведомления настроены, а
+    подпись не сходится, разница между «не тот секрет» и «не та формула»
+    снаружи не видна, а сам секрет показывать никому нельзя — значит считать
+    приходится на месте. Догадки перебираются только для журнала; принимает
+    платёж по-прежнему одна и та же документированная формула.
+    """
+    given = str(form.get("sha1_hash") or "").lower()
+    if not given:
+        return "в уведомлении вовсе нет sha1_hash"
+    if hmac.compare_digest(signature(form, secret), given):
+        # Уведомление отвергнуто не подписью, а чем-то после неё
+        return "подпись как раз сошлась, дело не в ней"
+
+    # Значения как есть в теле, без раскодирования процентов и плюсов: если
+    # ЮMoney подписывает их до кодирования, разойдётся ровно здесь
+    undecoded = dict(
+        part.split("=", 1) if "=" in part else (part, "")
+        for part in raw.split("&") if part
+    )
+    # Плюс, обращённый в пробел разбором формы, — та же беда, но точечно:
+    # в datetime он стоит перед часовым поясом
+    replus = dict(form) | {
+        "datetime": str(form.get("datetime") or "").replace(" ", "+")
+    }
+    no_label = dict(form) | {"label": ""}
+
+    guesses = {
+        "значения не раскодированы": signature(undecoded, secret),
+        "плюс в datetime съеден разбором формы": signature(replus, secret),
+        "подпись считается без метки": signature(no_label, secret),
+        "вместо amount подписан withdraw_amount": signature(
+            dict(form) | {"amount": str(form.get("withdraw_amount") or "")}, secret,
+        ),
+    }
+    for explanation, expected in guesses.items():
+        if hmac.compare_digest(expected, given):
+            return explanation
+    return ""
+
+
 def parse_notification(form: Mapping[str, str], secret: str) -> Notification:
     """
     Проверить подпись и разобрать уведомление. NotificationError — не наше.

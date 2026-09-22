@@ -489,6 +489,15 @@ async def yoomoney_notify(request: Request):
             str(form.get("operation_id") or "")[:64],
             str(form.get("label") or "")[:64],
         )
+        # Отчего именно не сошлась подпись, снаружи не видно, а секрет
+        # показывать нельзя — значит объяснение считается здесь же. Длина
+        # секрета ловит самый частый случай: значение доехало до контейнера
+        # обрезанным или не доехало вовсе
+        guess = yoomoney.diagnose(form, raw, config.YOOMONEY_NOTIFY_SECRET)
+        logger.warning(
+            "Подпись: длина секрета %d, догадка — %s",
+            len(config.YOOMONEY_NOTIFY_SECRET), guess or "ни одна не подошла",
+        )
         raise HTTPException(status_code=403, detail="forbidden") from None
 
     # Без _db_gate — по той же причине, что и тик напоминаний: зачисление

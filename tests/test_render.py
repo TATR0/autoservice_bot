@@ -363,3 +363,25 @@ def test_pay_support_without_a_contact_invents_none(monkeypatch):
     text = render.pay_support()
     assert "Напишите" not in text
     assert "свяжемся" in text
+
+
+def test_client_phone_in_the_card_can_be_called():
+    """
+    Номер клиента — простым текстом, слитно: так Telegram делает его
+    нажимаемым, и администратор звонит одним касанием. В <code> или со
+    скобками он остался бы текстом, который надо копировать руками.
+    """
+    text = request_card_for_staff(_req(), SERVICES, tz="Europe/Moscow")
+    assert "📞 <b>Телефон:</b> +79991234567\n" in text
+    assert "<code>+7" not in text
+
+
+def test_client_phone_in_the_list_can_be_called():
+    req = _req(services_summary="Замена масла")
+    line = render.request_line_for_staff(req, tz="Europe/Moscow")
+    assert "📞 +79991234567 |" in line
+
+
+def test_callable_phone_is_escaped():
+    """Старые заявки хранят номер как ввели — разметку из него пускать нельзя."""
+    assert render.callable_phone("<b>1</b>") == "&lt;b&gt;1&lt;/b&gt;"

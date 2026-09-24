@@ -298,6 +298,19 @@ def titled_price(title: str, price_rub: int | None) -> str:
 
 # ── Карточки заявок ──────────────────────────────────────────────────────────
 
+def callable_phone(phone: str) -> str:
+    """
+    Телефон, на который можно нажать и позвонить.
+
+    Ссылку tel: Bot API не принимает, поэтому номер отдаётся простым текстом —
+    Telegram сам находит его и делает нажимаемым: «Позвонить» или
+    «Скопировать». Без <code>: в нём номер остаётся просто текстом. И без
+    скобок из format_phone: слитную запись +79991234567 Telegram узнаёт
+    наверняка, а скобки и пробелы — не всегда.
+    """
+    return h(phone)
+
+
 def request_card_for_staff(
     req, services, *, tz: str | None = None, title: str = "🚗 <b>НОВАЯ ЗАЯВКА</b>"
 ) -> str:
@@ -305,7 +318,7 @@ def request_card_for_staff(
         f"{title} {request_number(req['seq'])}\n"
         "─────────────────────\n"
         f"👤 <b>Клиент:</b> {h(req['client_name'])}\n"
-        f"📞 <b>Телефон:</b> <code>{h(format_phone(req['phone']))}</code>\n"
+        f"📞 <b>Телефон:</b> {callable_phone(req['phone'])}\n"
         f"💬 <b>Telegram ID:</b> <code>{req['idclienttg']}</code>\n\n"
         f"🚙 <b>Автомобиль:</b> {h(req['brand'])} {h(req['model'])}\n"
         f"🔢 <b>Гос. номер:</b> <code>{h(req['plate'])}</code>\n\n"
@@ -349,7 +362,7 @@ def request_line_for_staff(req, tz: str | None = None) -> str:
     return (
         f"\n• {request_number(req['seq'])} <b>{h(req['client_name'])}</b> | "
         f"{status_label(req['status'])}{overdue}\n"
-        f"  📞 <code>{h(format_phone(req['phone']))}</code> | "
+        f"  📞 {callable_phone(req['phone'])} | "
         f"🚗 {h(req['brand'])} {h(req['model'])} ({h(req['plate'])})\n"
         f"  🔧 {h(req['services_summary'] or '—')}\n"
         + (f"  🗓 {local_dt(req['scheduled_at'], tz)}\n" if req["scheduled_at"] else "")

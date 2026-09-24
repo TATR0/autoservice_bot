@@ -164,6 +164,7 @@
 
   .consent { display: flex; gap: 10px; align-items: flex-start; font-size: 12px; color: var(--muted); line-height: 1.5; }
   .consent input { width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px; accent-color: var(--accent); }
+  .consent a { color: var(--accent); text-decoration: underline; white-space: nowrap; }
 
   .svc-list { display: flex; flex-direction: column; gap: 10px; }
   .svc-item {
@@ -730,6 +731,7 @@ function renderForm() {
         <span>
           Согласен на обработку персональных данных (имя, телефон, госномер)
           для оформления записи в автосервис.
+          <a href="#" id="policyLink">Как их хранят и как удалить</a>
         </span>
       </label>
     </div>
@@ -741,6 +743,15 @@ function renderForm() {
 
   document.getElementById("f_comment").addEventListener("input", function () {
     document.getElementById("charNum").textContent = this.value.length;
+  });
+  document.getElementById("policyLink").addEventListener("click", (e) => {
+    // Обычная ссылка внутри мини-приложения открылась бы поверх формы и
+    // вернуться к ней было бы уже нечем: openLink отдаёт страницу браузеру
+    e.preventDefault();
+    const url = location.origin + "/privacy?service="
+              + encodeURIComponent(state.serviceId || "");
+    if (tg?.openLink) tg.openLink(url);
+    else window.open(url, "_blank");
   });
   document.getElementById("backBtn")?.addEventListener("click", () => {
     state.serviceId = null;

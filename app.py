@@ -25,11 +25,12 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.types import BotCommand, BotCommandScopeDefault, Update
 from fastapi import FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import config
+import policy
 import subscription
 import yoomoney
 from database import db
@@ -515,6 +516,36 @@ async def yoomoney_notify(request: Request):
     logger.info("ЮMoney: перевод %s — %s", notice.operation_id, result)
     # Тело ЮMoney не читает, важен только код ответа
     return Response(status_code=200)
+
+
+# ── Политика обработки данных ────────────────────────────────────────────────
+
+@app.get("/privacy")
+async def privacy_page(request: Request, service: str = Query("", max_length=64)):
+    """
+    Документ, к которому отсылает галочка согласия в форме записи.
+
+    Оператор — сервис из ?service, поэтому страница собирается из базы. Но
+    открыться она обязана всегда: молчащая база, мусорный id, удалённый или
+    просроченный сервис — не повод не показать человеку, что с его данными
+    происходит. В этих случаях выходит общий текст, без имени оператора.
+    """
+    enforce(_lookup_limiter, request)
+
+    svc = None
+    if service:
+        try:
+            service_id = validate_uuid(service, field="Сервис")
+        except ValidationError:
+            service_id = ""
+        if service_id:
+            try:
+                async with _db_gate:
+                    svc = await db.get_service(service_id)
+            except Exception:
+                logger.exception("Политика: не удалось прочитать сервис %s", service_id)
+
+    return HTMLResponse(policy.render(svc, config.PII_RETENTION_DAYS))
 
 
 # ── Служебное ────────────────────────────────────────────────────────────────

@@ -29,6 +29,7 @@ GOOD = {
     "TRUST_PROXY": "true",
     "BOT_OWNER_IDS": "12345",
     "BACKUP_REMOTE": "yadisk:autoservice-backups",
+    "PII_RETENTION_DAYS": "365",
 }
 
 
@@ -110,6 +111,16 @@ def test_backups_that_never_leave_the_machine_warn():
     env = {**GOOD, "BACKUP_REMOTE": ""}
     assert check_env(env), "про невывезенные копии надо сказать"
     assert not blockers(env), "но выкат это не останавливает"
+
+
+def test_data_kept_forever_warns():
+    """
+    Незаданный срок хранения — это вечный телефон и госномер в базе. Выбрать
+    так владелец вправе, но выбрать, а не проглядеть переменную.
+    """
+    for env in ({**GOOD, "PII_RETENTION_DAYS": ""}, {**GOOD, "PII_RETENTION_DAYS": "0"}):
+        assert check_env(env), "про вечное хранение надо сказать"
+        assert not blockers(env), "но выкат это не останавливает"
 
 
 def test_password_that_does_not_match_the_container_blocks():

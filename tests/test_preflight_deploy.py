@@ -31,6 +31,9 @@ GOOD = {
     "BACKUP_REMOTE": "yadisk:autoservice-backups",
     "PII_RETENTION_DAYS": "365",
     "WATCHDOG_PING_URL": "https://hc-ping.com/00000000-0000-0000-0000-000000000000",
+    "OFFER_PROVIDER": "Самозанятый Иванов Иван Иванович",
+    "OFFER_INN": "123456789012",
+    "OFFER_CONTACT": "owner@myservice.ru",
 }
 
 
@@ -258,3 +261,14 @@ def test_stars_need_no_wallet():
 def test_free_price_blocks_because_the_form_will_not_open():
     assert blockers({**GOOD, "PAYMENT_METHOD": "yoomoney",
                      "YOOMONEY_WALLET": "4100111122223333", "PRICE_3M": "0"})
+
+
+def test_money_taken_without_an_offer_warns():
+    """
+    Оферта открывается, только когда названы все трое: кто, ИНН и куда писать.
+    Заполнено наполовину — страницы нет, и подписку оплачивают вслепую.
+    """
+    for name in ("OFFER_PROVIDER", "OFFER_INN", "OFFER_CONTACT"):
+        env = {**GOOD, name: ""}
+        assert check_env(env), f"про пустой {name} надо сказать"
+        assert not blockers(env), "но выкат это не останавливает"

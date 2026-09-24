@@ -146,3 +146,150 @@ def test_expired_service_still_shows_its_policy(client, monkeypatch):
     response = client.get(f"/privacy?service={SERVICE['idservice']}")
     assert response.status_code == 200
     assert "Гараж на Мира" in response.text
+
+
+# ── Правила пользования записью ─────────────────────────────────────────────
+# Вторая галочка под формой. Документ про то, кто перед клиентом отвечает:
+# бот передаёт заявку, а ремонтирует и обещает сроки сервис.
+
+
+def test_terms_name_who_does_the_work():
+    page = policy.render_terms(SERVICE)
+    assert "Гараж на Мира" in page
+    assert "+7 (999) 123-45-67" in page
+    assert "Не оказывает ремонт" in page
+
+
+def test_terms_escape_the_service_name():
+    page = policy.render_terms({**SERVICE, "service_name": "<script>alert(1)</script>"})
+    assert "<script>alert(1)</script>" not in page
+    assert "&lt;script&gt;" in page
+
+
+def test_terms_without_a_service_still_explain_the_rules():
+    page = policy.render_terms(None)
+    assert "автосервис, в который вы записываетесь" in page
+    assert "Отменить" in page or "отменить" in page
+
+
+def test_terms_say_how_to_cancel():
+    """Правило «приезжайте вовремя» без способа отмены — ловушка."""
+    page = policy.render_terms(SERVICE)
+    assert "Мои заявки" in page
+
+
+def test_terms_promise_a_reminder_only_when_it_is_sent(monkeypatch):
+    monkeypatch.setattr(policy.config, "APPOINTMENT_REMINDER_HOURS", 3)
+    assert "За 3 часа" in policy.render_terms(SERVICE)
+
+    monkeypatch.setattr(policy.config, "APPOINTMENT_REMINDER_HOURS", 1)
+    assert "За 1 час " in policy.render_terms(SERVICE)
+
+    # Напоминания выключены — обещать их нельзя
+    monkeypatch.setattr(policy.config, "APPOINTMENT_REMINDER_HOURS", 0)
+    assert "напомнит" not in policy.render_terms(SERVICE)
+
+
+def test_terms_page_opens(client):
+    response = client.get(f"/terms?service={SERVICE['idservice']}")
+    assert response.status_code == 200
+    assert "Гараж на Мира" in response.text
+    assert client.get("/terms").status_code == 200
+    assert client.get("/terms?service=не-uuid").status_code == 200
+
+
+# ── Оферта ──────────────────────────────────────────────────────────────────
+# Договор владельца бота с автосервисом, а не с клиентом. Открывается, только
+# когда названы все реквизиты: принять предложение можно лишь у кого-то.
+
+REQUISITES = {
+    "OFFER_PROVIDER": "Самозанятый Иванов Иван Иванович",
+    "OFFER_INN": "123456789012",
+    "OFFER_CONTACT": "owner@example.com",
+}
+
+
+@pytest.fixture
+def published(monkeypatch):
+    for name, value in REQUISITES.items():
+        monkeypatch.setattr(policy.config, name, value)
+    return REQUISITES
+
+
+def test_offer_names_the_party_and_where_to_complain(published):
+    page = policy.render_offer()
+    for value in published.values():
+        assert value in page
+
+
+def test_offer_escapes_the_party(monkeypatch):
+    monkeypatch.setattr(policy.config, "OFFER_PROVIDER", "ИП <script>alert(1)</script>")
+    monkeypatch.setattr(policy.config, "OFFER_INN", "1")
+    monkeypatch.setattr(policy.config, "OFFER_CONTACT", "a@b.c")
+    page = policy.render_offer()
+    assert "<script>alert(1)</script>" not in page
+    assert "&lt;script&gt;" in page
+
+
+def test_offer_prices_are_the_real_ones(published, monkeypatch):
+    """
+    Цена в договоре и цена на кнопке — одно число. Разойдутся — платить будут
+    по кнопке, а спорить по договору.
+    """
+    monkeypatch.setattr(policy.config, "PAYMENT_METHOD", policy.config.PAYMENT_STARS)
+    page = policy.render_offer()
+    for plan in policy.config.PLANS:
+        assert plan.label in page
+        assert f"{plan.stars} ⭐" in page
+
+    monkeypatch.setattr(policy.config, "PAYMENT_METHOD", policy.config.PAYMENT_YOOMONEY)
+    page = policy.render_offer()
+    assert f"{policy.config.PLANS[0].rubles} ₽" in page
+    assert "ЮMoney" in page
+
+
+def test_offer_mentions_the_trial_only_when_there_is_one(published, monkeypatch):
+    monkeypatch.setattr(policy.config, "TRIAL_DAYS", 5)
+    assert "Первые 5 дней" in policy.render_offer()
+
+    monkeypatch.setattr(policy.config, "TRIAL_DAYS", 0)
+    assert "бесплатно, чтобы посмотреть" not in policy.render_offer()
+
+
+def test_offer_does_not_threaten_a_shutdown_that_is_switched_off(published, monkeypatch):
+    """
+    Пока отключение за неоплату выключено, обещать его в договоре — врать в
+    первом же абзаце, который заказчик проверит на себе.
+    """
+    monkeypatch.setattr(policy.config, "SUBSCRIPTION_ENFORCED", False)
+    page = policy.render_offer()
+    assert "пока не введено" in page
+
+    monkeypatch.setattr(policy.config, "SUBSCRIPTION_ENFORCED", True)
+    page = policy.render_offer()
+    assert "пропадает из поиска" in page
+
+
+def test_offer_puts_the_data_in_the_right_hands(published):
+    """
+    Оператор данных клиента — автосервис, владелец бота обрабатывает их по
+    поручению. Ровно это обещает клиенту страница /privacy, и оферта —
+    единственное место, где поручение оформлено.
+    """
+    page = policy.render_offer()
+    assert "по поручению заказчика" in page
+    assert "не продаёт" in page
+
+
+def test_offer_page_is_closed_until_the_party_is_named(client, monkeypatch):
+    for name in REQUISITES:
+        monkeypatch.setattr(app_module.config, name, "")
+    assert client.get("/offer").status_code == 404
+
+
+def test_offer_page_opens_when_the_party_is_named(client, monkeypatch):
+    for name, value in REQUISITES.items():
+        monkeypatch.setattr(app_module.config, name, value)
+    response = client.get("/offer")
+    assert response.status_code == 200
+    assert REQUISITES["OFFER_PROVIDER"] in response.text

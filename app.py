@@ -363,6 +363,10 @@ class RequestPayload(BaseModel):
     scheduled_at: str = ""
     comment: str = ""
     consent: bool = False
+    # Вторая галочка — правила пользования записью. По умолчанию False, как и
+    # согласие: форма присылает обе, а «не прислали» и «не поставил» для
+    # сервера одно и то же
+    accepted_terms: bool = False
 
 
 @app.post("/api/requests")
@@ -380,6 +384,12 @@ async def api_create_request(request: Request, payload: RequestPayload):
         raise HTTPException(
             status_code=400,
             detail="Нужно согласие на обработку персональных данных",
+        )
+
+    if not payload.accepted_terms:
+        raise HTTPException(
+            status_code=400,
+            detail="Нужно принять правила пользования записью",
         )
 
     await db.upsert_user(
@@ -518,34 +528,57 @@ async def yoomoney_notify(request: Request):
     return Response(status_code=200)
 
 
-# ── Политика обработки данных ────────────────────────────────────────────────
+# ── Документы ────────────────────────────────────────────────────────────────
+
+async def _service_for_document(service: str):
+    """
+    Сервис для страницы документа — или None, если прочитать его не вышло.
+
+    Страница обязана открыться всегда: молчащая база, мусорный id, удалённый
+    или просроченный сервис — не повод не показать человеку, на что он
+    соглашается. В этих случаях выходит общий текст, без имени сервиса.
+    """
+    if not service:
+        return None
+    try:
+        service_id = validate_uuid(service, field="Сервис")
+    except ValidationError:
+        return None
+    try:
+        async with _db_gate:
+            return await db.get_service(service_id)
+    except Exception:
+        logger.exception("Документ: не удалось прочитать сервис %s", service_id)
+        return None
+
 
 @app.get("/privacy")
 async def privacy_page(request: Request, service: str = Query("", max_length=64)):
-    """
-    Документ, к которому отсылает галочка согласия в форме записи.
+    """Документ, к которому отсылает галочка согласия на обработку данных."""
+    enforce(_lookup_limiter, request)
+    svc = await _service_for_document(service)
+    return HTMLResponse(policy.render(svc, config.PII_RETENTION_DAYS))
 
-    Оператор — сервис из ?service, поэтому страница собирается из базы. Но
-    открыться она обязана всегда: молчащая база, мусорный id, удалённый или
-    просроченный сервис — не повод не показать человеку, что с его данными
-    происходит. В этих случаях выходит общий текст, без имени оператора.
+
+@app.get("/terms")
+async def terms_page(request: Request, service: str = Query("", max_length=64)):
+    """Правила пользования записью — вторая галочка под формой."""
+    enforce(_lookup_limiter, request)
+    svc = await _service_for_document(service)
+    return HTMLResponse(policy.render_terms(svc))
+
+
+@app.get("/offer")
+async def offer_page(request: Request):
+    """
+    Оферта на подписку. Открыта, только когда заполнены реквизиты исполнителя:
+    договор с безымянной стороной не значит ничего, и показывать его хуже,
+    чем не показывать вовсе.
     """
     enforce(_lookup_limiter, request)
-
-    svc = None
-    if service:
-        try:
-            service_id = validate_uuid(service, field="Сервис")
-        except ValidationError:
-            service_id = ""
-        if service_id:
-            try:
-                async with _db_gate:
-                    svc = await db.get_service(service_id)
-            except Exception:
-                logger.exception("Политика: не удалось прочитать сервис %s", service_id)
-
-    return HTMLResponse(policy.render(svc, config.PII_RETENTION_DAYS))
+    if not config.offer_published():
+        raise HTTPException(status_code=404, detail="Оферта не опубликована")
+    return HTMLResponse(policy.render_offer())
 
 
 # ── Служебное ────────────────────────────────────────────────────────────────

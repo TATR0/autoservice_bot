@@ -373,3 +373,45 @@ def test_tick_survives_a_non_ascii_secret(client, monkeypatch):
     )
     assert right.status_code == 200, "правильный секрет обязан открывать дверь"
     assert calls == [1]
+
+
+# ── Согласия ────────────────────────────────────────────────────────────────
+# Галочки стоят в форме, но решает сервер: форму можно отправить и в обход
+# интерфейса, а без согласия принимать имя с телефоном нельзя.
+
+def _consent_payload(**over):
+    return {
+        "init_data": "x",
+        "service_id": "11111111-1111-1111-1111-111111111111",
+        "client_name": "Пётр",
+        "phone": "+79990000000",
+        "consent": True,
+        "accepted_terms": True,
+        **over,
+    }
+
+
+@pytest.fixture
+def signed(monkeypatch):
+    """Подпись Telegram считается верной — проверяются согласия за ней."""
+    monkeypatch.setattr(app_module, "verify_init_data", lambda _data: {"id": 1})
+    return monkeypatch
+
+
+def test_request_without_consent_is_refused(client, signed):
+    response = client.post("/api/requests", json=_consent_payload(consent=False))
+    assert response.status_code == 400
+    assert "персональных данных" in response.json()["error"]
+
+
+def test_request_without_accepted_terms_is_refused(client, signed):
+    response = client.post("/api/requests", json=_consent_payload(accepted_terms=False))
+    assert response.status_code == 400
+    assert "правила" in response.json()["error"]
+
+
+def test_missing_flags_count_as_refusal(client, signed):
+    """Старая форма без вторая галочки — не «согласился молча»."""
+    payload = _consent_payload()
+    payload.pop("accepted_terms")
+    assert client.post("/api/requests", json=payload).status_code == 400

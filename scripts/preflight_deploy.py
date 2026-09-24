@@ -174,6 +174,14 @@ def check_env(env: Mapping[str, str]) -> list[Problem]:
     if not value("WATCHDOG_PING_URL"):
         warn("WATCHDOG_PING_URL пуст: пропавшую машину заметить будет некому — "
              "сторож пропадёт вместе с ней")
+    # Оферта открывается только когда названы все трое: кто, ИНН и куда писать.
+    # Заполнено наполовину — страницы нет, и управляющий платит, не увидев ни
+    # условий возврата, ни того, кому он платит
+    offer = [name for name in ("OFFER_PROVIDER", "OFFER_INN", "OFFER_CONTACT")
+             if not value(name)]
+    if offer:
+        warn(f"{', '.join(offer)} — пусто: оферты по /offer нет, и подписку "
+             "оплачивают без опубликованных условий")
     email = value("ACME_EMAIL")
     if not email:
         warn("ACME_EMAIL пуст: центр сертификации не предупредит письмом, если что-то сломается")

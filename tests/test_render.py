@@ -302,3 +302,24 @@ def test_reminder_escapes_the_service_name():
     text = render.appointment_reminder(_appointment(service_name="Аста & <Сервис>"))
     assert "<Сервис>" not in text
     assert "&lt;Сервис&gt;" in text
+
+
+def test_tariff_screen_links_the_offer_when_there_is_one(monkeypatch):
+    """Оплата — согласие с офертой, поэтому прочесть её можно до оплаты."""
+    monkeypatch.setattr(render.config, "BASE_URL", "https://bot.example.com")
+    monkeypatch.setattr(render.config, "OFFER_PROVIDER", "Самозанятый Иванов И. И.")
+    monkeypatch.setattr(render.config, "OFFER_INN", "123456789012")
+    monkeypatch.setattr(render.config, "OFFER_CONTACT", "owner@example.com")
+    text = render.tariff_screen(_svc(datetime.now(timezone.utc) + timedelta(days=3)))
+    assert "https://bot.example.com/offer" in text
+
+
+def test_tariff_screen_offers_no_link_to_a_missing_offer(monkeypatch):
+    """
+    Реквизитов нет — /offer отдаёт 404, и ссылка вела бы в пустоту. Пустое
+    место лучше битой ссылки в экране, где платят.
+    """
+    monkeypatch.setattr(render.config, "BASE_URL", "https://bot.example.com")
+    monkeypatch.setattr(render.config, "OFFER_PROVIDER", "")
+    text = render.tariff_screen(_svc(datetime.now(timezone.utc) + timedelta(days=3)))
+    assert "/offer" not in text

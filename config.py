@@ -163,6 +163,19 @@ YOOMONEY_WALLET: str = (os.getenv("YOOMONEY_WALLET") or "").strip()
 # угадать несложно. Пусто — приём закрыт совсем, и дни начисляются руками
 YOOMONEY_NOTIFY_SECRET: str = (os.getenv("YOOMONEY_NOTIFY_SECRET") or "").strip()
 
+# Кто берёт деньги за подписку — сторона оферты. Без имени, ИНН и адреса для
+# претензий оферта ничего не значит: принять её можно только у кого-то. Пока
+# они пусты, страница /offer не открывается и ссылки на неё не появляется —
+# это честнее, чем договор с безымянным исполнителем
+OFFER_PROVIDER: str = (os.getenv("OFFER_PROVIDER") or "").strip()
+OFFER_INN: str = (os.getenv("OFFER_INN") or "").strip()
+OFFER_CONTACT: str = (os.getenv("OFFER_CONTACT") or "").strip()
+
+
+def offer_published() -> bool:
+    """Есть ли что показывать по адресу /offer."""
+    return bool(OFFER_PROVIDER and OFFER_INN and OFFER_CONTACT)
+
 
 class Plan(NamedTuple):
     """Тариф подписки: срок, обе цены и как назвать на кнопке."""

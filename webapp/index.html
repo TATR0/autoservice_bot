@@ -727,11 +727,19 @@ function renderForm() {
 
     <div class="card">
       <label class="consent">
+        <input type="checkbox" id="f_terms">
+        <span>
+          Принимаю правила пользования записью: услуги оказывает автосервис,
+          бот только передаёт заявку.
+          <a href="#" data-doc="terms">Правила</a>
+        </span>
+      </label>
+      <label class="consent">
         <input type="checkbox" id="f_consent">
         <span>
           Согласен на обработку персональных данных (имя, телефон, госномер)
           для оформления записи в автосервис.
-          <a href="#" id="policyLink">Как их хранят и как удалить</a>
+          <a href="#" data-doc="privacy">Как их хранят и как удалить</a>
         </span>
       </label>
     </div>
@@ -744,14 +752,16 @@ function renderForm() {
   document.getElementById("f_comment").addEventListener("input", function () {
     document.getElementById("charNum").textContent = this.value.length;
   });
-  document.getElementById("policyLink").addEventListener("click", (e) => {
-    // Обычная ссылка внутри мини-приложения открылась бы поверх формы и
-    // вернуться к ней было бы уже нечем: openLink отдаёт страницу браузеру
-    e.preventDefault();
-    const url = location.origin + "/privacy?service="
-              + encodeURIComponent(state.serviceId || "");
-    if (tg?.openLink) tg.openLink(url);
-    else window.open(url, "_blank");
+  document.querySelectorAll("[data-doc]").forEach((link) => {
+    link.addEventListener("click", (e) => {
+      // Обычная ссылка внутри мини-приложения открылась бы поверх формы и
+      // вернуться к ней было бы уже нечем: openLink отдаёт страницу браузеру
+      e.preventDefault();
+      const url = location.origin + "/" + link.dataset.doc + "?service="
+                + encodeURIComponent(state.serviceId || "");
+      if (tg?.openLink) tg.openLink(url);
+      else window.open(url, "_blank");
+    });
   });
   document.getElementById("backBtn")?.addEventListener("click", () => {
     state.serviceId = null;
@@ -799,6 +809,10 @@ async function doSubmit() {
     el("formError").innerHTML = `<div class="error-banner">Выберите день и время записи.</div>`;
     return;
   }
+  if (!el("f_terms").checked) {
+    alertUser("Нужно принять правила пользования записью");
+    return;
+  }
   if (!el("f_consent").checked) {
     alertUser("Нужно согласие на обработку персональных данных");
     return;
@@ -814,18 +828,19 @@ async function doSubmit() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        init_data:    tg.initData,
-        client_uid:   state.clientUid,
-        service_id:   state.serviceId,
-        client_name:  get("f_name"),
-        phone:        get("f_phone"),
-        brand:        get("f_brand"),
-        model:        get("f_model"),
-        plate:        get("f_plate").toUpperCase(),
-        idcatalogs:   selectedCatalogIds(),
-        scheduled_at: `${state.pickedDay} ${state.pickedTime}`,
-        comment:      get("f_comment"),
-        consent:      true,
+        init_data:      tg.initData,
+        client_uid:     state.clientUid,
+        service_id:     state.serviceId,
+        client_name:    get("f_name"),
+        phone:          get("f_phone"),
+        brand:          get("f_brand"),
+        model:          get("f_model"),
+        plate:          get("f_plate").toUpperCase(),
+        idcatalogs:     selectedCatalogIds(),
+        scheduled_at:   `${state.pickedDay} ${state.pickedTime}`,
+        comment:        get("f_comment"),
+        consent:        true,
+        accepted_terms: true,
       }),
     });
     renderSuccess(result);

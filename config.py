@@ -114,6 +114,37 @@ APPOINTMENT_REMINDER_HOURS: int = int(os.getenv("APPOINTMENT_REMINDER_HOURS") or
 PII_RETENTION_DAYS: int = int(os.getenv("PII_RETENTION_DAYS") or 0)
 
 
+# ── Сторож ───────────────────────────────────────────────────────────────────
+# Отдельный контейнер, который ходит по тем же местам, куда пошёл бы человек,
+# и пишет владельцу, когда бот сломался молча: слетевший вебхук, кончившееся
+# место, непродлившийся сертификат.
+WATCHDOG_TICK_SECONDS: int = int(os.getenv("WATCHDOG_TICK_SECONDS") or 300)
+
+# Адрес бота изнутри сети compose: имя сервиса, а не публичный домен. Так
+# проверяется сам бот, а не Caddy перед ним
+WATCHDOG_HEALTH_URL: str = (
+    os.getenv("WATCHDOG_HEALTH_URL") or "http://app:8080/healthz"
+).strip()
+
+# Сколько апдейтов в очереди Telegram считать нормой. Пачка сообщений за
+# секунду — норма, полсотни необработанных — уже затор
+WATCHDOG_MAX_PENDING: int = int(os.getenv("WATCHDOG_MAX_PENDING") or 50)
+
+# Где смотреть свободное место. Каталог снимков: он на том же диске, что и
+# база, и растёт быстрее всего
+WATCHDOG_DISK_PATH: str = (os.getenv("WATCHDOG_DISK_PATH") or "/backups").strip()
+WATCHDOG_DISK_MIN_FREE_PCT: int = int(os.getenv("WATCHDOG_DISK_MIN_FREE_PCT") or 10)
+
+# За сколько дней до конца сертификата звать на помощь. Caddy продлевает его
+# за месяц, поэтому неделя — уже признак того, что продление не состоялось
+WATCHDOG_CERT_MIN_DAYS: int = int(os.getenv("WATCHDOG_CERT_MIN_DAYS") or 7)
+
+# Внешняя «кнопка живости»: её сторож нажимает каждый удачный круг. Пропала
+# машина — нажимать некому, и напишет уже сторонний сервис. Изнутри такое
+# заметить нельзя в принципе
+WATCHDOG_PING_URL: str = (os.getenv("WATCHDOG_PING_URL") or "").strip()
+
+
 # Чем платят за подписку. stars — счёт Telegram: деньги приходят сами и дни
 # начисляются без участия человека, но магазины Apple и Google забирают около
 # трети суммы. yoomoney — ссылка на перевод: комиссия в разы меньше, зато

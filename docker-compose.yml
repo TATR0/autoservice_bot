@@ -51,6 +51,9 @@ services:
     build:
       context: .
       target: runtime
+    # Имя образа задано явно: тем же образом пользуется сторож, и без имени
+    # он собирал бы ту же самую сборку второй раз
+    image: autoservice-bot:local
     container_name: autoservice_bot
     restart: unless-stopped
     env_file: .env
@@ -118,6 +121,27 @@ services:
       # перезапуск не должен сбрасывать отсчёт молчания и слать письмо заново
       - offsite_state:/state
     entrypoint: ["/bin/sh", "/usr/local/bin/backup_offsite.sh", "--loop"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Присмотр. Docker перезапускает упавший контейнер, но молчащий бот падать
+  # не обязан: вебхук слетел, место кончилось, сертификат не продлился — всё
+  # это процесс переживает и продолжает отвечать 200. Сторож ходит по тем же
+  # местам, куда пошёл бы человек, и пишет владельцу в Telegram.
+  watchdog:
+    image: autoservice-bot:local
+    container_name: autoservice_watchdog
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - app
+    volumes:
+      # Только ради свободного места: у контейнера и у базы диск один
+      - ./backups:/backups:ro
+    command: ["python", "watchdog.py", "--loop"]
     logging:
       driver: "json-file"
       options:

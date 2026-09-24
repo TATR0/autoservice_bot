@@ -52,7 +52,8 @@ NUMERIC = (
     "PRICE_1M", "PRICE_3M", "PRICE_12M",
     "FREE_PLAN_SERVICE_LIMIT", "REQUEST_COOLDOWN_SECONDS", "MAX_ACTIVE_REQUESTS",
     "INIT_DATA_MAX_AGE", "INVITE_TTL_DAYS", "BACKUP_INTERVAL_HOURS", "BACKUP_KEEP",
-    "HTTPS_PORT",
+    "HTTPS_PORT", "WATCHDOG_TICK_SECONDS", "WATCHDOG_MAX_PENDING",
+    "WATCHDOG_DISK_MIN_FREE_PCT", "WATCHDOG_CERT_MIN_DAYS",
 )
 
 # Что должно быть в базе после schema.sql. Не вся схема — те места, где
@@ -167,6 +168,12 @@ def check_env(env: Mapping[str, str]) -> list[Problem]:
     if (value("PII_RETENTION_DAYS") or "0") == "0":
         warn("PII_RETENTION_DAYS не задан: имена, телефоны и госномера клиентов "
              "будут храниться вечно")
+    # Сторож внутри машины работает и без внешней кнопки, но пропавший сервер
+    # он не переживёт и сообщить о себе не сможет: молчание заметит только
+    # тот, кто ждёт сигнала снаружи
+    if not value("WATCHDOG_PING_URL"):
+        warn("WATCHDOG_PING_URL пуст: пропавшую машину заметить будет некому — "
+             "сторож пропадёт вместе с ней")
     email = value("ACME_EMAIL")
     if not email:
         warn("ACME_EMAIL пуст: центр сертификации не предупредит письмом, если что-то сломается")

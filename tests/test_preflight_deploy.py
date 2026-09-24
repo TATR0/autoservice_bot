@@ -30,6 +30,7 @@ GOOD = {
     "BOT_OWNER_IDS": "12345",
     "BACKUP_REMOTE": "yadisk:autoservice-backups",
     "PII_RETENTION_DAYS": "365",
+    "WATCHDOG_PING_URL": "https://hc-ping.com/00000000-0000-0000-0000-000000000000",
 }
 
 
@@ -121,6 +122,16 @@ def test_data_kept_forever_warns():
     for env in ({**GOOD, "PII_RETENTION_DAYS": ""}, {**GOOD, "PII_RETENTION_DAYS": "0"}):
         assert check_env(env), "про вечное хранение надо сказать"
         assert not blockers(env), "но выкат это не останавливает"
+
+
+def test_a_machine_nobody_watches_from_outside_warns():
+    """
+    Сторож внутри машины пропадёт вместе с ней. Внешняя кнопка живости —
+    единственное, что заметит исчезновение сервера целиком.
+    """
+    env = {**GOOD, "WATCHDOG_PING_URL": ""}
+    assert check_env(env), "про отсутствие внешнего присмотра надо сказать"
+    assert not blockers(env), "но выкат это не останавливает"
 
 
 def test_password_that_does_not_match_the_container_blocks():

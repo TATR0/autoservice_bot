@@ -341,3 +341,25 @@ def test_method_screen_says_nothing_about_a_fee_that_is_zero(monkeypatch):
     """Нет наценки — нет и оговорки: пустое место вместо выдуманной разницы."""
     monkeypatch.setattr(render.config, "STARS_FEE_PCT", 0)
     assert "комисси" not in render.payment_method_screen(render.config.PLANS[0])
+
+
+def test_pay_support_names_where_to_write(monkeypatch):
+    monkeypatch.setattr(render.config, "SUPPORT_CONTACT", "@help_<b>")
+    text = render.pay_support()
+    assert "@help_&lt;b&gt;" in text, "контакт не экранирован или потерян"
+
+
+def test_pay_support_falls_back_to_the_offer_contact(monkeypatch):
+    """Контакт для претензий из оферты — тот же адрес, что нужен здесь."""
+    monkeypatch.setattr(render.config, "SUPPORT_CONTACT", "")
+    monkeypatch.setattr(render.config, "OFFER_CONTACT", "owner@myservice.ru")
+    assert "owner@myservice.ru" in render.pay_support()
+
+
+def test_pay_support_without_a_contact_invents_none(monkeypatch):
+    """Контакта нет — нет и строки «напишите сюда»: писать было бы некуда."""
+    monkeypatch.setattr(render.config, "SUPPORT_CONTACT", "")
+    monkeypatch.setattr(render.config, "OFFER_CONTACT", "")
+    text = render.pay_support()
+    assert "Напишите" not in text
+    assert "свяжемся" in text

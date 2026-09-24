@@ -15,7 +15,7 @@ import logging
 from decimal import Decimal
 
 from aiogram import Bot, F, Router
-from aiogram.filters import StateFilter
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import default_state
 from aiogram.types import CallbackQuery, LabeledPrice, Message, PreCheckoutQuery
@@ -230,6 +230,33 @@ async def _send_payment_link(message: Message, svc, plan) -> None:
         f"Тариф: {plan.label} — {plan.rubles} ₽\n"
         f"Метка платежа: <code>{h(label)}</code>\n\n"
         f"Когда перевод придёт: <code>/extend {h(label)}</code>",
+    )
+
+
+@router.message(Command("paysupport"))
+async def pay_support(message: Message) -> None:
+    """
+    Куда идти со спорным платежом. Telegram требует такую команду от ботов,
+    которые продают за звёзды, — и правильно: списание без адреса для жалобы
+    выглядит как ловушка.
+
+    Без фильтра состояния: вопрос о списанных деньгах не должен упираться в
+    то, что человек на середине регистрации. Состояние при этом не трогаем.
+    Владельцу бота уходит письмо сразу — ждать, пока плательщик сам найдёт
+    контакт, значит отвечать на жалобу через неделю.
+    """
+    await message.answer(render.pay_support())
+
+    user = message.from_user
+    who = f"@{h(user.username)}" if user.username else h(user.full_name)
+    await _alert(
+        message,
+        "🙋 <b>Вопрос по оплате</b>\n"
+        f"От: {who}, id <code>{user.id}</code> — "
+        f'<a href="tg://user?id={user.id}">написать</a>\n\n'
+        "Человек вызвал /paysupport. Звёзды возвращаются командой "
+        "<code>/refund &lt;id платежа&gt;</code>, пока Telegram это позволяет — "
+        "около трёх недель.",
     )
 
 

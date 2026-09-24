@@ -237,6 +237,17 @@ def check_payment(env: Mapping[str, str]) -> list[Problem]:
             problems.append(Problem(
                 STOP, f"{name}=0: за бесплатную подписку не заплатить"))
 
+    # /paysupport без контакта может только пообещать написать самим — а у
+    # плательщика без @ника написать ему не выйдет. Не стоп: письмо о вызове
+    # владелец бота получит всё равно
+    if not ((env.get("SUPPORT_CONTACT") or "").strip()
+            or (env.get("OFFER_CONTACT") or "").strip()):
+        problems.append(Problem(
+            WARN,
+            "SUPPORT_CONTACT пуст: /paysupport не назовёт, куда писать по "
+            "спорному платежу",
+        ))
+
     if "yoomoney" not in chosen:
         return problems
 

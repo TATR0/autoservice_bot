@@ -309,3 +309,14 @@ def test_money_taken_without_an_offer_warns():
         env = {**GOOD, name: ""}
         assert check_env(env), f"про пустой {name} надо сказать"
         assert not blockers(env), "но выкат это не останавливает"
+
+
+def test_pay_support_without_any_contact_warns():
+    """
+    /paysupport без контакта может только пообещать написать самим. Не стоп —
+    о вызове владелец бота узнает всё равно, — но знать об этом надо.
+    """
+    env = {**GOOD, "OFFER_CONTACT": ""}
+    assert any("SUPPORT_CONTACT" in p.text for p in check_env(env))
+    assert not any("SUPPORT_CONTACT" in p.text
+                   for p in check_env({**env, "SUPPORT_CONTACT": "@help"}))

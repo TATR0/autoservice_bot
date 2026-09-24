@@ -137,6 +137,8 @@ async def lifespan(app: FastAPI):
             BotCommand(command="menu", description="Выбрать активный сервис"),
             # Право забрать свои данные бесполезно, если о нём никто не знает
             BotCommand(command="forget_me", description="Удалить мои данные"),
+            # Telegram требует её от ботов, продающих за звёзды
+            BotCommand(command="paysupport", description="Вопрос по оплате"),
         ],
         scope=BotCommandScopeDefault(),
     )

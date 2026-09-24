@@ -227,3 +227,39 @@ async def test_unknown_plan_is_not_paid_for(both):
 
     assert callback.message.invoices == []
     assert "не действует" in callback.message.answers[-1]
+
+
+# ── /paysupport ──────────────────────────────────────────────────────────────
+
+
+class FakeUser:
+    id = 777
+    username = "payer"
+    full_name = "Плательщик"
+
+
+async def test_pay_support_answers_and_tells_the_owner(paying):
+    """
+    Вопрос о списанных деньгах: человеку — куда писать, владельцу бота —
+    письмо сразу, с тем, как этого человека найти.
+    """
+    message = FakeMessage()
+    message.from_user = FakeUser()
+    await payment.pay_support(message)
+
+    assert message.answers, "команда осталась без ответа"
+    assert paying, "владелец бота не узнал о вопросе"
+    assert "@payer" in paying[-1]
+    assert "777" in paying[-1]
+
+
+async def test_pay_support_escapes_the_name(paying):
+    """Без ника в письмо идёт имя — а его человек пишет сам, как хочет."""
+    message = FakeMessage()
+    message.from_user = FakeUser()
+    message.from_user.username = None
+    message.from_user.full_name = "<b>Вася</b>"
+    await payment.pay_support(message)
+
+    assert "<b>Вася</b>" not in paying[-1]
+    assert "&lt;b&gt;Вася" in paying[-1]

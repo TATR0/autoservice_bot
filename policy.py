@@ -237,28 +237,59 @@ def render_terms(service: Mapping[str, Any] | None = None) -> str:
 """)
 
 
+_METHOD_COLUMNS = {
+    config.PAYMENT_YOOMONEY: "Переводом",
+    config.PAYMENT_STARS: "Звёздами",
+}
+
+_TRANSFER_ORDER = (
+    "<p>Переводом через ЮMoney по ссылке из бота. Сумма и назначение платежа "
+    "подставлены заранее, менять их не нужно: по ним платёж и опознаётся. Дни "
+    "начисляются после того, как ЮMoney подтвердит перевод; если подтверждение "
+    "почему-то не дошло, дни начисляет исполнитель вручную — напишите ему.</p>"
+)
+
+_STARS_ORDER = (
+    "<p>Звёздами Telegram, счётом прямо в боте. Дни начисляются сразу после "
+    "оплаты, без участия человека.</p>"
+)
+
+
 def _price_table() -> str:
+    """
+    Цены всеми включёнными способами. Одна колонка — способ один; две — и
+    столбец подписан, иначе рубли и звёзды в оферте не отличить друг от друга.
+    """
+    methods = config.PAYMENT_METHODS
+    head = ""
+    if len(methods) > 1:
+        head = ("<tr><td></td>" + "".join(
+            f"<td>{_METHOD_COLUMNS[method]}</td>" for method in methods) + "</tr>")
     rows = "".join(
-        f"<tr><td>{escape(plan.label)}</td>"
-        f"<td>{escape(config.plan_price(plan))}</td></tr>"
+        f"<tr><td>{escape(plan.label)}</td>" + "".join(
+            f"<td>{escape(config.method_price(plan, method))}</td>"
+            for method in methods
+        ) + "</tr>"
         for plan in config.PLANS
     )
-    return f"<table>{rows}</table>"
+    return f"<table>{head}{rows}</table>"
 
 
 def _payment_order() -> str:
-    if config.PAYMENT_METHOD == config.PAYMENT_YOOMONEY:
-        return (
-            "<p>Оплата — переводом через ЮMoney по ссылке из бота. Сумма и "
-            "назначение платежа подставлены заранее, менять их не нужно: по "
-            "ним платёж и опознаётся. Дни начисляются после того, как ЮMoney "
-            "подтвердит перевод; если подтверждение почему-то не дошло, дни "
-            "начисляет исполнитель вручную — напишите ему.</p>"
-        )
-    return (
-        "<p>Оплата — счётом Telegram в звёздах, прямо в боте. Дни начисляются "
-        "сразу после оплаты, без участия человека.</p>"
-    )
+    parts = []
+    if config.pays_with(config.PAYMENT_YOOMONEY):
+        parts.append(_TRANSFER_ORDER)
+    if config.pays_with(config.PAYMENT_STARS):
+        parts.append(_STARS_ORDER)
+    if len(parts) > 1:
+        # Разница в цене прописана в договоре, а не только на кнопке: заказчик
+        # платит больше не исполнителю, а магазину, и знать об этом должен
+        parts.insert(0, (
+            "<p>На выбор два способа. Оплата звёздами дороже на комиссию "
+            "Telegram и магазинов приложений — её берут при покупке звёзд, и "
+            "исполнителю она не достаётся.</p>"
+        ))
+    return "".join(parts)
 
 
 def _expiry_clause() -> str:

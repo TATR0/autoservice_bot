@@ -34,8 +34,9 @@ class FakeMessage:
 
 
 class FakeCallback:
-    def __init__(self, days: int):
-        self.data = f"subscr:buy:{days}"
+    def __init__(self, days: int, method: str | None = None):
+        self.data = (f"subscr:pay:{method}:{days}" if method
+                     else f"subscr:buy:{days}")
         self.message = FakeMessage()
         self.from_user = type("User", (), {"id": OWNER_ID})()
 
@@ -53,6 +54,7 @@ def paying(monkeypatch):
             "idservice": SERVICE_ID,
             "service_name": "Тест",
             "timezone": "Europe/Moscow",
+            "paid_until": None,
         }
 
     async def _alert_owners(_bot, text):
@@ -60,7 +62,7 @@ def paying(monkeypatch):
 
     monkeypatch.setattr(payment, "require_owner_service", _service)
     monkeypatch.setattr(payment, "alert_owners", _alert_owners)
-    monkeypatch.setattr(payment.config, "PAYMENT_METHOD", config.PAYMENT_YOOMONEY)
+    monkeypatch.setattr(payment.config, "PAYMENT_METHODS", (config.PAYMENT_YOOMONEY,))
     monkeypatch.setattr(payment.config, "YOOMONEY_WALLET", WALLET)
     return alerts
 
@@ -140,9 +142,88 @@ async def test_unset_wallet_does_not_send_anyone_to_a_broken_form(paying, monkey
 
 async def test_stars_stay_available_when_chosen(monkeypatch, paying):
     """Способ оплаты — настройка: со звёздами всё работает как прежде."""
-    monkeypatch.setattr(payment.config, "PAYMENT_METHOD", config.PAYMENT_STARS)
+    monkeypatch.setattr(payment.config, "PAYMENT_METHODS", (config.PAYMENT_STARS,))
     callback = FakeCallback(30)
     await payment.buy_plan(callback, state=None)
 
     assert callback.message.invoices, "счёт Telegram не выставлен"
     assert callback.message.invoices[-1]["currency"] == "XTR"
+
+
+# ── Два способа сразу ────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def both(paying, monkeypatch):
+    """Включены оба способа: переводом и звёздами."""
+    monkeypatch.setattr(
+        payment.config, "PAYMENT_METHODS",
+        (config.PAYMENT_YOOMONEY, config.PAYMENT_STARS),
+    )
+    return paying
+
+
+async def test_choice_comes_before_the_payment(both):
+    """
+    Два способа — сначала спрашиваем, чем платить. Молча выбрать за человека
+    нельзя: у одного нет карты, у другого — звёзд.
+    """
+    callback = FakeCallback(30)
+    await payment.buy_plan(callback, state=None)
+
+    assert callback.message.invoices == [], "счёт выставлен без выбора способа"
+    buttons = [b for row in callback.message.markups[-1].inline_keyboard for b in row]
+    assert {b.callback_data for b in buttons} == {
+        "subscr:pay:yoomoney:30", "subscr:pay:stars:30",
+    }
+
+
+async def test_both_prices_are_on_the_buttons(both):
+    """Цены разные, и разницу видно до нажатия, а не после списания."""
+    plan = config.PLANS[0]
+    callback = FakeCallback(plan.days)
+    await payment.buy_plan(callback, state=None)
+
+    texts = " ".join(
+        b.text for row in callback.message.markups[-1].inline_keyboard for b in row
+    )
+    assert f"{plan.rubles} ₽" in texts
+    assert f"{plan.stars} ⭐" in texts
+
+
+async def test_chosen_stars_send_an_invoice(both):
+    callback = FakeCallback(30, method=config.PAYMENT_STARS)
+    await payment.pay_with(callback, state=None)
+
+    assert callback.message.invoices, "счёт Telegram не выставлен"
+    assert callback.message.invoices[-1]["currency"] == "XTR"
+
+
+async def test_chosen_transfer_sends_a_link(both):
+    plan = config.PLANS[0]
+    callback = FakeCallback(plan.days, method=config.PAYMENT_YOOMONEY)
+    await payment.pay_with(callback, state=None)
+
+    assert callback.message.invoices == []
+    query = parse_qs(urlsplit(link_from(callback.message.markups[-1])).query)
+    assert query["sum"] == [f"{plan.rubles}.00"]
+
+
+async def test_switched_off_method_does_not_charge(paying):
+    """
+    Кнопка из вчерашнего сообщения, а способ с тех пор выключили. Счёт по ней
+    выставлять нельзя — предлагаем выбрать заново.
+    """
+    callback = FakeCallback(30, method=config.PAYMENT_STARS)
+    await payment.pay_with(callback, state=None)
+
+    assert callback.message.invoices == [], "счёт по выключенному способу"
+    assert callback.message.answers, "нажатие осталось без ответа"
+
+
+async def test_unknown_plan_is_not_paid_for(both):
+    callback = FakeCallback(7, method=config.PAYMENT_STARS)
+    await payment.pay_with(callback, state=None)
+
+    assert callback.message.invoices == []
+    assert "не действует" in callback.message.answers[-1]

@@ -323,3 +323,21 @@ def test_tariff_screen_offers_no_link_to_a_missing_offer(monkeypatch):
     monkeypatch.setattr(render.config, "OFFER_PROVIDER", "")
     text = render.tariff_screen(_svc(datetime.now(timezone.utc) + timedelta(days=3)))
     assert "/offer" not in text
+
+
+def test_method_screen_warns_that_stars_cost_more(monkeypatch):
+    """
+    Разница в цене — не сюрприз после нажатия: платящий звёздами отдаёт
+    комиссию магазинам, и знать об этом он должен до оплаты.
+    """
+    monkeypatch.setattr(render.config, "STARS_FEE_PCT", 30)
+    plan = render.config.PLANS[0]
+    text = render.payment_method_screen(plan)
+    assert plan.label in text
+    assert "комисси" in text
+
+
+def test_method_screen_says_nothing_about_a_fee_that_is_zero(monkeypatch):
+    """Нет наценки — нет и оговорки: пустое место вместо выдуманной разницы."""
+    monkeypatch.setattr(render.config, "STARS_FEE_PCT", 0)
+    assert "комисси" not in render.payment_method_screen(render.config.PLANS[0])

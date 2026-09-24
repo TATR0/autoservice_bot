@@ -106,11 +106,15 @@ async def open_screen(callback: CallbackQuery, state: FSMContext) -> None:
     await _show_tariffs(callback.message, svc)
 
 
+def _plan_from(raw: str):
+    """Тариф по строке из callback_data. None — такого тарифа больше нет."""
+    return config.plan_by_days(int(raw)) if raw.isdecimal() else None
+
+
 @router.callback_query(F.data.startswith("subscr:buy:"))
 async def buy_plan(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    days = callback.data.rsplit(":", 1)[-1]
-    plan = config.plan_by_days(int(days)) if days.isdecimal() else None
+    plan = _plan_from(callback.data.rsplit(":", 1)[-1])
     if plan is None:
         # Тариф убрали из конфига, пока письмо лежало в чате
         await callback.message.answer("Этот тариф больше не действует.")
@@ -122,11 +126,57 @@ async def buy_plan(callback: CallbackQuery, state: FSMContext) -> None:
     if svc is None:
         return
 
-    if config.PAYMENT_METHOD == config.PAYMENT_YOOMONEY:
-        await _send_payment_link(callback.message, svc, plan)
+    # Способ один — спрашивать не о чем: лишний экран между «хочу продлить» и
+    # оплатой люди читают как поломку
+    if len(config.PAYMENT_METHODS) == 1:
+        await _start_payment(callback.message, svc, plan, config.PAYMENT_METHODS[0])
         return
 
-    await callback.message.answer_invoice(
+    await callback.message.answer(
+        render.payment_method_screen(plan),
+        reply_markup=kb.kb_payment_methods(plan),
+    )
+
+
+@router.callback_query(F.data.startswith("subscr:pay:"))
+async def pay_with(callback: CallbackQuery, state: FSMContext) -> None:
+    """Способ оплаты выбран. Дальше — счёт в звёздах или ссылка на перевод."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    if len(parts) != 4:
+        return
+    method, plan = parts[2], _plan_from(parts[3])
+    if plan is None:
+        await callback.message.answer("Этот тариф больше не действует.")
+        return
+    if not config.pays_with(method):
+        # Способ выключили, пока сообщение лежало в чате. Открываем тарифы
+        # заново, а не молчим: человек нажал «оплатить» и ждёт оплаты
+        await callback.message.answer("Этот способ оплаты больше не доступен.")
+        svc = await require_owner_service(
+            callback.message, state, user_id=callback.from_user.id
+        )
+        if svc is not None:
+            await _show_tariffs(callback.message, svc)
+        return
+
+    svc = await require_owner_service(
+        callback.message, state, user_id=callback.from_user.id
+    )
+    if svc is None:
+        return
+
+    await _start_payment(callback.message, svc, plan, method)
+
+
+async def _start_payment(message: Message, svc, plan, method: str) -> None:
+    """Оплата выбранным способом. Счёт собирается здесь и сейчас, по цене из
+    конфига, — поэтому кнопка из старого сообщения не выставит старую цену."""
+    if method == config.PAYMENT_YOOMONEY:
+        await _send_payment_link(message, svc, plan)
+        return
+
+    await message.answer_invoice(
         title=render.invoice_title(svc),
         description=render.invoice_description(plan),
         payload=make_payload(str(svc["idservice"]), plan.days),

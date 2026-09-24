@@ -105,23 +105,26 @@ async def report() -> int:
         problems += 1
         print(STOP, "BOT_OWNER_IDS пуст — продлить подписку не сможет никто, включая вас")
 
-    # Цена та, которой платят сейчас: при оплате переводом звёзды не спросят
-    # ни разу, и нулевая цена в них ничего не значит
-    by_link = config.PAYMENT_METHOD == config.PAYMENT_YOOMONEY
-    price = (lambda plan: plan.rubles) if by_link else (lambda plan: plan.stars)
+    # Цена одна на оба способа: звёздная считается из рублёвой, и нулевая
+    # рублёвая цена оставляет без цены обе
+    by_link = config.pays_with(config.PAYMENT_YOOMONEY)
 
-    free = [plan.label for plan in config.PLANS if price(plan) <= 0]
+    free = [plan.label for plan in config.PLANS if plan.rubles <= 0]
     if free:
         problems += 1
         print(STOP, "тарифы с нулевой ценой: " + ", ".join(free))
     else:
         print(OK, "цены тарифов заданы: " + ", ".join(
-            f"{plan.label} — {config.plan_price(plan)}" for plan in config.PLANS
+            f"{plan.label} — " + " / ".join(
+                config.method_price(plan, method)
+                for method in config.PAYMENT_METHODS
+            )
+            for plan in config.PLANS
         ))
 
     if by_link and not config.YOOMONEY_WALLET:
         problems += 1
-        print(STOP, "PAYMENT_METHOD=yoomoney, а YOOMONEY_WALLET пуст — "
+        print(STOP, "включён способ yoomoney, а YOOMONEY_WALLET пуст — "
                     "ссылку на оплату собрать не из чего")
 
     print()

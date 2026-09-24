@@ -287,6 +287,27 @@ def kb_tariffs() -> InlineKeyboardMarkup:
     ])
 
 
+METHOD_TITLES = {
+    config.PAYMENT_YOOMONEY: "💳 Переводом",
+    config.PAYMENT_STARS: "⭐ Звёздами Telegram",
+}
+
+
+def kb_payment_methods(plan) -> InlineKeyboardMarkup:
+    """
+    Чем платить за выбранный срок. Способ едет в callback_data вместе с днями:
+    иначе кнопка из старого сообщения выставит счёт не тем способом. Порядок
+    кнопок задан в config.KNOWN_PAYMENT_METHODS.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"{METHOD_TITLES[method]} — {config.method_price(plan, method)}",
+            callback_data=f"subscr:pay:{method}:{plan.days}",
+        )]
+        for method in config.PAYMENT_METHODS
+    ])
+
+
 def kb_pay_link(url: str) -> InlineKeyboardMarkup:
     """
     Кнопка на форму ЮMoney. Ссылкой, а не callback: страницу оплаты открывает

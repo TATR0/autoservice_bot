@@ -45,6 +45,43 @@ def test_every_plan_has_a_human_label():
         assert plan.label.strip()
 
 
+def test_stars_cost_the_same_money_as_rubles(monkeypatch):
+    """
+    Платящий звёздами и платящий переводом приносят одинаково: звёздная цена —
+    рублёвая плюс комиссия магазинов, которую они же и заберут.
+    """
+    monkeypatch.setattr(config, "STARS_FEE_PCT", 30)
+    monkeypatch.setattr(config, "STAR_RATE_RUB", 1)
+    assert config.stars_for(590) == 767
+    assert config.stars_for(1490) == 1937
+
+
+def test_stars_round_up_not_down(monkeypatch):
+    """Округление вниз — это комиссия из своего кармана, каждый раз."""
+    monkeypatch.setattr(config, "STARS_FEE_PCT", 30)
+    monkeypatch.setattr(config, "STAR_RATE_RUB", 1)
+    assert config.stars_for(1) == 2
+
+
+def test_star_price_follows_the_ruble_price(monkeypatch):
+    """Цена одна: правят рубли — звёзды идут следом, без второй правки."""
+    monkeypatch.setattr(config, "STARS_FEE_PCT", 0)
+    monkeypatch.setattr(config, "STAR_RATE_RUB", 1)
+    assert config.PLANS[0].stars == config.PLANS[0].rubles
+
+
+def test_both_methods_can_be_on_at_once(monkeypatch):
+    """У иностранца нет карты, у соседнего сервиса — звёзд. Нужны оба."""
+    assert config.pays_with(config.PAYMENT_METHODS[0])
+    assert set(config.PAYMENT_METHODS) <= set(config.KNOWN_PAYMENT_METHODS)
+
+
+def test_price_of_a_method_is_named_in_its_own_units():
+    plan = config.PLANS[0]
+    assert config.method_price(plan, config.PAYMENT_YOOMONEY) == f"{plan.rubles} ₽"
+    assert config.method_price(plan, config.PAYMENT_STARS) == f"{plan.stars} ⭐"
+
+
 def test_plan_is_found_by_days():
     assert config.plan_by_days(90).stars == config.PLANS[1].stars
 

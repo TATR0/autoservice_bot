@@ -129,10 +129,34 @@ def test_tariff_button_carries_days_not_price():
     assert first.callback_data == f"subscr:buy:{config.PLANS[0].days}"
 
 
-def test_tariff_button_shows_the_price():
+def test_tariff_button_shows_the_price(monkeypatch):
+    monkeypatch.setattr(config, "PAYMENT_METHODS", (config.PAYMENT_STARS,))
     first = kb.kb_tariffs().inline_keyboard[0][0]
     assert str(config.PLANS[0].stars) in first.text
     assert config.PLANS[0].label in first.text
+
+
+def test_method_buttons_carry_the_method_and_the_days(monkeypatch):
+    """
+    Способ едет в кнопке вместе со сроком: иначе нажатая завтра кнопка
+    заплатит тем способом, который к тому времени окажется первым.
+    """
+    monkeypatch.setattr(config, "PAYMENT_METHODS",
+                        (config.PAYMENT_YOOMONEY, config.PAYMENT_STARS))
+    plan = config.PLANS[0]
+    buttons = [b for row in kb.kb_payment_methods(plan).inline_keyboard for b in row]
+    assert [b.callback_data for b in buttons] == [
+        f"subscr:pay:yoomoney:{plan.days}",
+        f"subscr:pay:stars:{plan.days}",
+    ]
+    assert f"{plan.rubles} ₽" in buttons[0].text
+    assert f"{plan.stars} ⭐" in buttons[1].text
+
+
+def test_disabled_method_gets_no_button(monkeypatch):
+    monkeypatch.setattr(config, "PAYMENT_METHODS", (config.PAYMENT_STARS,))
+    rows = kb.kb_payment_methods(config.PLANS[0]).inline_keyboard
+    assert len([b for row in rows for b in row]) == 1
 
 
 def test_pay_button_opens_the_tariff_screen():

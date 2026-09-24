@@ -9,6 +9,7 @@ import logging
 import os
 import secrets
 
+from math import ceil
 from typing import NamedTuple
 from dotenv import load_dotenv
 
@@ -148,10 +149,32 @@ WATCHDOG_PING_URL: str = (os.getenv("WATCHDOG_PING_URL") or "").strip()
 # Чем платят за подписку. stars — счёт Telegram: деньги приходят сами и дни
 # начисляются без участия человека, но магазины Apple и Google забирают около
 # трети суммы. yoomoney — ссылка на перевод: комиссия в разы меньше, зато
-# Telegram о платеже не знает, и дни начисляет владелец бота командой /extend
+# Telegram о платеже не знает, и дни начисляет владелец бота командой /extend.
+#
+# Способов можно включить сразу несколько, через запятую: карта российского
+# банка есть не у всех, а звёзды покупают из любой страны. Тогда после выбора
+# срока бот спрашивает, чем платить
 PAYMENT_STARS = "stars"
 PAYMENT_YOOMONEY = "yoomoney"
+
+# Порядок здесь — порядок кнопок и колонок в оферте: перевод дешевле, поэтому
+# он первый. Способы из PAYMENT_METHOD расставляются по нему, а не по тому, как
+# их написали в переменной: перестановка слов в .env не должна менять экран
+KNOWN_PAYMENT_METHODS = (PAYMENT_YOOMONEY, PAYMENT_STARS)
+
 PAYMENT_METHOD: str = (os.getenv("PAYMENT_METHOD") or PAYMENT_STARS).strip().lower()
+
+# Мусор вместо имени способа превращается в звёзды — не молча: preflight
+# останавливает выкат на нём, и до этой строки дело доходит только локально
+PAYMENT_METHODS: tuple[str, ...] = tuple(
+    known for known in KNOWN_PAYMENT_METHODS
+    if known in {part.strip() for part in PAYMENT_METHOD.split(",")}
+) or (PAYMENT_STARS,)
+
+
+def pays_with(method: str) -> bool:
+    """Включён ли способ оплаты."""
+    return method in PAYMENT_METHODS
 
 # Номер кошелька ЮMoney, на который придёт перевод. Нужен только при
 # PAYMENT_METHOD=yoomoney, и без него экран оплаты честно скажет, что оплата
@@ -177,24 +200,48 @@ def offer_published() -> bool:
     return bool(OFFER_PROVIDER and OFFER_INN and OFFER_CONTACT)
 
 
+# Во сколько рублей обходится звезда тому, кто её покупает. Telegram продаёт
+# звёзды пачками, и курс внутри пачек немного разный — рубль за звезду взят как
+# круглая середина. Меняет Telegram цену — меняем здесь одно число
+STAR_RATE_RUB: float = float(os.getenv("STAR_RATE_RUB") or 1)
+
+# Сколько магазины Apple и Google забирают со звёздной оплаты. Наценка идёт
+# сверх рублёвой цены, чтобы после комиссии на руки пришло столько же: платить
+# звёздами дороже, чем переводом, и это честно видно на кнопке
+STARS_FEE_PCT: int = int(os.getenv("STARS_FEE_PCT") or 30)
+
+
+def stars_for(rubles: int) -> int:
+    """
+    Цена в звёздах, равная рублёвой: та же сумма плюс комиссия магазинов.
+
+    Вверх, а не как получится: округление вниз — это комиссия из своего
+    кармана. Минимум одна звезда — счёт на ноль Telegram не принимает.
+    """
+    rate = STAR_RATE_RUB if STAR_RATE_RUB > 0 else 1
+    return max(1, ceil(rubles * (1 + STARS_FEE_PCT / 100) / rate))
+
+
 class Plan(NamedTuple):
-    """Тариф подписки: срок, обе цены и как назвать на кнопке."""
+    """Тариф подписки: срок, цена и как назвать на кнопке."""
     days: int
-    stars: int   # цена в звёздах Telegram
-    rubles: int  # цена в рублях — для оплаты переводом
+    rubles: int  # цена в рублях — она одна и настоящая
     label: str
+
+    @property
+    def stars(self) -> int:
+        """Та же цена в звёздах. Считается, а не задаётся: иначе два числа
+        разъезжаются при первом же изменении рублёвой цены."""
+        return stars_for(self.rubles)
 
 
 # Подпись лежит рядом с числами, а не собирается из дней: «12 месяцев» читается
 # лучше, чем «365 дней», а делить дни на тридцать ради подписи — врать в мелочах.
-# Цены целые: звёзды не дробятся. Добавить четвёртый тариф — дописать строку
+# Добавить четвёртый тариф — дописать строку
 PLANS: tuple[Plan, ...] = (
-    Plan(30, int(os.getenv("STARS_PRICE_1M") or 150),
-         int(os.getenv("PRICE_1M") or 590), "1 месяц"),
-    Plan(90, int(os.getenv("STARS_PRICE_3M") or 400),
-         int(os.getenv("PRICE_3M") or 1490), "3 месяца"),
-    Plan(365, int(os.getenv("STARS_PRICE_12M") or 1350),
-         int(os.getenv("PRICE_12M") or 4490), "12 месяцев"),
+    Plan(30, int(os.getenv("PRICE_1M") or 590), "1 месяц"),
+    Plan(90, int(os.getenv("PRICE_3M") or 1490), "3 месяца"),
+    Plan(365, int(os.getenv("PRICE_12M") or 4490), "12 месяцев"),
 )
 
 
@@ -204,8 +251,19 @@ def plan_by_days(days: int) -> Plan | None:
 
 
 def plan_price(plan: Plan) -> str:
-    """Цена тарифа тем способом, которым сейчас платят."""
-    if PAYMENT_METHOD == PAYMENT_YOOMONEY:
+    """
+    Цена тарифа на кнопке срока. Способов может быть два, и цены у них разные:
+    тогда на кнопке рублёвая — она меньше и она же настоящая, — а звёздную
+    человек увидит на следующем шаге, когда выберет звёзды.
+    """
+    if pays_with(PAYMENT_YOOMONEY):
+        return f"{plan.rubles} ₽"
+    return f"{plan.stars} ⭐"
+
+
+def method_price(plan: Plan, method: str) -> str:
+    """Цена тарифа конкретным способом — для экрана выбора способа."""
+    if method == PAYMENT_YOOMONEY:
         return f"{plan.rubles} ₽"
     return f"{plan.stars} ⭐"
 

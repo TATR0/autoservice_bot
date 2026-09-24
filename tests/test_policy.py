@@ -236,16 +236,34 @@ def test_offer_prices_are_the_real_ones(published, monkeypatch):
     Цена в договоре и цена на кнопке — одно число. Разойдутся — платить будут
     по кнопке, а спорить по договору.
     """
-    monkeypatch.setattr(policy.config, "PAYMENT_METHOD", policy.config.PAYMENT_STARS)
+    monkeypatch.setattr(policy.config, "PAYMENT_METHODS",
+                        (policy.config.PAYMENT_STARS,))
     page = policy.render_offer()
     for plan in policy.config.PLANS:
         assert plan.label in page
         assert f"{plan.stars} ⭐" in page
 
-    monkeypatch.setattr(policy.config, "PAYMENT_METHOD", policy.config.PAYMENT_YOOMONEY)
+    monkeypatch.setattr(policy.config, "PAYMENT_METHODS",
+                        (policy.config.PAYMENT_YOOMONEY,))
     page = policy.render_offer()
     assert f"{policy.config.PLANS[0].rubles} ₽" in page
     assert "ЮMoney" in page
+
+
+def test_offer_shows_both_prices_when_both_are_taken(published, monkeypatch):
+    """
+    Способов два — цен тоже две, и в договоре стоят обе. Одна цена на две
+    кнопки означала бы, что заплативший звёздами платил не по договору.
+    """
+    monkeypatch.setattr(policy.config, "PAYMENT_METHODS",
+                        (policy.config.PAYMENT_YOOMONEY, policy.config.PAYMENT_STARS))
+    page = policy.render_offer()
+    plan = policy.config.PLANS[0]
+    assert f"{plan.rubles} ₽" in page
+    assert f"{plan.stars} ⭐" in page
+    assert "Переводом" in page and "Звёздами" in page
+    # Разница в цене объяснена: она достаётся магазинам, а не исполнителю
+    assert "комиссию" in page
 
 
 def test_offer_mentions_the_trial_only_when_there_is_one(published, monkeypatch):

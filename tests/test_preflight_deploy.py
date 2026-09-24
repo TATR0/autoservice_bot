@@ -254,13 +254,50 @@ def test_unknown_payment_method_blocks():
     assert blockers({**GOOD, "PAYMENT_METHOD": "qiwi"})
 
 
+def test_both_methods_at_once_are_allowed():
+    """Карта есть не у всех, звёзды покупают отовсюду — способов может быть два."""
+    assert blockers({**GOOD, "PAYMENT_METHOD": "yoomoney,stars",
+                     "YOOMONEY_WALLET": "4100111122223333"}) == []
+
+
+def test_a_typo_in_the_list_blocks_the_whole_list():
+    """
+    «yoomoney,strars» — это оплата, из которой молча пропал способ. Заметить
+    такое по экрану тарифов нельзя: он открывается с одной кнопкой.
+    """
+    assert blockers({**GOOD, "PAYMENT_METHOD": "yoomoney,strars",
+                     "YOOMONEY_WALLET": "4100111122223333"})
+
+
+def test_both_methods_still_need_a_wallet():
+    assert blockers({**GOOD, "PAYMENT_METHOD": "stars,yoomoney"})
+
+
+def test_star_prices_are_no_longer_used():
+    """
+    Цена в звёздах считается из рублёвой. Оставшаяся строка ничего не делает,
+    и молчать об этом — обрекать владельца править число, которое не влияет.
+    """
+    env = {**GOOD, "STARS_PRICE_1M": "150"}
+    assert any("STARS_PRICE_1M" in p.text for p in check_env(env))
+    assert blockers(env) == [], "выкат это не останавливает"
+
+
+def test_star_rate_must_be_a_number():
+    assert blockers({**GOOD, "STAR_RATE_RUB": "рубль"})
+    assert blockers({**GOOD, "STAR_RATE_RUB": "0"})
+    assert blockers({**GOOD, "STAR_RATE_RUB": "1.3"}) == []
+
+
 def test_stars_need_no_wallet():
     assert blockers({**GOOD, "PAYMENT_METHOD": "stars"}) == []
 
 
-def test_free_price_blocks_because_the_form_will_not_open():
+def test_free_price_blocks_both_ways():
+    """Ноль рублей — это и форма ЮMoney без суммы, и счёт на ноль звёзд."""
     assert blockers({**GOOD, "PAYMENT_METHOD": "yoomoney",
                      "YOOMONEY_WALLET": "4100111122223333", "PRICE_3M": "0"})
+    assert blockers({**GOOD, "PAYMENT_METHOD": "stars", "PRICE_3M": "0"})
 
 
 def test_money_taken_without_an_offer_warns():

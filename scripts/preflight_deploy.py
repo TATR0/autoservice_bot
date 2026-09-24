@@ -43,13 +43,19 @@ EXAMPLE_TLDS = (".example", ".invalid", ".test", ".localhost")
 # который не открывается ни счётом, ни ссылкой
 PAYMENT_METHODS = ("stars", "yoomoney")
 
+# Цены в звёздах больше не задаются: звёздная цена считается из рублёвой.
+# Оставленная в .env строка ничего не делает, и знать об этом владельцу нужно —
+# иначе он будет править число и ждать, что оно на что-то повлияет
+OBSOLETE = (
+    "STARS_PRICE_1M", "STARS_PRICE_3M", "STARS_PRICE_12M",
+)
+
 # Пусто — допустимо (сработает умолчание), мусор — нет: config читает их
 # через int() прямо при импорте, и контейнер уходит в перезапуск
 NUMERIC = (
     "DB_POOL_MIN", "DB_POOL_MAX", "MASTER_CHAT_ID", "TRIAL_DAYS",
     "REMINDER_TICK_SECONDS", "APPOINTMENT_REMINDER_HOURS", "PII_RETENTION_DAYS",
-    "STARS_PRICE_1M", "STARS_PRICE_3M", "STARS_PRICE_12M",
-    "PRICE_1M", "PRICE_3M", "PRICE_12M",
+    "PRICE_1M", "PRICE_3M", "PRICE_12M", "STARS_FEE_PCT",
     "FREE_PLAN_SERVICE_LIMIT", "REQUEST_COOLDOWN_SECONDS", "MAX_ACTIVE_REQUESTS",
     "INIT_DATA_MAX_AGE", "INVITE_TTL_DAYS", "BACKUP_INTERVAL_HOURS", "BACKUP_KEEP",
     "HTTPS_PORT", "WATCHDOG_TICK_SECONDS", "WATCHDOG_MAX_PENDING",
@@ -151,6 +157,18 @@ def check_env(env: Mapping[str, str]) -> list[Problem]:
         if raw and not re.fullmatch(r"-?\d+", raw):
             stop(f"{name}={raw} — ожидается целое число, иначе бот не запустится вовсе")
 
+    rate = value("STAR_RATE_RUB")
+    if rate and not re.fullmatch(r"\d+([.,]\d+)?", rate):
+        stop(f"STAR_RATE_RUB={rate} — ожидается число рублей за звезду, "
+             "например 1 или 1.3")
+    elif rate.replace(",", ".") in ("0", "0.0"):
+        stop("STAR_RATE_RUB=0: цена в звёздах считается делением на этот курс")
+
+    for name in OBSOLETE:
+        if value(name):
+            warn(f"{name} задан, но больше ни на что не влияет: цена в звёздах "
+                 "считается из рублёвой плюс STARS_FEE_PCT. Строку можно удалить")
+
     if not value("BOT_OWNER_IDS"):
         warn("BOT_OWNER_IDS пуст: /extend, /refund и /revoke не ответят никому")
     if not value("BOT_USERNAME") or value("BOT_USERNAME") in PLACEHOLDERS:
@@ -196,31 +214,38 @@ def check_env(env: Mapping[str, str]) -> list[Problem]:
 
 def check_payment(env: Mapping[str, str]) -> list[Problem]:
     """
-    Чем платят за подписку и всё ли для этого есть.
+    Чем платят за подписку и всё ли для этого есть. Способов может быть
+    несколько, через запятую.
 
     Пустой кошелёк выясняется иначе только в момент, когда управляющий нажал
     «Оплатить»: экран тарифов открывается, а ссылке взяться неоткуда.
     """
-    method = (env.get("PAYMENT_METHOD") or "stars").strip().lower()
-    if method not in PAYMENT_METHODS:
-        return [Problem(STOP, f"PAYMENT_METHOD={method} — такого способа нет, "
-                              f"выбирайте из: {', '.join(PAYMENT_METHODS)}")]
-
-    if method != "yoomoney":
-        return []
+    raw_method = (env.get("PAYMENT_METHOD") or "stars").strip().lower()
+    chosen = [part.strip() for part in raw_method.split(",") if part.strip()]
+    unknown = [name for name in chosen if name not in PAYMENT_METHODS]
+    if unknown or not chosen:
+        return [Problem(STOP, f"PAYMENT_METHOD={raw_method} — такого способа нет, "
+                              f"выбирайте из: {', '.join(PAYMENT_METHODS)} "
+                              "(можно оба через запятую)")]
 
     problems: list[Problem] = []
-    if not (env.get("YOOMONEY_WALLET") or "").strip():
-        problems.append(Problem(
-            STOP,
-            "PAYMENT_METHOD=yoomoney, а YOOMONEY_WALLET пуст: ссылку на оплату "
-            "собрать не из чего, и заплатить будет нельзя",
-        ))
+    # Нулевая цена ломает оба способа: форма ЮMoney на ноль не открывается, а
+    # счёт Telegram на ноль звёзд не выставляется
     for name in ("PRICE_1M", "PRICE_3M", "PRICE_12M"):
         raw = (env.get(name) or "").strip()
         if raw.isdigit() and int(raw) == 0:
             problems.append(Problem(
-                STOP, f"{name}=0: форма оплаты с нулевой суммой не открывается"))
+                STOP, f"{name}=0: за бесплатную подписку не заплатить"))
+
+    if "yoomoney" not in chosen:
+        return problems
+
+    if not (env.get("YOOMONEY_WALLET") or "").strip():
+        problems.append(Problem(
+            STOP,
+            "включён способ yoomoney, а YOOMONEY_WALLET пуст: ссылку на оплату "
+            "собрать не из чего, и заплатить будет нельзя",
+        ))
     # Не стоп: без секрета оплата работает, только дни начисляются руками.
     # Молчать об этом нельзя — разница видна не в логах, а в том, что в шесть
     # утра заплативший ждёт, пока владелец бота проснётся

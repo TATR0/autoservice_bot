@@ -286,7 +286,9 @@ def test_reminder_names_the_time_in_the_service_timezone():
 def test_reminder_gives_the_address_and_the_phone():
     text = render.appointment_reminder(_appointment())
     assert "ул. Тестовая, 1" in text
-    assert "+7 (999) 000-00-00" in text, "телефон читается так же, как везде в боте"
+    # Слитно, без скобок: такой номер Telegram делает нажимаемым, и клиент
+    # звонит в сервис одним касанием
+    assert "☎️ +79990000000" in text
 
 
 def test_reminder_does_not_invent_missing_fields():
@@ -385,3 +387,14 @@ def test_client_phone_in_the_list_can_be_called():
 def test_callable_phone_is_escaped():
     """Старые заявки хранят номер как ввели — разметку из него пускать нельзя."""
     assert render.callable_phone("<b>1</b>") == "&lt;b&gt;1&lt;/b&gt;"
+
+
+def test_service_phone_on_the_card_can_be_called():
+    """Карточка сервиса: номер тоже нажимается, как и в заявках."""
+    svc = {
+        "service_name": "Гараж", "service_number": "+79990000000",
+        "city": "Казань", "location_service": "ул. Мира, 1",
+        "timezone": "Europe/Moscow", "idservice": "11111111-1111-1111-1111-111111111111",
+    }
+    text = render.service_card(svc, link="https://t.me/x", role="owner", admins_text="—")
+    assert "📞 Телефон: +79990000000\n" in text

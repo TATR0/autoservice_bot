@@ -23,7 +23,6 @@ from notifications import alert_owners
 from validators import (
     ValidationError,
     clean_text,
-    format_phone,
     h,
     normalize_city,
     normalize_phone,
@@ -60,7 +59,7 @@ async def _announce(message: Message, svc) -> None:
             message.bot,
             "🆕 <b>Новый сервис</b>\n"
             f"{h(svc['service_name'])}, {h(svc['city'])}\n"
-            f"Телефон: {h(format_phone(svc['service_number']))}\n"
+            f"Телефон: {render.callable_phone(svc['service_number'])}\n"
             f"Управляющий: {h(db.user_title(owner, message.from_user.id))}, "
             f"id <code>{message.from_user.id}</code>\n\n"
             f"<code>{svc['idservice']}</code>",

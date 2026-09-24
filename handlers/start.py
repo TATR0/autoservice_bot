@@ -16,11 +16,12 @@ from aiogram.types import CallbackQuery, Message
 
 import config
 import keyboards as kb
+import render
 import subscription
 from database import db
 from handlers.common import set_active_service, show_main_menu
 from notifications import safe_send
-from validators import format_phone, h
+from validators import h
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -63,7 +64,7 @@ async def _handle_service_link(message: Message, idservice: str) -> None:
     if not subscription.is_active(service["paid_until"], datetime.now(timezone.utc)):
         await message.answer(
             "⚠️ " + config.CLOSED_FOR_BOOKING.format(
-                phone=h(format_phone(service["service_number"]))
+                phone=render.callable_phone(service["service_number"])
             ),
             reply_markup=kb.kb_client_main(),
         )
@@ -72,7 +73,7 @@ async def _handle_service_link(message: Message, idservice: str) -> None:
     if not kb.webapp_url(idservice):
         await message.answer(
             "⚠️ Онлайн-форма временно недоступна.\n"
-            f"Позвоните в сервис: <code>{h(service['service_number'])}</code>"
+            f"Позвоните в сервис: {render.callable_phone(service['service_number'])}"
         )
         return
 

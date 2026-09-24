@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import config
 import subscription
-from validators import format_phone, h
+from validators import h
 
 logger = logging.getLogger(__name__)
 
@@ -390,7 +390,7 @@ def appointment_reminder(req) -> str:
     if address:
         lines.append(f"📍 {h(address)}")
     if req["service_number"]:
-        lines.append(f"☎️ {h(format_phone(req['service_number']))}")
+        lines.append(f"☎️ {callable_phone(req['service_number'])}")
     lines.append("")
     lines.append("Не сможете приехать? Отмените запись кнопкой ниже, окно освободится.")
     return "\n".join(lines)
@@ -412,7 +412,7 @@ def service_card(svc, *, link: str, role: str, admins_text: str) -> str:
     role_label = "👑 Управляющий" if role == "owner" else "🔧 Администратор"
     return (
         f"<b>ℹ️ {h(svc['service_name'])}</b>\n\n"
-        f"📞 Телефон: {h(format_phone(svc['service_number']))}\n"
+        f"📞 Телефон: {callable_phone(svc['service_number'])}\n"
         f"🏙 Город: {h(svc['city'])}\n"
         f"📍 Адрес: {h(svc['location_service'])}\n"
         f"🕐 Часовой пояс: {h(svc['timezone'])}\n"
@@ -441,7 +441,7 @@ def registration_summary(svc, link: str) -> str:
     return (
         "✅ <b>Сервис зарегистрирован!</b>\n\n"
         f"<b>Название:</b> {h(svc['service_name'])}\n"
-        f"<b>Телефон:</b> {h(format_phone(svc['service_number']))}\n"
+        f"<b>Телефон:</b> {callable_phone(svc['service_number'])}\n"
         f"<b>Город:</b> {h(svc['city'])}\n"
         f"<b>Адрес:</b> {h(svc['location_service'])}\n"
         f"<b>Управляющий:</b> вы (и первый администратор)\n\n"

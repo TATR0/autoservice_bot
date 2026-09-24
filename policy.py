@@ -85,15 +85,21 @@ def _contacts(service: Mapping[str, Any] | None) -> str:
     """Телефон и адрес сервиса списком. Пусто — ничего, а не пустые строки."""
     if not service:
         return ""
-    phone = escape(format_phone(str(service.get("service_number") or "")))
+    number = str(service.get("service_number") or "")
     where = ", ".join(
         escape(str(service.get(field) or ""))
         for field in ("city", "location_service")
         if service.get(field)
     )
     lines = []
-    if phone:
-        lines.append(f"<li>Телефон: {phone}</li>")
+    if number:
+        # На странице, в отличие от сообщения бота, tel: работает: касание по
+        # номеру сразу его набирает. Показываем по-человечески, со скобками, а
+        # набираем слитную запись
+        lines.append(
+            f'<li>Телефон: <a href="tel:{escape(number)}">'
+            f"{escape(format_phone(number))}</a></li>"
+        )
     if where:
         lines.append(f"<li>Адрес: {where}</li>")
     return f"<ul>{''.join(lines)}</ul>" if lines else ""

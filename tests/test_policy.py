@@ -311,3 +311,12 @@ def test_offer_page_opens_when_the_party_is_named(client, monkeypatch):
     response = client.get("/offer")
     assert response.status_code == 200
     assert REQUISITES["OFFER_PROVIDER"] in response.text
+
+
+def test_phone_on_the_page_dials_on_tap():
+    """
+    На странице tel: работает, в отличие от сообщения бота: касание по номеру
+    сразу его набирает. Видно — по-человечески, набирается — слитно.
+    """
+    page = policy.render(SERVICE, 365)
+    assert '<a href="tel:+79991234567">+7 (999) 123-45-67</a>' in page

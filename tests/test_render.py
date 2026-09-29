@@ -175,6 +175,27 @@ def test_registration_says_nothing_about_a_trial_while_not_enforced(monkeypatch)
     assert "Пробный период" not in render.registration_summary(svc, link)
 
 
+def _registered_svc():
+    return _svc(datetime.now(timezone.utc) + timedelta(days=14)) | {
+        "city": "Тестоград",
+        "location_service": "ул. Тестовая, 1",
+        "idservice": "11111111-1111-1111-1111-111111111111",
+    }
+
+
+def test_registration_summary_points_to_the_channel(monkeypatch):
+    """Инструкции живут в канале: новичку надо сразу знать, где их искать."""
+    monkeypatch.setattr(render.config, "CHANNEL_URL", "https://t.me/garworkshop")
+    text = render.registration_summary(_registered_svc(), "https://t.me/bot?start=SVC_x")
+    assert "https://t.me/garworkshop" in text
+
+
+def test_registration_summary_without_channel_has_no_channel_line(monkeypatch):
+    monkeypatch.setattr(render.config, "CHANNEL_URL", "")
+    text = render.registration_summary(_registered_svc(), "https://t.me/bot?start=SVC_x")
+    assert "канал" not in text.lower()
+
+
 def test_tariff_screen_names_the_current_term():
     """Человек должен видеть, что продлевает, а не покупать вслепую."""
     text = render.tariff_screen(_svc(datetime.now(timezone.utc) + timedelta(days=3)))

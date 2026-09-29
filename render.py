@@ -438,6 +438,10 @@ def registration_summary(svc, link: str) -> str:
         )
     else:
         trial = f"<b>Пробный период:</b> до {local_dt(svc['paid_until'], svc['timezone'])}\n\n"
+    channel = (
+        f"\n\n📣 Инструкции и новости бота — в канале: {h(config.CHANNEL_URL)}"
+        if config.CHANNEL_URL else ""
+    )
     return (
         "✅ <b>Сервис зарегистрирован!</b>\n\n"
         f"<b>Название:</b> {h(svc['service_name'])}\n"
@@ -450,6 +454,7 @@ def registration_summary(svc, link: str) -> str:
         "🔗 <b>Ссылка для клиентов</b> — разместите её там, где вас найдут:\n"
         f"{h(link)}\n\n"
         "Чтобы подключить сотрудников, нажмите «➕ Пригласить админа»."
+        f"{channel}"
     )
 
 

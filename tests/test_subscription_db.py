@@ -325,16 +325,30 @@ async def test_trial_is_written_to_the_journal(service):
     assert row["days"] == config.TRIAL_DAYS
 
 
-async def test_trial_does_not_trigger_the_five_day_reminder(service):
+async def test_trial_does_not_trigger_the_five_day_reminder(db_ready, monkeypatch):
     """
-    Триал длится ровно столько, за сколько мы предупреждаем.
+    Триал не длиннее окна предупреждения.
 
     Без предзанятой отметки управляющий получил бы «осталось 5 дней» в секунду
     регистрации, сразу после приветствия, где эта дата уже названа.
     """
-    svc = await db.get_service(service)
-    claimed = await db.claim_reminder(service, svc["paid_until"], subscription.STAGE_5D)
-    assert claimed is False
+    monkeypatch.setattr(config, "TRIAL_DAYS", subscription.REMIND_LEAD_DAYS)
+    idservice = await db.create_service(
+        name=f"Тест {_uuid.uuid4().hex[:8]}",
+        phone="+79990000000",
+        city="Тестоград",
+        address="ул. Тестовая, 1",
+        owner_tg_id=999_000_102,
+    )
+    try:
+        svc = await db.get_service(idservice)
+        claimed = await db.claim_reminder(
+            idservice, svc["paid_until"], subscription.STAGE_5D
+        )
+        assert claimed is False
+    finally:
+        async with db.pool.acquire() as conn:
+            await conn.execute("DELETE FROM services WHERE idservice=$1", idservice)
 
 
 async def test_a_longer_trial_keeps_its_five_day_warning(db_ready, monkeypatch):

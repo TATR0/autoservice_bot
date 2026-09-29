@@ -372,3 +372,33 @@ def test_lunch_fits_hours():
     assert lunch_fits_hours(None, work_from=time(9), work_to=time(18))
     assert not lunch_fits_hours((time(13), time(14)), work_from=time(9), work_to=time(12))
     assert not lunch_fits_hours((time(8), time(9)), work_from=time(9), work_to=time(18))
+
+
+# ── Время работы услуги ──────────────────────────────────────────────────────
+
+from validators import validate_duration
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("2-4", (120, 240)),
+    ("2 – 4 ч", (120, 240)),
+    ("3", (180, 180)),
+    ("3 часа", (180, 180)),
+    ("1,5", (90, 90)),
+    ("1.5-2", (90, 120)),
+    ("30 мин", (30, 30)),
+    ("40-60 минут", (40, 60)),
+])
+def test_duration_is_read_as_hours_or_minutes(raw, expected):
+    assert validate_duration(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["-", "—", ""])
+def test_duration_can_be_left_empty(raw):
+    assert validate_duration(raw) is None
+
+
+@pytest.mark.parametrize("raw", ["4-2", "0", "abc", "2-", "400"])
+def test_duration_rejects_nonsense(raw):
+    with pytest.raises(ValidationError):
+        validate_duration(raw)

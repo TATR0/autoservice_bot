@@ -419,3 +419,18 @@ def test_service_phone_on_the_card_can_be_called():
     }
     text = render.service_card(svc, link="https://t.me/x", role="owner", admins_text="—")
     assert "📞 Телефон: +79990000000\n" in text
+
+
+def test_duration_label_reads_like_a_price_list():
+    assert render.duration_label(120, 240) == "2–4 ч"
+    assert render.duration_label(180, 180) == "3 ч"
+    assert render.duration_label(90, 120) == "1,5–2 ч"
+    assert render.duration_label(30, 45) == "30–45 мин"
+    assert render.duration_label(None, None) == ""
+
+
+def test_titled_price_carries_duration_and_price():
+    assert titled_price("Полировка", 2000, (120, 240)) == "Полировка — 2–4 ч, от 2 000 ₽"
+    assert titled_price("Полировка", None, (120, 240)) == "Полировка — 2–4 ч"
+    assert titled_price("Полировка", 2000) == "Полировка — от 2 000 ₽"
+    assert titled_price("Полировка", None) == "Полировка"

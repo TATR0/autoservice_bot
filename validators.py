@@ -147,6 +147,46 @@ def validate_price(raw: object) -> int | None:
     return value
 
 
+# Верхняя граница времени работы: две недели. Дальше — не запись, а стоянка.
+MAX_DURATION_MINUTES = 14 * 24 * 60
+
+_DURATION_RE = re.compile(
+    r"^(\d+(?:[.,]\d+)?)(?:\s*[-—–]\s*(\d+(?:[.,]\d+)?))?\s*"
+    r"(ч|час|часа|часов|мин|минут|минуты)?\.?$",
+    re.IGNORECASE,
+)
+
+
+def validate_duration(raw: object) -> tuple[int, int] | None:
+    """
+    Время работы услуги: (от, до) в минутах. None — время не указано.
+
+    Вводят так же, как цену, одним сообщением: «2-4» или «3» — часы,
+    «1.5» — полтора часа, «40-60 мин» — минуты.
+    """
+    text = clean_text(raw, field="Время работы", max_len=20)
+    if text in {"-", "—", "–", ""}:
+        return None
+
+    match = _DURATION_RE.match(text)
+    if not match:
+        raise ValidationError(
+            "Введите часы, например 2-4 или 3, или «-», чтобы не указывать время."
+        )
+    low_raw, high_raw, unit = match.groups()
+    per_unit = 1 if unit and unit.lower().startswith("мин") else 60
+    low = round(float(low_raw.replace(",", ".")) * per_unit)
+    high = round(float((high_raw or low_raw).replace(",", ".")) * per_unit)
+
+    if low <= 0:
+        raise ValidationError("Время работы должно быть больше нуля.")
+    if high < low:
+        raise ValidationError("Сначала меньшее время, потом большее: например 2-4.")
+    if high > MAX_DURATION_MINUTES:
+        raise ValidationError("Время работы не может быть больше двух недель.")
+    return low, high
+
+
 _TIME_RANGE_RE = re.compile(
     r"^(\d{1,2})(?::(\d{2}))?\s*[-—–]\s*(\d{1,2})(?::(\d{2}))?$"
 )

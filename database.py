@@ -38,6 +38,16 @@ class SlotTaken(Exception):
     """Все места на выбранное время разобраны."""
 
 
+class CatalogEntry(NamedTuple):
+    """
+    Услуга, которую управляющий ввёл сам. duration — время работы «от и до»
+    в минутах, None — не указано.
+    """
+    title: str
+    price_rub: int | None = None
+    duration: tuple[int, int] | None = None
+
+
 class PaymentApplied(NamedTuple):
     """Что сделал платёж: до какого числа продлил и поднимал ли сервис."""
     paid_until: datetime
@@ -175,9 +185,18 @@ class Database:
         city: str,
         address: str,
         owner_tg_id: int,
+        catalog: Sequence[CatalogEntry],
         timezone: str | None = None,
     ) -> str:
-        """Создать сервис, вернуть idservice. Владелец сразу становится админом."""
+        """
+        Создать сервис, вернуть idservice. Владелец сразу становится админом.
+
+        Услуги приходят вместе с сервисом: шаблонный набор не подходил почти
+        никому — студии, которая делает дубликаты ключей, клиенты видели бы
+        «Замену масла» и «Шиномонтаж».
+        """
+        if not catalog:
+            raise ValueError("Сервис без услуг создавать нельзя")
         idservice = _new_id()
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute(
@@ -249,7 +268,22 @@ class Database:
                 )
             # Сервис без услуг не должен существовать даже мгновение:
             # в форме записи клиенту было бы нечего выбрать.
-            await self._seed_catalog(conn, idservice)
+            await conn.executemany(
+                """
+                INSERT INTO service_catalog
+                    (idcatalog, idservice, title, price_rub,
+                     duration_min_minutes, duration_max_minutes, sort_order, idrecstatus)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,0)
+                """,
+                [
+                    (
+                        _new_id(), idservice, entry.title, entry.price_rub,
+                        *(entry.duration or (None, None)),
+                        (i + 1) * 10,
+                    )
+                    for i, entry in enumerate(catalog)
+                ],
+            )
             # Расписание по умолчанию — часть создания сервиса, а не отдельный
             # шаг: сервис без расписания не может принять ни одной заявки
             await conn.execute(
@@ -287,19 +321,6 @@ class Database:
 
     # ── service_catalog ──────────────────────────────────────────────────────
 
-    async def _seed_catalog(self, conn: asyncpg.Connection, idservice: str) -> None:
-        """Раздать сервису шаблонный набор услуг. Вызывается внутри транзакции."""
-        await conn.executemany(
-            """
-            INSERT INTO service_catalog (idcatalog, idservice, title, sort_order, idrecstatus)
-            VALUES ($1,$2,$3,$4,0)
-            """,
-            [
-                (_new_id(), idservice, title, (i + 1) * 10)
-                for i, title in enumerate(config.DEFAULT_SERVICE_TITLES)
-            ],
-        )
-
     async def get_catalog(self, idservice: str) -> list[asyncpg.Record]:
         """Активные услуги сервиса в порядке показа."""
         async with self.pool.acquire() as conn:
@@ -331,21 +352,28 @@ class Database:
             )
 
     async def add_catalog_item(
-        self, idservice: str, title: str, price_rub: int | None = None
+        self,
+        idservice: str,
+        title: str,
+        price_rub: int | None = None,
+        duration: tuple[int, int] | None = None,
     ) -> asyncpg.Record | None:
         """
         Добавить услугу. None — активная услуга с таким названием уже есть.
 
         Ранее удалённая услуга воскресает, а не создаётся заново: так заявки,
         оформленные на неё до удаления, снова оказываются слинкованы со своей
-        строкой каталога. Цена при воскрешении перезаписывается переданной:
-        управляющий заводит услугу заново и указывает актуальную цену, а не
-        наследует прошлогоднюю.
+        строкой каталога. Цена и время работы при воскрешении
+        перезаписываются переданными: управляющий заводит услугу заново и
+        указывает актуальные, а не наследует прошлогодние.
         """
+        low, high = duration or (None, None)
         async with self.pool.acquire() as conn, conn.transaction():
             revived = await conn.fetchrow(
                 """
-                UPDATE service_catalog SET idrecstatus=0, deletedate=NULL, price_rub=$3
+                UPDATE service_catalog
+                   SET idrecstatus=0, deletedate=NULL, price_rub=$3,
+                       duration_min_minutes=$4, duration_max_minutes=$5
                 WHERE idcatalog = (
                         SELECT idcatalog FROM service_catalog
                          WHERE idservice=$1 AND idrecstatus=-1
@@ -358,7 +386,7 @@ class Database:
                            AND lower(trim(title))=lower(trim($2)))
                 RETURNING *
                 """,
-                idservice, title, price_rub,
+                idservice, title, price_rub, low, high,
             )
             if revived:
                 return revived
@@ -368,13 +396,14 @@ class Database:
             return await conn.fetchrow(
                 """
                 INSERT INTO service_catalog
-                    (idcatalog, idservice, title, price_rub, sort_order, idrecstatus)
-                VALUES ($1,$2,$3,$4,$5,0)
+                    (idcatalog, idservice, title, price_rub,
+                     duration_min_minutes, duration_max_minutes, sort_order, idrecstatus)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,0)
                 ON CONFLICT (idservice, lower(trim(title))) WHERE idrecstatus = 0
                 DO NOTHING
                 RETURNING *
                 """,
-                _new_id(), idservice, title, price_rub, 1000,
+                _new_id(), idservice, title, price_rub, low, high, 1000,
             )
 
     async def set_catalog_item_price(
@@ -394,6 +423,22 @@ class Database:
                 RETURNING *
                 """,
                 idcatalog, idservice, price_rub,
+            )
+
+    async def set_catalog_item_duration(
+        self, idservice: str, idcatalog: str, duration: tuple[int, int] | None
+    ) -> asyncpg.Record | None:
+        """Изменить время работы услуги. None — услуги нет, она удалена или чужая."""
+        low, high = duration or (None, None)
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE service_catalog
+                   SET duration_min_minutes=$3, duration_max_minutes=$4
+                WHERE idcatalog=$1 AND idservice=$2 AND idrecstatus=0
+                RETURNING *
+                """,
+                idcatalog, idservice, low, high,
             )
 
     async def get_catalog_items(
@@ -867,9 +912,45 @@ class Database:
             )
         return {row["scheduled_at"]: row["taken"] for row in rows}
 
-    async def free_slots(self, service: Mapping) -> dict[date, list[time]]:
+    # Когда бокс освободится. У заявок, созданных до появления длительности,
+    # конца нет — они держат одно окно текущего расписания
+    _BUSY_SQL = """
+        SELECT r.scheduled_at,
+               COALESCE(r.ends_at,
+                        r.scheduled_at + make_interval(mins => sch.slot_minutes)) AS ends_at
+          FROM requests r
+          JOIN service_schedule sch ON sch.idservice = r.idservice
+         WHERE r.idservice=$1 AND r.idrecstatus=0
+           AND r.scheduled_at IS NOT NULL
+           AND r.status = ANY($4::text[])
+           -- Работа длиннее дня не записывается, поэтому начавшиеся раньше
+           -- чем за сутки до отрезка его уже не задевают. Условие по самому
+           -- scheduled_at, а не по вычисленному концу, держится на индексе
+           AND r.scheduled_at >  $2::timestamptz - interval '1 day'
+           AND r.scheduled_at <  $3
+           AND COALESCE(r.ends_at,
+                        r.scheduled_at + make_interval(mins => sch.slot_minutes)) > $2
+    """
+
+    async def get_busy(
+        self, idservice: str, since: datetime, until: datetime
+    ) -> list[tuple[datetime, datetime]]:
+        """Занятость живых заявок, задевающих отрезок: с какого момента и до какого."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                self._BUSY_SQL,
+                idservice, since, until, list(config.SLOT_HOLDING_STATUSES),
+            )
+        return [(row["scheduled_at"], row["ends_at"]) for row in rows]
+
+    async def free_slots(
+        self, service: Mapping, minutes: int | None = None
+    ) -> dict[date, list[time]]:
         """
-        Свободные окна сервиса на весь горизонт записи.
+        Свободные начала записи на весь горизонт.
+
+        minutes — сколько займут выбранные услуги по верхней границе. None —
+        одно окно: так считает карточка расписания и форма до выбора услуг.
 
         Один расчёт на три места: форма, приём заявки и карточка расписания.
         Разъехавшись, они показывали бы клиенту одни окна, принимали другие,
@@ -885,10 +966,13 @@ class Database:
             return {}
 
         now = datetime.now(timezone.utc)
-        taken = await self.get_taken_slots(
+        busy = await self.get_busy(
             idservice, now, now + timedelta(days=schedule["horizon_days"] + 1)
         )
-        return slots.free_slots(schedule, service["timezone"], now, taken)
+        return slots.free_slots(
+            schedule, service["timezone"], now, busy,
+            windows=slots.windows_needed(minutes, schedule["slot_minutes"]),
+        )
 
     # ── admins ───────────────────────────────────────────────────────────────
 
@@ -1029,6 +1113,7 @@ class Database:
         model: str,
         plate: str,
         scheduled_at: datetime | None = None,
+        ends_at: datetime | None = None,
         services: list[dict],
         comment: str,
         client_uid: str | None = None,
@@ -1038,6 +1123,8 @@ class Database:
 
         is_duplicate=True — заявка с таким client_uid уже была создана
         (повторный тап «Отправить»), возвращается существующая.
+
+        ends_at — когда освободится бокс. Не задан — через одно окно расписания.
         """
         async with self.pool.acquire() as conn, conn.transaction():
             # Блокировка строки расписания делает проверку и вставку неделимыми.
@@ -1051,7 +1138,8 @@ class Database:
                 await conn.execute("SET LOCAL lock_timeout = '3s'")
                 try:
                     schedule = await conn.fetchrow(
-                        "SELECT capacity FROM service_schedule WHERE idservice=$1 FOR UPDATE",
+                        "SELECT capacity, slot_minutes FROM service_schedule "
+                        " WHERE idservice=$1 FOR UPDATE",
                         idservice,
                     )
                 except asyncpg.exceptions.LockNotAvailableError:
@@ -1064,17 +1152,18 @@ class Database:
                 if schedule is None:
                     raise SlotTaken(scheduled_at)
 
+                if ends_at is None:
+                    ends_at = scheduled_at + timedelta(minutes=schedule["slot_minutes"])
+
                 # Повторный тап не должен занимать второе место: заявка с этим
                 # client_uid уже существует и своё место уже держит
-                already = await conn.fetchval(
-                    "SELECT count(*) FROM requests "
-                    " WHERE idservice=$1 AND scheduled_at=$2 AND idrecstatus=0 "
-                    "   AND status = ANY($3::text[]) "
-                    "   AND ($4::text IS NULL OR client_uid IS DISTINCT FROM $4)",
-                    idservice, scheduled_at,
+                rows = await conn.fetch(
+                    self._BUSY_SQL + " AND ($5::text IS NULL OR r.client_uid IS DISTINCT FROM $5)",
+                    idservice, scheduled_at, ends_at,
                     list(config.SLOT_HOLDING_STATUSES), client_uid,
                 )
-                if already >= schedule["capacity"]:
+                busy = [(row["scheduled_at"], row["ends_at"]) for row in rows]
+                if slots.peak_load(busy, scheduled_at, ends_at) >= schedule["capacity"]:
                     raise SlotTaken(scheduled_at)
 
             row = await conn.fetchrow(
@@ -1082,14 +1171,14 @@ class Database:
                 INSERT INTO requests
                     (idrequests, idservice, idclienttg, client_name, phone,
                      brand, model, plate, comment, client_uid,
-                     scheduled_at, status, idrecstatus)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'new',0)
+                     scheduled_at, ends_at, status, idrecstatus)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'new',0)
                 ON CONFLICT (client_uid) WHERE client_uid IS NOT NULL DO NOTHING
                 RETURNING *
                 """,
                 _new_id(), idservice, client_tg_id, client_name, phone,
                 brand, model, plate, comment, client_uid,
-                scheduled_at,
+                scheduled_at, ends_at,
             )
             if row is None:
                 # Фильтр по idclienttg обязателен: без него, подобрав чужой

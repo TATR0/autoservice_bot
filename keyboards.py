@@ -34,6 +34,8 @@ BTN_SWITCH         = "🔄 Сменить сервис"
 BTN_LEAVE          = "🚪 Уйти из администраторов"
 BTN_DELETE_SERVICE = "🗑 Удалить сервис"
 BTN_CANCEL         = "❌ Отмена"
+BTN_MORE_SERVICE   = "➕ Ещё услуга"
+BTN_SERVICES_DONE  = "✅ Готово"
 
 
 def webapp_url(service_id: str | None = None) -> str | None:
@@ -127,6 +129,18 @@ def kb_cancel() -> ReplyKeyboardMarkup:
     )
 
 
+def kb_reg_services(*, can_add: bool) -> ReplyKeyboardMarkup:
+    """Регистрация: добавить ещё услугу или закончить."""
+    first = [KeyboardButton(text=BTN_MORE_SERVICE)] if can_add else []
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            first + [KeyboardButton(text=BTN_SERVICES_DONE)],
+            [KeyboardButton(text=BTN_CANCEL)],
+        ],
+        resize_keyboard=True,
+    )
+
+
 def kb_remove() -> ReplyKeyboardRemove:
     return ReplyKeyboardRemove()
 
@@ -191,7 +205,7 @@ def kb_catalog(items: list) -> InlineKeyboardMarkup:
     """Список услуг: тап открывает карточку услуги."""
     rows = [
         [InlineKeyboardButton(
-            text=render.titled_price(item["title"], item["price_rub"]),
+            text=render.titled_item(item["title"], item),
             callback_data=f"svcopen:{item['idcatalog']}",
         )]
         for item in items
@@ -203,10 +217,11 @@ def kb_catalog(items: list) -> InlineKeyboardMarkup:
 
 
 def kb_catalog_item(idcatalog: str) -> InlineKeyboardMarkup:
-    """Карточка услуги: правка цены, удаление, возврат к списку."""
+    """Карточка услуги: правка цены и времени, удаление, возврат к списку."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💰 Изменить цену", callback_data=f"svcprice:{idcatalog}"),
-         InlineKeyboardButton(text="❌ Удалить услугу", callback_data=f"svcdel:{idcatalog}")],
+         InlineKeyboardButton(text="⏱ Время работы", callback_data=f"svctime:{idcatalog}")],
+        [InlineKeyboardButton(text="❌ Удалить услугу", callback_data=f"svcdel:{idcatalog}")],
         [InlineKeyboardButton(text="⬅️ К списку", callback_data="svclist")],
     ])
 

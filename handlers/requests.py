@@ -25,6 +25,7 @@ from aiogram.types import CallbackQuery, Message
 import config
 import keyboards as kb
 import render
+import slots
 import subscription
 from database import ForeignClientUid, SlotTaken, db
 from notifications import notify_staff, safe_send
@@ -40,6 +41,14 @@ router = Router()
 
 class RequestRejected(Exception):
     """Заявку принять нельзя — текст предназначен клиенту."""
+
+
+def job_minutes(items) -> int | None:
+    """
+    Сколько займут выбранные услуги по верхней границе. None — ни у одной
+    время не указано, и запись занимает одно окно, как раньше.
+    """
+    return sum(item["duration_max_minutes"] or 0 for item in items) or None
 
 
 async def create_request_flow(
@@ -110,7 +119,20 @@ async def create_request_flow(
     # окон — единственный источник истины, а не то, что заявлено в теле.
     # Считается последним из проверок: это два запроса к базе, и платить за них
     # стоит только когда всё остальное в заявке уже сошлось.
-    free = await db.free_slots(service)
+    #
+    # Окно у каждой услуги своё: четыре часа полировки держат бокс все четыре
+    # часа. Границу берём верхнюю — лучше бокс освободится раньше, чем две
+    # машины приедут на одно место
+    minutes = job_minutes(items)
+    schedule = await db.get_schedule(service_id)
+    windows = slots.windows_needed(minutes, schedule["slot_minutes"]) if schedule else 1
+    if slots.too_long_for_day(schedule, minutes):
+        raise RequestRejected(
+            config.TOO_LONG_FOR_ONLINE.format(
+                phone=format_phone(service["service_number"])
+            )
+        )
+    free = await db.free_slots(service, minutes=minutes)
     if not free:
         raise RequestRejected("Сейчас нет свободного времени для записи.")
     try:
@@ -119,6 +141,7 @@ async def create_request_flow(
         )
     except ValidationError as exc:
         raise RequestRejected(str(exc)) from None
+    ends_at = slots.booking_end(schedule, service["timezone"], scheduled_at, windows)
 
     client_uid = str(payload.get("client_uid") or "").strip()[:64] or None
 
@@ -145,6 +168,7 @@ async def create_request_flow(
             client_uid=client_uid,
             services=services,
             scheduled_at=scheduled_at,
+            ends_at=ends_at,
             **fields,
         )
     except ForeignClientUid:

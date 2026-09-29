@@ -286,14 +286,43 @@ def refund_done(svc, paid_until) -> str:
     )
 
 
-def titled_price(title: str, price_rub: int | None) -> str:
-    """«Название — от 3 000 ₽» либо просто «Название», без висящего тире.
+def _hours(minutes: int) -> str:
+    return f"{minutes / 60:g}".replace(".", ",")
+
+
+def duration_label(low: int | None, high: int | None) -> str:
+    """Время работы для показа: «2–4 ч», «3 ч», «30–45 мин». Нет времени — пусто."""
+    if not low or not high:
+        return ""
+    if high < 60:
+        return f"{low} мин" if low == high else f"{low}–{high} мин"
+    if low == high:
+        return f"{_hours(low)} ч"
+    return f"{_hours(low)}–{_hours(high)} ч"
+
+
+def titled_price(
+    title: str, price_rub: int | None, duration: tuple[int, int] | None = None
+) -> str:
+    """«Название — 2–4 ч, от 3 000 ₽» либо просто «Название», без висящего тире.
 
     Название приходит уже подготовленным для своего места вывода
     (экранированным для HTML или сырым для текста кнопки).
     """
-    label = price_label(price_rub)
+    parts = [duration_label(*(duration or (None, None))), price_label(price_rub)]
+    label = ", ".join(part for part in parts if part)
     return f"{title} — {label}" if label else title
+
+
+def item_duration(item) -> tuple[int, int] | None:
+    """Время работы услуги из строки каталога. None — не указано."""
+    low, high = item.get("duration_min_minutes"), item.get("duration_max_minutes")
+    return (low, high) if low and high else None
+
+
+def titled_item(title: str, item) -> str:
+    """titled_price для строки каталога: с временем работы, если оно задано."""
+    return titled_price(title, item["price_rub"], item_duration(item))
 
 
 # ── Карточки заявок ──────────────────────────────────────────────────────────

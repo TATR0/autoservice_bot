@@ -155,6 +155,7 @@
               background: rgba(255,255,255,0.05); color: var(--text);
               font: inherit; cursor: pointer; }
   .cal-tz { margin-top: 10px; font-size: 11px; color: var(--muted); }
+  .cal-note { font-size: 13px; color: var(--muted); padding: 8px 0; }
 
   /* Подсветка выбранного идёт ПОСЛЕ .cal-day и .cal-chip: специфичность у всех
      трёх одинаковая, побеждает последнее правило. Стояла раньше — и выбранная
@@ -283,6 +284,7 @@ const state = {
   profile:         { name: "", phone: "" },
   // Свободные окна с сервера: { "2026-08-17": ["09:00", "10:00"] }
   slots:           {},
+  slotsNote:       "",
   month:           null,   // Date, первое число показываемого месяца
   pickedDay:       null,   // "2026-08-17"
   pickedTime:      null,   // "10:00"
@@ -308,6 +310,17 @@ function esc(str) {
 function priceLabel(price) {
   if (price === null || price === undefined) return "";
   return "от " + String(price).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₽";
+}
+
+// «2–4 ч», «3 ч», «1,5 ч», «30–45 мин» — так же, как в боте
+function hoursText(minutes) {
+  return String(Math.round(minutes / 6) / 10).replace(".", ",");
+}
+
+function durationLabel(low, high) {
+  if (!low || !high) return "";
+  if (high < 60) return low === high ? `${low} мин` : `${low}–${high} мин`;
+  return low === high ? `${hoursText(low)} ч` : `${hoursText(low)}–${hoursText(high)} ч`;
 }
 
 function selectedCatalogIds() {
@@ -366,9 +379,69 @@ function mondayOffset(date) {
   return (date.getDay() + 6) % 7;
 }
 
+// Длинная работа занимает несколько окон подряд, поэтому свободные начала
+// зависят от выбранных услуг. Без выбора показываем обычные окна сервиса.
+// Ответы на устаревший выбор отбрасываем: клиент тыкает галочки быстрее,
+// чем приходит ответ, и календарь не должен откатываться к прошлому выбору
+let slotsRequest = 0;
+
+async function refreshSlots() {
+  const ids = selectedCatalogIds();
+  const ticket = ++slotsRequest;
+  let slots = state.selectedService.slots;
+  state.slotsNote = "";
+  try {
+    if (ids.length) {
+      const res = await api(
+        `/api/service/${encodeURIComponent(state.serviceId)}/slots?items=`
+        + encodeURIComponent(ids.join(","))
+      );
+      if (ticket !== slotsRequest) return;
+      slots = res.slots;
+      state.slotsNote = res.too_long || "";
+    } else {
+      const fresh = await api(`/api/service/${encodeURIComponent(state.serviceId)}`);
+      if (ticket !== slotsRequest) return;
+      state.selectedService.slots = fresh.slots;
+      slots = fresh.slots;
+    }
+  } catch (e) {
+    if (ticket !== slotsRequest) return;
+    state.slotsNote = e.message;
+    slots = {};
+  }
+
+  state.slots = withFreeTimes(slots);
+  if (!state.slotsNote && Object.keys(state.slots).length === 0) {
+    state.slotsNote = "Под выбранные услуги свободного времени нет. "
+                    + "Попробуйте убрать часть услуг или позвоните в сервис.";
+  }
+  // Сбрасываем и день, если он опустел целиком: иначе клетка останется
+  // подсвеченной как выбранная, но нажать её будет нельзя, а под сеткой
+  // повиснет заголовок дня без единой плитки времени
+  const stillFree = state.slots[state.pickedDay] || [];
+  if (stillFree.length === 0) {
+    state.pickedDay = null;
+    state.pickedTime = null;
+  } else if (!stillFree.includes(state.pickedTime)) {
+    state.pickedTime = null;
+  }
+  const days = Object.keys(state.slots).sort();
+  const months = days.map(firstOfMonth);
+  if (days.length && !months.some(m => +m === +state.month)) {
+    state.month = months[0];
+  }
+  renderCalendar();
+}
+
 function renderCalendar() {
   const box = document.getElementById("calendar");
-  if (!box || !state.month) return;
+  if (!box) return;
+  if (state.slotsNote) {
+    box.innerHTML = `<div class="cal-note">${esc(state.slotsNote)}</div>`;
+    return;
+  }
+  if (!state.month) return;
 
   const year = state.month.getFullYear();
   const month = state.month.getMonth();
@@ -478,6 +551,7 @@ async function openService(serviceId) {
     document.title = state.selectedService.service_name + " — запись";
     // Календарь открываем на первом месяце, где вообще есть свободное время
     state.slots = withFreeTimes(state.selectedService.slots);
+    state.slotsNote = "";
     state.pickedDay = null;
     state.pickedTime = null;
     const days = Object.keys(state.slots).sort();
@@ -703,7 +777,10 @@ function renderForm() {
         </div>
         <div id="catalogList" class="catalog-list">
           ${catalog.map(s => {
-            const price = priceLabel(s.price_rub);
+            const price = [
+              durationLabel(s.duration_min_minutes, s.duration_max_minutes),
+              priceLabel(s.price_rub),
+            ].filter(Boolean).join(" · ");
             return `
             <label class="catalog-item" data-title="${esc(s.title.toLowerCase())}">
               <input type="checkbox" class="catalog-cb" value="${esc(s.idcatalog)}">
@@ -773,11 +850,12 @@ function renderForm() {
   const search = document.getElementById("catalogSearch");
   search?.addEventListener("input", () => filterCatalog(search.value));
   document.querySelectorAll(".catalog-cb").forEach(cb =>
-    cb.addEventListener("change", updateCatalogBar)
+    cb.addEventListener("change", () => { updateCatalogBar(); refreshSlots(); })
   );
   document.getElementById("catalogReset").addEventListener("click", () => {
     document.querySelectorAll(".catalog-cb").forEach(cb => { cb.checked = false; });
     updateCatalogBar();
+    refreshSlots();
   });
   renderCalendar();
 }
@@ -853,23 +931,7 @@ async function doSubmit() {
 
     // Окно могли занять, пока клиент заполнял форму. Перечитываем расписание,
     // иначе он будет тыкать в час, которого в списке уже нет
-    try {
-      const fresh = await api(`/api/service/${encodeURIComponent(state.serviceId)}`);
-      state.slots = withFreeTimes(fresh.slots);
-      // Сбрасываем и день, если он опустел целиком: иначе клетка останется
-      // подсвеченной как выбранная, но нажать её будет нельзя, а под сеткой
-      // повиснет заголовок дня без единой плитки времени
-      const stillFree = state.slots[state.pickedDay] || [];
-      if (stillFree.length === 0) {
-        state.pickedDay = null;
-        state.pickedTime = null;
-      } else if (!stillFree.includes(state.pickedTime)) {
-        state.pickedTime = null;
-      }
-      renderCalendar();
-    } catch (ignored) {
-      // Не смогли обновить — форма и так показывает ошибку отправки
-    }
+    refreshSlots();
   }
 }
 

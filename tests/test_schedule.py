@@ -223,3 +223,50 @@ async def test_booking_flow_rejects_time_outside_free_slots(service):
             client_tg_id=CLIENT_ID,
             payload=_payload(service, item, scheduled_at="2020-01-01 10:00"),
         )
+
+
+# ── Долгая работа ────────────────────────────────────────────────────────────
+
+async def test_long_booking_blocks_the_following_windows(service):
+    """Три часа работы держат бокс три окна подряд, а не одно."""
+    await db.update_schedule(service, lunch_from=None, lunch_to=None)
+    svc = await db.get_service(service)
+    item = await db.add_catalog_item(service, "Полировка", duration=(120, 180))
+
+    free = await db.free_slots(svc, minutes=180)
+    day = sorted(free)[0]
+    moment = free[day][0]
+    await create_request_flow(
+        None,
+        client_tg_id=CLIENT_ID,
+        payload=_payload(service, item, scheduled_at=f"{day} {moment:%H:%M}"),
+    )
+
+    after = (await db.free_slots(svc)).get(day, [])
+    start = datetime.combine(day, moment)
+    for hours in range(3):
+        blocked = (start + timedelta(hours=hours)).time()
+        assert blocked not in after, f"{blocked:%H:%M} занято полировкой"
+    assert (start + timedelta(hours=3)).time() in after or start.hour + 3 >= 18
+
+
+async def test_overlapping_booking_is_refused_under_the_lock(service, make_request):
+    """Проверка под блокировкой учитывает конец работы, а не только её начало."""
+    moment = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=5)
+    await make_request(service, moment, ends_at=moment + timedelta(hours=3))
+    with pytest.raises(SlotTaken):
+        await make_request(service, moment + timedelta(hours=2))
+    await make_request(service, moment + timedelta(hours=3))  # не бросает
+
+
+async def test_job_longer_than_a_day_is_sent_to_the_phone(service):
+    """Работу дольше рабочего дня онлайн не записать — клиенту дают телефон."""
+    item = await db.add_catalog_item(service, "Покраска", duration=(20 * 60, 30 * 60))
+    free = await db.free_slots(await db.get_service(service))
+    day = sorted(free)[0]
+    with pytest.raises(RequestRejected, match="Позвоните"):
+        await create_request_flow(
+            None,
+            client_tg_id=CLIENT_ID,
+            payload=_payload(service, item, scheduled_at=f"{day} {free[day][0]:%H:%M}"),
+        )

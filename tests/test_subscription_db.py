@@ -12,6 +12,7 @@ import asyncpg
 import pytest
 
 from database import db
+from tests.conftest import TEST_CATALOG
 
 pytestmark = pytest.mark.asyncio
 
@@ -339,6 +340,7 @@ async def test_trial_does_not_trigger_the_five_day_reminder(db_ready, monkeypatc
         city="Тестоград",
         address="ул. Тестовая, 1",
         owner_tg_id=999_000_102,
+        catalog=TEST_CATALOG,
     )
     try:
         svc = await db.get_service(idservice)
@@ -366,6 +368,7 @@ async def test_a_longer_trial_keeps_its_five_day_warning(db_ready, monkeypatch):
         city="Тестоград",
         address="ул. Тестовая, 1",
         owner_tg_id=999_000_101,
+        catalog=TEST_CATALOG,
     )
     try:
         svc = await db.get_service(idservice)
@@ -385,6 +388,7 @@ async def _register(owner: int) -> str:
         city="Тестоград",
         address="ул. Тестовая, 1",
         owner_tg_id=owner,
+        catalog=TEST_CATALOG,
     )
 
 

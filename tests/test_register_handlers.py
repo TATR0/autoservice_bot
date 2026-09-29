@@ -1,7 +1,8 @@
 """
 Регистрация сервиса. Базы не требует — слой БД и меню подменены.
 
-Проверяется последний шаг: сервис создан, и об этом узнаёт владелец бота.
+Проверяется шаг услуг и последний шаг: сервис создан со списком услуг
+управляющего, и об этом узнаёт владелец бота.
 Проверка полей ввода живёт в test_validators.
 """
 
@@ -16,7 +17,7 @@ OWNER_ID = 999_000_001
 
 
 class FakeMessage:
-    def __init__(self, text: str = "ул. Тестовая, 1"):
+    def __init__(self, text: str = "✅ Готово"):
         self.text = text
         self.from_user = type("User", (), {"id": OWNER_ID})()
         self.bot = object()
@@ -46,6 +47,7 @@ def registered(monkeypatch):
     alerts = []
 
     async def _create(**kwargs):
+        created.append(kwargs)
         return SERVICE_ID
 
     async def _service(_id):
@@ -78,8 +80,52 @@ def registered(monkeypatch):
     return alerts
 
 
-def _state():
-    return FakeState({"name": "Гараж №1", "phone": "+79990000000", "city": "Тестоград"})
+created: list[dict] = []
+
+
+@pytest.fixture(autouse=True)
+def _clear_created():
+    created.clear()
+
+
+def _state(**extra):
+    return FakeState({
+        "name": "Гараж №1", "phone": "+79990000000", "city": "Тестоград",
+        "address": "ул. Тестовая, 1",
+        "items": [["Дубликат ключа", 1500, 60, 120], ["Прошивка чипа", None, None, None]],
+        **extra,
+    })
+
+
+async def test_service_is_created_with_owners_own_services(registered):
+    """Шаблона нет: в каталоге ровно то, что ввёл управляющий, с ценой и временем."""
+    await register.reg_finish(FakeMessage(), _state())
+
+    assert created[0]["address"] == "ул. Тестовая, 1"
+    assert created[0]["catalog"] == [
+        register.CatalogEntry("Дубликат ключа", 1500, (60, 120)),
+        register.CatalogEntry("Прошивка чипа", None, None),
+    ]
+
+
+async def test_services_step_collects_title_price_and_duration(registered):
+    state = FakeState({"items": []})
+    await register.reg_item_title(FakeMessage("Дубликат ключа"), state)
+    await register.reg_item_price(FakeMessage("1 500"), state)
+    message = FakeMessage("1-2")
+    await register.reg_item_duration(message, state)
+
+    assert state._data["items"] == [["Дубликат ключа", 1500, 60, 120]]
+    assert "Дубликат ключа — 1–2 ч, от 1 500 ₽" in message.answers[-1]
+
+
+async def test_same_service_twice_is_refused(registered):
+    state = FakeState({"items": [["Дубликат ключа", None, None, None]]})
+    message = FakeMessage("дубликат ключа")
+    await register.reg_item_title(message, state)
+
+    assert "item_title" not in state._data
+    assert message.answers[-1].startswith("❌")
 
 
 async def test_new_service_is_announced_to_the_bot_owner(registered):
@@ -88,7 +134,7 @@ async def test_new_service_is_announced_to_the_bot_owner(registered):
     чужой бизнес. Узнать о нём надо в тот же день, а не при разборе базы.
     """
     message = FakeMessage()
-    await register.reg_address(message, _state())
+    await register.reg_finish(message, _state())
 
     assert len(registered) == 1, "новый сервис обязан быть замечен"
     alert = registered[0]
@@ -105,7 +151,7 @@ async def test_failed_registration_is_not_announced(registered, monkeypatch):
 
     monkeypatch.setattr(register.db, "create_service", _boom)
     message = FakeMessage()
-    await register.reg_address(message, _state())
+    await register.reg_finish(message, _state())
 
     assert registered == []
     assert message.answers and message.answers[0].startswith("❌")
@@ -118,7 +164,7 @@ async def test_announcement_failure_does_not_break_registration(registered, monk
 
     monkeypatch.setattr(register, "alert_owners", _boom)
     message = FakeMessage()
-    await register.reg_address(message, _state())
+    await register.reg_finish(message, _state())
 
     assert message.answers, "управляющий обязан увидеть карточку сервиса"
     assert message.answers[0].startswith("✅")

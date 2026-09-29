@@ -415,3 +415,69 @@ def test_missing_flags_count_as_refusal(client, signed):
     payload = _consent_payload()
     payload.pop("accepted_terms")
     assert client.post("/api/requests", json=payload).status_code == 400
+
+
+# ── Свободное время под выбранные услуги ─────────────────────────────────────
+
+SERVICE_ID = "11111111-1111-1111-1111-111111111111"
+ITEM_ID = "22222222-2222-2222-2222-222222222222"
+
+
+@pytest.fixture
+def open_service(monkeypatch):
+    """Действующий сервис с расписанием 9–18 и окном в час; услуги подменяются."""
+    from datetime import datetime, time, timedelta, timezone
+
+    async def _service(_id):
+        return {
+            "idservice": SERVICE_ID,
+            "service_number": "+79990000000",
+            "paid_until": datetime.now(timezone.utc) + timedelta(days=10),
+        }
+
+    async def _schedule(_id):
+        return {
+            "work_from": time(9), "work_to": time(18), "slot_minutes": 60,
+            "lunch_from": None, "lunch_to": None,
+        }
+
+    asked = {}
+
+    async def _free(_svc, minutes=None):
+        asked["minutes"] = minutes
+        return {}
+
+    monkeypatch.setattr(app_module.db, "get_service", _service)
+    monkeypatch.setattr(app_module.db, "get_schedule", _schedule)
+    monkeypatch.setattr(app_module.db, "free_slots", _free)
+
+    def _items(*rows):
+        async def _get(_idservice, _ids):
+            return list(rows)
+        monkeypatch.setattr(app_module.db, "get_catalog_items", _get)
+
+    return _items, asked
+
+
+def test_slots_follow_the_selected_services(client, open_service):
+    """Окна считаются по верхней границе суммы выбранных услуг."""
+    items, asked = open_service
+    items({"duration_max_minutes": 240}, {"duration_max_minutes": 60})
+    response = client.get(f"/api/service/{SERVICE_ID}/slots", params={"items": ITEM_ID})
+    assert response.status_code == 200
+    assert response.json() == {"slots": {}, "too_long": None}
+    assert asked["minutes"] == 300
+
+
+def test_job_longer_than_a_day_gets_the_phone(client, open_service):
+    items, asked = open_service
+    items({"duration_max_minutes": 20 * 60})
+    body = client.get(f"/api/service/{SERVICE_ID}/slots", params={"items": ITEM_ID}).json()
+    assert body["slots"] == {}
+    assert "+7 (999) 000-00-00" in body["too_long"]
+    assert "minutes" not in asked, "искать окна под невозможную работу незачем"
+
+
+def test_slots_reject_garbage_ids(client, open_service):
+    response = client.get(f"/api/service/{SERVICE_ID}/slots", params={"items": "1,2"})
+    assert response.status_code == 400

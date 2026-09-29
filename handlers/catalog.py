@@ -1,8 +1,8 @@
 """
 handlers/catalog.py — услуги сервиса.
 
-Список услуг у каждого сервиса свой: при регистрации копируется шаблонный
-набор, дальше управляющий правит его под себя. Администраторы каталог не
+Список услуг у каждого сервиса свой: первые управляющий вводит при
+регистрации, дальше правит их здесь. Администраторы каталог не
 меняют — состав услуг это про то, чем сервис вообще занимается, а не про
 повседневную обработку заявок.
 """
@@ -20,7 +20,12 @@ import render
 from database import db
 from handlers.common import require_owner_service, show_main_menu
 from validators import (
-    ValidationError, h, validate_price, validate_service_title, validate_uuid
+    ValidationError,
+    h,
+    validate_duration,
+    validate_price,
+    validate_service_title,
+    validate_uuid,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,6 +37,7 @@ MAX_CATALOG_ITEMS = 30
 class ServiceCatalog(StatesGroup):
     title = State()
     price = State()
+    duration = State()
 
 
 class ServicePrice(StatesGroup):
@@ -39,9 +45,22 @@ class ServicePrice(StatesGroup):
     value = State()
 
 
+class ServiceDuration(StatesGroup):
+    """Правка времени работы уже заведённой услуги."""
+    value = State()
+
+
+# Общий с регистрацией: там управляющий отвечает на тот же вопрос
+DURATION_PROMPT = (
+    "Сколько часов занимает работа? Например <i>2-4</i> или <i>3</i>.\n"
+    "Запись займёт бокс на верхнюю границу, чтобы следующая машина не ждала.\n"
+    "Отправьте <b>-</b>, если время не указывать: запись займёт одно окно расписания."
+)
+
+
 def _catalog_text(svc, items) -> str:
     lines = "".join(
-        f"{i}. {render.titled_price(h(item['title']), item['price_rub'])}\n"
+        f"{i}. {render.titled_item(h(item['title']), item)}\n"
         for i, item in enumerate(items, 1)
     )
     return (
@@ -53,12 +72,17 @@ def _catalog_text(svc, items) -> str:
 
 
 def _item_text(item) -> str:
-    """Без цены строку о ней не выводим — задать её можно кнопкой ниже."""
+    """Без цены и времени строк о них не выводим — задать их можно кнопками ниже."""
     price = render.price_label(item["price_rub"])
-    text = f"🔧 <b>{h(item['title'])}</b>"
+    duration = render.duration_label(*(render.item_duration(item) or (None, None)))
+    lines = [f"🔧 <b>{h(item['title'])}</b>"]
+    if price or duration:
+        lines.append("")
     if price:
-        text += f"\n\n💰 Цена: {price}"
-    return text
+        lines.append(f"💰 Цена: {price}")
+    if duration:
+        lines.append(f"⏱ Время работы: {duration}")
+    return "\n".join(lines)
 
 
 async def _show_catalog(message: Message, svc, *, edit: bool = False) -> None:
@@ -115,7 +139,9 @@ async def add_start(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(ServiceCatalog.title, F.text == kb.BTN_CANCEL)
 @router.message(ServiceCatalog.price, F.text == kb.BTN_CANCEL)
+@router.message(ServiceCatalog.duration, F.text == kb.BTN_CANCEL)
 @router.message(ServicePrice.value, F.text == kb.BTN_CANCEL)
+@router.message(ServiceDuration.value, F.text == kb.BTN_CANCEL)
 async def add_cancel(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
     await show_main_menu(message, state, greeting="Отменено.")
@@ -159,8 +185,29 @@ async def add_price(message: Message, state: FSMContext) -> None:
         await message.answer(f"❌ {exc}")
         return
 
+    await state.update_data(new_price=price)
+    await state.set_state(ServiceCatalog.duration)
+    await message.answer(DURATION_PROMPT, reply_markup=kb.kb_cancel())
+
+
+@router.message(ServiceCatalog.duration)
+async def add_duration(message: Message, state: FSMContext) -> None:
+    svc = await require_owner_service(message, state)
+    if svc is None:
+        await state.set_state(None)
+        await show_main_menu(message, state)
+        return
+
+    try:
+        duration = validate_duration(message.text)
+    except ValidationError as exc:
+        await message.answer(f"❌ {exc}")
+        return
+
     data = await state.get_data()
-    item = await db.add_catalog_item(str(svc["idservice"]), data["new_title"], price)
+    item = await db.add_catalog_item(
+        str(svc["idservice"]), data["new_title"], data["new_price"], duration
+    )
     if item is None:
         await state.set_state(None)
         await show_main_menu(message, state, greeting="❌ Такая услуга уже есть в списке.")
@@ -266,7 +313,66 @@ async def price_finish(message: Message, state: FSMContext) -> None:
         await show_main_menu(
             message,
             state,
-            greeting="✅ " + render.titled_price(h(item["title"]), item["price_rub"]),
+            greeting="✅ " + render.titled_item(h(item["title"]), item),
+        )
+    await _show_catalog(message, svc)
+
+
+@router.callback_query(F.data.startswith("svctime:"))
+async def duration_start(callback: CallbackQuery, state: FSMContext) -> None:
+    svc = await require_owner_service(callback.message, state, callback.from_user.id)
+    if svc is None:
+        await callback.answer()
+        return
+
+    idcatalog = _parse_idcatalog(callback)
+    if idcatalog is None:
+        await callback.answer("❌ Услуга не найдена.", show_alert=True)
+        return
+
+    item = await db.get_catalog_item(str(svc["idservice"]), idcatalog)
+    if item is None:
+        await callback.answer("❌ Услуга уже удалена.", show_alert=True)
+        await _show_catalog(callback.message, svc, edit=True)
+        return
+
+    await state.update_data(duration_for=idcatalog)
+    await state.set_state(ServiceDuration.value)
+    current = render.duration_label(*(render.item_duration(item) or (None, None)))
+    await callback.message.answer(
+        f"Услуга: <b>{h(item['title'])}</b>\n"
+        + (f"Сейчас: {current}\n" if current else "")
+        + "\n" + DURATION_PROMPT,
+        reply_markup=kb.kb_cancel(),
+    )
+    await callback.answer()
+
+
+@router.message(ServiceDuration.value)
+async def duration_finish(message: Message, state: FSMContext) -> None:
+    svc = await require_owner_service(message, state)
+    if svc is None:
+        await state.set_state(None)
+        await show_main_menu(message, state)
+        return
+
+    try:
+        duration = validate_duration(message.text)
+    except ValidationError as exc:
+        await message.answer(f"❌ {exc}")
+        return
+
+    data = await state.get_data()
+    item = await db.set_catalog_item_duration(
+        str(svc["idservice"]), data["duration_for"], duration
+    )
+    await state.set_state(None)
+
+    if item is None:
+        await show_main_menu(message, state, greeting="❌ Услуга уже удалена.")
+    else:
+        await show_main_menu(
+            message, state, greeting="✅ " + render.titled_item(h(item["title"]), item)
         )
     await _show_catalog(message, svc)
 

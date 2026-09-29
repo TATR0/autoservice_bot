@@ -40,12 +40,18 @@ from handlers import (
     schedule, start,
 )
 from handlers import subscription as subscription_handlers
-from handlers.requests import RequestRejected, create_request_flow
+from handlers.requests import RequestRejected, create_request_flow, job_minutes
 from middlewares import ErrorLoggingMiddleware, UserMiddleware
 from notifications import send_reminders_forever, send_subscription_reminders
 from retention import purge_forever
 from ratelimit import DatabaseGate, RateLimiter, enforce
-from validators import ValidationError, format_phone, validate_uuid
+import slots
+from validators import (
+    ValidationError,
+    format_phone,
+    validate_catalog_ids,
+    validate_uuid,
+)
 from webapp_auth import InitDataError, verify_init_data
 
 logging.basicConfig(
@@ -300,10 +306,11 @@ async def api_services(
     ]
 
 
-@app.get("/api/service/{service_id}")
-async def api_service(request: Request, service_id: str):
-    enforce(_lookup_limiter, request)
+async def _bookable_service(service_id: str):
+    """Сервис, в который сейчас можно записаться, иначе HTTP-ошибка.
 
+    Вызывается под _db_gate.
+    """
     # Без проверки формата asyncpg бросит DataError на мусорном id,
     # и клиент получит 500 вместо понятного «сервис не найден»
     try:
@@ -311,20 +318,36 @@ async def api_service(request: Request, service_id: str):
     except ValidationError:
         raise HTTPException(status_code=404, detail="Сервис не найден")
 
-    async with _db_gate:
-        svc = await db.get_service(service_id)
-        if not svc:
-            raise HTTPException(status_code=404, detail="Сервис не найден")
+    svc = await db.get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail="Сервис не найден")
 
-        # Просрочка отключает продажу нового времени, а не сам сервис.
-        # 403, а не 404: «не найден» — неправда, а неправда стоит вечера отладки
-        if not subscription.is_active(svc["paid_until"], datetime.now(timezone.utc)):
-            raise HTTPException(
-                status_code=403,
-                detail=config.CLOSED_FOR_BOOKING.format(
-                    phone=format_phone(svc["service_number"])
-                ),
-            )
+    # Просрочка отключает продажу нового времени, а не сам сервис.
+    # 403, а не 404: «не найден» — неправда, а неправда стоит вечера отладки
+    if not subscription.is_active(svc["paid_until"], datetime.now(timezone.utc)):
+        raise HTTPException(
+            status_code=403,
+            detail=config.CLOSED_FOR_BOOKING.format(
+                phone=format_phone(svc["service_number"])
+            ),
+        )
+    return svc
+
+
+def _slots_json(free) -> dict:
+    return {
+        day.isoformat(): [moment.strftime("%H:%M") for moment in times]
+        for day, times in free.items()
+    }
+
+
+@app.get("/api/service/{service_id}")
+async def api_service(request: Request, service_id: str):
+    enforce(_lookup_limiter, request)
+
+    async with _db_gate:
+        svc = await _bookable_service(service_id)
+        service_id = str(svc["idservice"])
 
         items = await db.get_catalog(service_id)
 
@@ -337,19 +360,50 @@ async def api_service(request: Request, service_id: str):
         "city": svc["city"],
         "location_service": svc["location_service"],
         "timezone": svc["timezone"],
-        "slots": {
-            day.isoformat(): [moment.strftime("%H:%M") for moment in times]
-            for day, times in free.items()
-        },
+        "slots": _slots_json(free),
         "catalog": [
             {
                 "idcatalog": str(c["idcatalog"]),
                 "title": c["title"],
                 "price_rub": c["price_rub"],
+                "duration_min_minutes": c["duration_min_minutes"],
+                "duration_max_minutes": c["duration_max_minutes"],
             }
             for c in items
         ],
     }
+
+
+@app.get("/api/service/{service_id}/slots")
+async def api_service_slots(
+    request: Request, service_id: str, items: str = Query("", max_length=2000)
+):
+    """
+    Свободное время под выбранные услуги.
+
+    Длинная работа занимает несколько окон подряд, поэтому набор начал
+    зависит от выбора: форма спрашивает его заново при каждой смене услуг.
+    """
+    enforce(_lookup_limiter, request)
+    try:
+        idcatalogs = validate_catalog_ids([i for i in items.split(",") if i])
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    async with _db_gate:
+        svc = await _bookable_service(service_id)
+        chosen = await db.get_catalog_items(str(svc["idservice"]), idcatalogs)
+        minutes = job_minutes(chosen)
+        if slots.too_long_for_day(await db.get_schedule(str(svc["idservice"])), minutes):
+            return {
+                "slots": {},
+                "too_long": config.TOO_LONG_FOR_ONLINE.format(
+                    phone=format_phone(svc["service_number"])
+                ),
+            }
+        free = await db.free_slots(svc, minutes=minutes)
+
+    return {"slots": _slots_json(free), "too_long": None}
 
 
 class RequestPayload(BaseModel):

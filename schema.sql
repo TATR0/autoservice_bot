@@ -67,8 +67,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_unique ON admins (idservice, iduser
 
 -- ── Каталог услуг сервиса ────────────────────────────────────────────────
 -- Список услуг у каждого сервиса свой: детейлинг-студии не нужны «Ремонт
--- двигателя» и «Коробка передач». При регистрации копируется шаблонный
--- набор, дальше управляющий правит его сам.
+-- двигателя» и «Коробка передач». Шаблонного набора нет: управляющий вводит
+-- свои услуги прямо при регистрации.
 CREATE TABLE IF NOT EXISTS service_catalog (
     idcatalog   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     idservice   uuid        NOT NULL REFERENCES services(idservice) ON DELETE CASCADE,
@@ -95,6 +95,22 @@ ALTER TABLE service_catalog
 ALTER TABLE service_catalog DROP CONSTRAINT IF EXISTS chk_catalog_price;
 ALTER TABLE service_catalog ADD  CONSTRAINT chk_catalog_price
     CHECK (price_rub IS NULL OR price_rub BETWEEN 0 AND 10000000);
+
+-- Время работы «2–4 ч», в минутах. Запись занимает бокс на верхнюю границу:
+-- пусть он освободится раньше, чем две машины приедут на одно место. Обе
+-- границы NULL — время не указано, услуга занимает одно окно расписания
+ALTER TABLE service_catalog
+    ADD COLUMN IF NOT EXISTS duration_min_minutes int,
+    ADD COLUMN IF NOT EXISTS duration_max_minutes int;
+
+ALTER TABLE service_catalog DROP CONSTRAINT IF EXISTS chk_catalog_duration;
+ALTER TABLE service_catalog ADD  CONSTRAINT chk_catalog_duration
+    CHECK (
+        (duration_min_minutes IS NULL AND duration_max_minutes IS NULL)
+        OR (duration_min_minutes > 0
+            AND duration_max_minutes >= duration_min_minutes
+            AND duration_max_minutes <= 20160)
+    );
 
 
 -- ── Расписание сервиса ───────────────────────────────────────────────────────
@@ -194,6 +210,11 @@ ALTER TABLE requests ADD COLUMN IF NOT EXISTS reminder_sent_at timestamptz;
 -- имени, телефона, машины и комментария в ней больше нет. Ставится сроком
 -- хранения (PII_RETENTION_DAYS) или просьбой самого клиента
 ALTER TABLE requests ADD COLUMN IF NOT EXISTS anonymized_at timestamptz;
+
+-- Когда бокс освободится. Работа на четыре часа держит все окна до своего
+-- конца, а не только то, в котором началась. NULL — заявки, созданные до
+-- появления длительности: они занимают одно окно, как занимали всегда
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS ends_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS idx_requests_service ON requests (idservice);
 CREATE INDEX IF NOT EXISTS idx_requests_client  ON requests (idclienttg);

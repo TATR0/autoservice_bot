@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 
 import config
-from database import db
+from database import CatalogEntry, db
 
 # Telegram ID, которого нет у живых пользователей
 TEST_OWNER_ID = 999_000_001
@@ -78,6 +78,14 @@ async def _forget_test_owner() -> None:
             await conn.execute("DELETE FROM services WHERE idservice=$1", idservice)
 
 
+# Каталог тестового сервиса. Шаблона при регистрации больше нет, поэтому
+# список задают тесты: несколько услуг, чтобы было что выбирать и удалять
+TEST_CATALOG = [
+    CatalogEntry(title)
+    for title in ("Диагностика", "Замена масла", "Шины и диски", "Тормозная система", "Другое")
+]
+
+
 @pytest_asyncio.fixture
 async def service(db_ready) -> str:
     """Временный сервис. Удаляется вместе с каталогом и заявками после теста."""
@@ -88,6 +96,7 @@ async def service(db_ready) -> str:
         city="Тестоград",
         address="ул. Тестовая, 1",
         owner_tg_id=TEST_OWNER_ID,
+        catalog=TEST_CATALOG,
     )
     yield idservice
     async with db.pool.acquire() as conn:
@@ -105,6 +114,7 @@ async def make_request(db_ready):
         *,
         client_uid: str | None = None,
         client_tg_id: int = TEST_OWNER_ID,
+        ends_at=None,
     ):
         item = await db.add_catalog_item(idservice, f"Работа {uuid.uuid4().hex[:6]}")
         request, _ = await db.create_request(
@@ -122,6 +132,7 @@ async def make_request(db_ready):
             }],
             comment="",
             scheduled_at=moment,
+            ends_at=ends_at,
             client_uid=client_uid or str(uuid.uuid4()),
         )
         return request

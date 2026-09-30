@@ -187,6 +187,71 @@ def validate_duration(raw: object) -> tuple[int, int] | None:
     return low, high
 
 
+_PART_TIME_RE = re.compile(r"\d\s*(ч|час|мин)", re.IGNORECASE)
+_PART_PRICE_RE = re.compile(r"(₽|руб|\d\s*р\.?$)", re.IGNORECASE)
+_PART_PREFIX_RE = re.compile(r"^(от|до)\s+", re.IGNORECASE)
+
+
+def parse_service_line(raw: object) -> tuple[str, int | None, tuple[int, int] | None]:
+    """
+    Услуга одной строкой: «Полировка, от 2000р, от 2 часов».
+
+    Название — до первой запятой. Дальше цена и время в любом порядке: что
+    из них что, видно по единицам («р», «₽» — цена; «ч», «мин» — время). Без
+    единиц сначала идёт цена, потом время, как в примере. «от» и «до» перед
+    числом ничего не меняют: цену клиент и так видит с «от», а бокс занимается
+    на верхнюю границу времени.
+    """
+    parts = [part.strip() for part in re.split(r"[,;]", str(raw or ""))]
+    title = validate_service_title(parts[0])
+
+    price: int | None = None
+    duration: tuple[int, int] | None = None
+    seen_price = seen_time = False
+    for part in parts[1:]:
+        value = _PART_PREFIX_RE.sub("", part)
+        if _PART_TIME_RE.search(value):
+            kind = "time"
+        elif _PART_PRICE_RE.search(value):
+            kind = "price"
+        elif not seen_price:
+            kind = "price"
+        elif not seen_time:
+            kind = "time"
+        else:
+            raise ValidationError(
+                f"«{part}»: лишнее. После названия — только цена и время работы."
+            )
+
+        if kind == "price":
+            if seen_price:
+                raise ValidationError("Цена указана дважды.")
+            price, seen_price = validate_price(value), True
+        else:
+            if seen_time:
+                raise ValidationError("Время работы указано дважды.")
+            duration, seen_time = validate_duration(value), True
+    return title, price, duration
+
+
+def parse_service_lines(
+    raw: object,
+) -> list[tuple[str, int | None, tuple[int, int] | None]]:
+    """Несколько услуг одним сообщением, по одной на строку. Пустые строки пропускаются."""
+    lines = [line for line in str(raw or "").splitlines() if line.strip()]
+    if not lines:
+        raise ValidationError("Введите хотя бы одну услугу.")
+    parsed = []
+    for number, line in enumerate(lines, 1):
+        try:
+            parsed.append(parse_service_line(line))
+        except ValidationError as exc:
+            if len(lines) == 1:
+                raise
+            raise ValidationError(f"Строка {number} «{line.strip()}»: {exc}") from None
+    return parsed
+
+
 _TIME_RANGE_RE = re.compile(
     r"^(\d{1,2})(?::(\d{2}))?\s*[-—–]\s*(\d{1,2})(?::(\d{2}))?$"
 )

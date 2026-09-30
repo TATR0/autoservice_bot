@@ -23,7 +23,7 @@ import keyboards as kb
 import render
 import subscription
 from database import CatalogEntry, db
-from handlers.catalog import DURATION_PROMPT, MAX_CATALOG_ITEMS
+from handlers.catalog import MAX_CATALOG_ITEMS
 from handlers.common import set_active_service, show_main_menu
 from notifications import alert_owners
 from validators import (
@@ -32,9 +32,7 @@ from validators import (
     h,
     normalize_city,
     normalize_phone,
-    validate_duration,
-    validate_price,
-    validate_service_title,
+    parse_service_lines,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,10 +46,17 @@ class RegService(StatesGroup):
     phone = State()
     city = State()
     address = State()
-    item_title = State()
-    item_price = State()
-    item_duration = State()
-    more_items = State()
+    items = State()
+
+
+SERVICES_HINT = (
+    "Пришлите услуги одним сообщением, каждую с новой строки: название, "
+    "цена и время работы через запятую. Цену и время можно не писать.\n\n"
+    "<i>Полировка кузова, от 2000р, 2-4 ч\n"
+    "Химчистка салона, 5000р, 3 ч\n"
+    "Дубликат ключа</i>\n\n"
+    "Позже всё можно поправить в «🔧 Услуги»."
+)
 
 
 async def _announce(message: Message, svc) -> None:
@@ -218,51 +223,13 @@ async def reg_address(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(address=address, items=[])
-    await state.set_state(RegService.item_title)
+    await state.set_state(RegService.items)
     await message.answer(
         f"<b>Шаг 5/{TOTAL_STEPS}.</b> Какие <b>услуги</b> вы делаете?\n"
-        "Клиент выберет их при записи. Добавим по одной: цену и время работы "
-        "спрошу следом, позже всё можно поправить в «🔧 Услуги».\n\n"
-        "Введите название первой услуги, например: <i>Полировка кузова</i>",
+        "Клиент выберет их при записи.\n\n"
+        f"{SERVICES_HINT}",
         reply_markup=kb.kb_cancel(),
     )
-
-
-@router.message(RegService.item_title)
-async def reg_item_title(message: Message, state: FSMContext) -> None:
-    try:
-        title = validate_service_title(message.text)
-    except ValidationError as exc:
-        await message.answer(f"❌ {exc}\nПопробуйте ещё раз:")
-        return
-
-    data = await state.get_data()
-    taken = {item[0].strip().lower() for item in data.get("items", [])}
-    if title.strip().lower() in taken:
-        await message.answer("❌ Такая услуга уже есть в списке. Введите другую:")
-        return
-
-    await state.update_data(item_title=title)
-    await state.set_state(RegService.item_price)
-    await message.answer(
-        f"Услуга: <b>{h(title)}</b>\n\n"
-        "Введите цену в рублях — например <i>3000</i>. Клиент увидит «от 3 000 ₽».\n"
-        "Отправьте <b>-</b>, если цену показывать не нужно.",
-        reply_markup=kb.kb_cancel(),
-    )
-
-
-@router.message(RegService.item_price)
-async def reg_item_price(message: Message, state: FSMContext) -> None:
-    try:
-        price = validate_price(message.text)
-    except ValidationError as exc:
-        await message.answer(f"❌ {exc}")
-        return
-
-    await state.update_data(item_price=price)
-    await state.set_state(RegService.item_duration)
-    await message.answer(DURATION_PROMPT, reply_markup=kb.kb_cancel())
 
 
 def _items_text(items: list) -> str:
@@ -272,46 +239,12 @@ def _items_text(items: list) -> str:
     )
 
 
-@router.message(RegService.item_duration)
-async def reg_item_duration(message: Message, state: FSMContext) -> None:
-    try:
-        duration = validate_duration(message.text)
-    except ValidationError as exc:
-        await message.answer(f"❌ {exc}")
-        return
-
-    data = await state.get_data()
-    low, high = duration or (None, None)
-    # Список, а не кортеж: данные FSM хранятся в JSON
-    items = [*data.get("items", []), [data["item_title"], data["item_price"], low, high]]
-    await state.update_data(items=items)
-    await state.set_state(RegService.more_items)
-
-    can_add = len(items) < MAX_CATALOG_ITEMS
-    await message.answer(
-        f"<b>Ваши услуги:</b>\n{_items_text(items)}\n"
-        + ("Добавить ещё одну или закончить регистрацию?" if can_add
-           else "Больше услуг сразу добавить нельзя. Заканчиваем регистрацию?"),
-        reply_markup=kb.kb_reg_services(can_add=can_add),
-    )
-
-
-@router.message(RegService.more_items, F.text == kb.BTN_MORE_SERVICE)
-async def reg_more_items(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    if len(data.get("items", [])) >= MAX_CATALOG_ITEMS:
-        await message.answer(
-            "Больше услуг сразу добавить нельзя.",
-            reply_markup=kb.kb_reg_services(can_add=False),
-        )
-        return
-    await state.set_state(RegService.item_title)
-    await message.answer("Введите название следующей услуги:", reply_markup=kb.kb_cancel())
-
-
-@router.message(RegService.more_items, F.text == kb.BTN_SERVICES_DONE)
+@router.message(RegService.items, F.text == kb.BTN_SERVICES_DONE)
 async def reg_finish(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
+    if not data.get("items"):
+        await message.answer(f"Сначала добавьте хотя бы одну услугу.\n\n{SERVICES_HINT}")
+        return
     await state.set_state(None)
 
     try:
@@ -344,12 +277,43 @@ async def reg_finish(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(RegService.more_items)
-async def reg_more_items_unknown(message: Message, state: FSMContext) -> None:
+@router.message(RegService.items)
+async def reg_items(message: Message, state: FSMContext) -> None:
+    try:
+        parsed = parse_service_lines(message.text)
+    except ValidationError as exc:
+        await message.answer(f"❌ {exc}\n\n{SERVICES_HINT}")
+        return
+
     data = await state.get_data()
+    items = list(data.get("items", []))
+    taken = {item[0].strip().lower() for item in items}
+    for title, _, _ in parsed:
+        key = title.strip().lower()
+        if key in taken:
+            await message.answer(
+                f"❌ Услуга «{h(title)}» уже есть в списке. Остальные из этого "
+                "сообщения тоже не добавлены: пришлите их без неё."
+            )
+            return
+        taken.add(key)
+
+    if len(items) + len(parsed) > MAX_CATALOG_ITEMS:
+        await message.answer(
+            f"❌ Больше {MAX_CATALOG_ITEMS} услуг сразу добавить нельзя. "
+            f"В списке уже {len(items)}."
+        )
+        return
+
+    # Списки, а не кортежи: данные FSM хранятся в JSON
+    items += [
+        [title, price, *(duration or (None, None))]
+        for title, price, duration in parsed
+    ]
+    await state.update_data(items=items)
     await message.answer(
-        "Нажмите кнопку ниже: добавить ещё услугу или закончить.",
-        reply_markup=kb.kb_reg_services(
-            can_add=len(data.get("items", [])) < MAX_CATALOG_ITEMS
-        ),
+        f"<b>Ваши услуги:</b>\n{_items_text(items)}\n"
+        "Если всё, нажмите «✅ Готово». Если нет, пришлите следующие услуги "
+        "так же, строками.",
+        reply_markup=kb.kb_reg_services(),
     )

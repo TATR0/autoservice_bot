@@ -34,7 +34,6 @@ BTN_SWITCH         = "🔄 Сменить сервис"
 BTN_LEAVE          = "🚪 Уйти из администраторов"
 BTN_DELETE_SERVICE = "🗑 Удалить сервис"
 BTN_CANCEL         = "❌ Отмена"
-BTN_MORE_SERVICE   = "➕ Ещё услуга"
 BTN_SERVICES_DONE  = "✅ Готово"
 
 
@@ -129,12 +128,11 @@ def kb_cancel() -> ReplyKeyboardMarkup:
     )
 
 
-def kb_reg_services(*, can_add: bool) -> ReplyKeyboardMarkup:
-    """Регистрация: добавить ещё услугу или закончить."""
-    first = [KeyboardButton(text=BTN_MORE_SERVICE)] if can_add else []
+def kb_reg_services() -> ReplyKeyboardMarkup:
+    """Регистрация: услуги добавлены, можно закончить."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            first + [KeyboardButton(text=BTN_SERVICES_DONE)],
+            [KeyboardButton(text=BTN_SERVICES_DONE)],
             [KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,

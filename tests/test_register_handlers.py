@@ -108,24 +108,68 @@ async def test_service_is_created_with_owners_own_services(registered):
     ]
 
 
-async def test_services_step_collects_title_price_and_duration(registered):
+async def test_services_come_in_one_message(registered):
+    """Все услуги одним сообщением, по строке на услугу."""
     state = FakeState({"items": []})
-    await register.reg_item_title(FakeMessage("Дубликат ключа"), state)
-    await register.reg_item_price(FakeMessage("1 500"), state)
-    message = FakeMessage("1-2")
-    await register.reg_item_duration(message, state)
+    message = FakeMessage("Дубликат ключа, 1 500, 1-2\nПрошивка чипа")
+    await register.reg_items(message, state)
 
-    assert state._data["items"] == [["Дубликат ключа", 1500, 60, 120]]
+    assert state._data["items"] == [
+        ["Дубликат ключа", 1500, 60, 120],
+        ["Прошивка чипа", None, None, None],
+    ]
     assert "Дубликат ключа — 1–2 ч, от 1 500 ₽" in message.answers[-1]
 
 
-async def test_same_service_twice_is_refused(registered):
+async def test_next_message_adds_to_the_list(registered):
     state = FakeState({"items": [["Дубликат ключа", None, None, None]]})
-    message = FakeMessage("дубликат ключа")
-    await register.reg_item_title(message, state)
+    await register.reg_items(FakeMessage("Полировка, от 2000р, от 2 часов"), state)
 
-    assert "item_title" not in state._data
+    assert state._data["items"] == [
+        ["Дубликат ключа", None, None, None],
+        ["Полировка", 2000, 120, 120],
+    ]
+
+
+async def test_bad_line_adds_nothing(registered):
+    """Ошибка в одной строке не добавляет и остальные: иначе непонятно, что переслать."""
+    state = FakeState({"items": []})
+    message = FakeMessage("Полировка, 2000\nХимчистка, дорого")
+    await register.reg_items(message, state)
+
+    assert state._data["items"] == []
+    assert "Строка 2" in message.answers[-1]
+
+
+@pytest.mark.parametrize("text", [
+    "дубликат ключа",
+    "Полировка\nполировка",
+])
+async def test_same_service_twice_is_refused(registered, text):
+    state = FakeState({"items": [["Дубликат ключа", None, None, None]]})
+    message = FakeMessage(text)
+    await register.reg_items(message, state)
+
+    assert state._data["items"] == [["Дубликат ключа", None, None, None]]
     assert message.answers[-1].startswith("❌")
+
+
+async def test_too_many_services_are_refused(registered):
+    state = FakeState({"items": [[f"Услуга {i}", None, None, None]
+                                 for i in range(register.MAX_CATALOG_ITEMS)]})
+    message = FakeMessage("Ещё одна")
+    await register.reg_items(message, state)
+
+    assert len(state._data["items"]) == register.MAX_CATALOG_ITEMS
+    assert message.answers[-1].startswith("❌")
+
+
+async def test_done_without_services_does_not_register(registered):
+    message = FakeMessage()
+    await register.reg_finish(message, _state(items=[]))
+
+    assert created == []
+    assert "хотя бы одну" in message.answers[-1]
 
 
 async def test_new_service_is_announced_to_the_bot_owner(registered):

@@ -402,3 +402,47 @@ def test_duration_can_be_left_empty(raw):
 def test_duration_rejects_nonsense(raw):
     with pytest.raises(ValidationError):
         validate_duration(raw)
+
+
+# ── Услуга одной строкой ─────────────────────────────────────────────────────
+
+from validators import parse_service_line, parse_service_lines
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("Полировка, от 2000р, от 2 часов", ("Полировка", 2000, (120, 120))),
+    ("Полировка, 2000, 2-4", ("Полировка", 2000, (120, 240))),
+    ("Полировка, 2-4 ч, 2 000 ₽", ("Полировка", 2000, (120, 240))),
+    ("Полировка, 3 ч", ("Полировка", None, (180, 180))),
+    ("Полировка, 5000 руб", ("Полировка", 5000, None)),
+    ("Полировка, 1500", ("Полировка", 1500, None)),
+    ("Полировка, -, 2", ("Полировка", None, (120, 120))),
+    ("Дубликат ключа", ("Дубликат ключа", None, None)),
+    ("Замена масла; 1500р; 40-60 мин", ("Замена масла", 1500, (40, 60))),
+])
+def test_service_line_reads_title_price_and_time(raw, expected):
+    assert parse_service_line(raw) == expected
+
+
+@pytest.mark.parametrize("raw", [
+    "Полировка, 2000р, 3000р",      # две цены
+    "Полировка, 2 ч, 3 ч",          # два времени
+    "Полировка, 2000, 2, 5",        # лишнее
+    "Полировка, дорого",            # не число
+    "П, 2000",                      # короткое название
+])
+def test_service_line_rejects_what_it_cannot_read(raw):
+    with pytest.raises(ValidationError):
+        parse_service_line(raw)
+
+
+def test_service_lines_take_many_at_once_and_skip_blank_lines():
+    assert parse_service_lines("Полировка, 2000, 2-4\n\n  Мойка, 500р, 1 ч \n") == [
+        ("Полировка", 2000, (120, 240)),
+        ("Мойка", 500, (60, 60)),
+    ]
+
+
+def test_service_lines_name_the_broken_line():
+    with pytest.raises(ValidationError, match="Строка 2"):
+        parse_service_lines("Полировка, 2000\nМойка, дорого")

@@ -17,7 +17,7 @@ OWNER_ID = 999_000_001
 
 
 class FakeMessage:
-    def __init__(self, text: str = "✅ Готово"):
+    def __init__(self, text: str = "✅ Всё верно"):
         self.text = text
         self.from_user = type("User", (), {"id": OWNER_ID})()
         self.bot = object()
@@ -30,12 +30,13 @@ class FakeMessage:
 class FakeState:
     def __init__(self, data: dict):
         self._data = data
+        self.state = None
 
     async def get_data(self):
         return dict(self._data)
 
-    async def set_state(self, _state):
-        pass
+    async def set_state(self, state):
+        self.state = state
 
     async def update_data(self, **kwargs):
         self._data.update(kwargs)
@@ -118,7 +119,19 @@ async def test_services_come_in_one_message(registered):
         ["Дубликат ключа", 1500, 60, 120],
         ["Прошивка чипа", None, None, None],
     ]
-    assert "Дубликат ключа — 1–2 ч, от 1 500 ₽" in message.answers[-1]
+    # Шаг 6: цена и время отдельно, чтобы ошибку разбора было видно сразу
+    assert state.state == register.RegService.confirm
+    assert "Шаг 6/6" in message.answers[-1]
+    assert "💰 от 1 500 ₽" in message.answers[-1]
+    assert "⏱ 1–2 ч" in message.answers[-1]
+
+
+async def test_reset_empties_the_list_and_returns_to_step_5(registered):
+    state = FakeState({"items": [["Дубликат ключа", None, None, None]]})
+    await register.reg_items_reset(FakeMessage(register.kb.BTN_SERVICES_RESET), state)
+
+    assert state._data["items"] == []
+    assert state.state == register.RegService.items
 
 
 async def test_next_message_adds_to_the_list(registered):

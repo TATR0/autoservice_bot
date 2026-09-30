@@ -34,7 +34,8 @@ BTN_SWITCH         = "🔄 Сменить сервис"
 BTN_LEAVE          = "🚪 Уйти из администраторов"
 BTN_DELETE_SERVICE = "🗑 Удалить сервис"
 BTN_CANCEL         = "❌ Отмена"
-BTN_SERVICES_DONE  = "✅ Готово"
+BTN_SERVICES_OK    = "✅ Всё верно"
+BTN_SERVICES_RESET = "🔄 Ввести заново"
 
 
 def webapp_url(service_id: str | None = None) -> str | None:
@@ -129,10 +130,11 @@ def kb_cancel() -> ReplyKeyboardMarkup:
 
 
 def kb_reg_services() -> ReplyKeyboardMarkup:
-    """Регистрация: услуги добавлены, можно закончить."""
+    """Регистрация, проверка услуг: подтвердить список или набрать его заново."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_SERVICES_DONE)],
+            [KeyboardButton(text=BTN_SERVICES_OK)],
+            [KeyboardButton(text=BTN_SERVICES_RESET)],
             [KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,

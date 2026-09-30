@@ -419,6 +419,14 @@ from validators import parse_service_line, parse_service_lines
     ("Полировка, -, 2", ("Полировка", None, (120, 120))),
     ("Дубликат ключа", ("Дубликат ключа", None, None)),
     ("Замена масла; 1500р; 40-60 мин", ("Замена масла", 1500, (40, 60))),
+    # Точка перед числом — тоже разделитель, внутри числа — дробная
+    ("полировка, 5000 . 2", ("полировка", 5000, (120, 120))),
+    ("Полировка. 5000. 1.5", ("Полировка", 5000, (90, 90))),
+    ("Полировка | 5000 | 2", ("Полировка", 5000, (120, 120))),
+    ("Т.О. двигателя, 3000", ("Т.О. двигателя", 3000, None)),
+    # Цифры в названии, не в конце и не отдельным числом, разделителя не требуют
+    ("Замена масла 5W-40", ("Замена масла 5W-40", None, None)),
+    ("Покраска 2 деталей", ("Покраска 2 деталей", None, None)),
 ])
 def test_service_line_reads_title_price_and_time(raw, expected):
     assert parse_service_line(raw) == expected
@@ -433,6 +441,17 @@ def test_service_line_reads_title_price_and_time(raw, expected):
 ])
 def test_service_line_rejects_what_it_cannot_read(raw):
     with pytest.raises(ValidationError):
+        parse_service_line(raw)
+
+
+@pytest.mark.parametrize("raw", [
+    "полировка 5000 2",
+    "Полировка 5000р",
+    "Полировка 2-4 ч",
+])
+def test_service_line_without_separator_is_refused(raw):
+    """Без разделителя не угадываем, цена это, время или часть названия."""
+    with pytest.raises(ValidationError, match="запятыми"):
         parse_service_line(raw)
 
 

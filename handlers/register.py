@@ -1,9 +1,10 @@
 """
 handlers/register.py — FSM-регистрация автосервиса.
 
-Пять шагов: название, телефон, город, адрес и услуги. Шаблонного списка
-услуг нет: он не подходит никому целиком, а лишнее в нём клиент выбирает
-и едет не туда. Поэтому хотя бы одну услугу управляющий вводит сам.
+Шесть шагов: название, телефон, город, адрес, услуги и их проверка.
+Шаблонного списка услуг нет: он не подходит никому целиком, а лишнее в нём
+клиент выбирает и едет не туда. Поэтому хотя бы одну услугу управляющий
+вводит сам — строками, одним сообщением, — а потом сверяет, как бот их понял.
 
 Шага с вводом tg id администратора нет: владелец сразу становится первым
 админом, остальных подключает инвайт-ссылкой (handlers/admin_mgmt.py).
@@ -38,7 +39,7 @@ from validators import (
 logger = logging.getLogger(__name__)
 router = Router()
 
-TOTAL_STEPS = 5
+TOTAL_STEPS = 6
 
 
 class RegService(StatesGroup):
@@ -47,11 +48,13 @@ class RegService(StatesGroup):
     city = State()
     address = State()
     items = State()
+    confirm = State()
 
 
 SERVICES_HINT = (
     "Пришлите услуги одним сообщением, каждую с новой строки: название, "
-    "цена и время работы через запятую. Цену и время можно не писать.\n\n"
+    "цена и время работы через запятую. Цену и время можно не писать. "
+    "Цена — в рублях, время — в часах.\n\n"
     "<i>Полировка кузова, от 2000р, 2-4 ч\n"
     "Химчистка салона, 5000р, 3 ч\n"
     "Дубликат ключа</i>\n\n"
@@ -233,13 +236,32 @@ async def reg_address(message: Message, state: FSMContext) -> None:
 
 
 def _items_text(items: list) -> str:
-    return "".join(
-        f"{i}. {render.titled_price(h(title), price, (low, high) if low else None)}\n"
-        for i, (title, price, low, high) in enumerate(items, 1)
+    """
+    Список на проверку: цена и время отдельными строками, с пометками.
+    Так сразу видно, если бот понял строку не так, как задумано: цену
+    временем или часть названия ценой.
+    """
+    lines = []
+    for i, (title, price, low, high) in enumerate(items, 1):
+        lines.append(f"{i}. <b>{h(title)}</b>")
+        if price is not None:
+            lines.append(f"     💰 {render.price_label(price)}")
+        if low:
+            lines.append(f"     ⏱ {render.duration_label(low, high)}")
+    return "\n".join(lines)
+
+
+@router.message(RegService.confirm, F.text == kb.BTN_SERVICES_RESET)
+async def reg_items_reset(message: Message, state: FSMContext) -> None:
+    await state.update_data(items=[])
+    await state.set_state(RegService.items)
+    await message.answer(
+        f"Список очищен.\n\n<b>Шаг 5/{TOTAL_STEPS}.</b> {SERVICES_HINT}",
+        reply_markup=kb.kb_cancel(),
     )
 
 
-@router.message(RegService.items, F.text == kb.BTN_SERVICES_DONE)
+@router.message(RegService.confirm, F.text == kb.BTN_SERVICES_OK)
 async def reg_finish(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     if not data.get("items"):
@@ -277,8 +299,9 @@ async def reg_finish(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(RegService.items)
+@router.message(StateFilter(RegService.items, RegService.confirm))
 async def reg_items(message: Message, state: FSMContext) -> None:
+    """Шаг 5: услуги строками. На шаге 6 новые строки дописываются к списку."""
     try:
         parsed = parse_service_lines(message.text)
     except ValidationError as exc:
@@ -311,9 +334,12 @@ async def reg_items(message: Message, state: FSMContext) -> None:
         for title, price, duration in parsed
     ]
     await state.update_data(items=items)
+    await state.set_state(RegService.confirm)
     await message.answer(
-        f"<b>Ваши услуги:</b>\n{_items_text(items)}\n"
-        "Если всё, нажмите «✅ Готово». Если нет, пришлите следующие услуги "
-        "так же, строками.",
+        f"<b>Шаг 6/{TOTAL_STEPS}.</b> Проверьте <b>услуги</b>:\n\n"
+        f"{_items_text(items)}\n\n"
+        f"Всё так — нажмите «{kb.BTN_SERVICES_OK}».\n"
+        "Забыли услугу — пришлите её следующим сообщением, она добавится.\n"
+        f"Что-то не так — «{kb.BTN_SERVICES_RESET}».",
         reply_markup=kb.kb_reg_services(),
     )

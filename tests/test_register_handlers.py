@@ -168,3 +168,69 @@ async def test_announcement_failure_does_not_break_registration(registered, monk
 
     assert message.answers, "управляющий обязан увидеть карточку сервиса"
     assert message.answers[0].startswith("✅")
+
+
+# ── Второй сервис ────────────────────────────────────────────────────────────
+
+from datetime import datetime, timedelta, timezone
+
+import config
+
+
+@pytest.fixture
+def owner_has(monkeypatch):
+    """Подменяет сервисы управляющего: передаются их сроки подписки."""
+    def _set(*paid_until):
+        async def _count(_owner):
+            return len(paid_until)
+
+        async def _owned(_owner):
+            return [{"paid_until": p} for p in paid_until]
+
+        monkeypatch.setattr(register.db, "count_owned_services", _count)
+        monkeypatch.setattr(register.db, "get_owned_services", _owned)
+    monkeypatch.setattr(config, "FREE_PLAN_SERVICE_LIMIT", 1)
+    monkeypatch.setattr(config, "SUBSCRIPTION_ENFORCED", True)
+    return _set
+
+
+class StateSpy(FakeState):
+    def __init__(self):
+        super().__init__({})
+        self.state = None
+
+    async def set_state(self, state):
+        self.state = state
+
+
+async def test_second_service_is_sold_not_sent_to_support(owner_has):
+    """Лишний сервис — ещё одна подписка: регистрация идёт, а не упирается в поддержку."""
+    owner_has(datetime.now(timezone.utc) + timedelta(days=10))
+    message, state = FakeMessage("/register_service"), StateSpy()
+    await register.register_start(message, state)
+
+    assert state.state == register.RegService.name
+    assert "поддержк" not in message.answers[0]
+    assert "после оплаты подписки" in message.answers[0]
+
+
+async def test_unpaid_service_must_be_paid_first(owner_has):
+    """Не больше одного неоплаченного сервиса, иначе брошенные регистрации копятся."""
+    owner_has(datetime.now(timezone.utc) + timedelta(days=10), None)
+    message, state = FakeMessage("/register_service"), StateSpy()
+    await register.register_start(message, state)
+
+    assert state.state is None
+    assert "Оплатите" in message.answers[0]
+    assert "поддержк" not in message.answers[0]
+
+
+async def test_without_subscription_the_limit_still_goes_to_support(owner_has, monkeypatch):
+    """Пока подписка не введена, платить нечем — остаётся поддержка."""
+    owner_has(None)
+    monkeypatch.setattr(config, "SUBSCRIPTION_ENFORCED", False)
+    message, state = FakeMessage("/register_service"), StateSpy()
+    await register.register_start(message, state)
+
+    assert state.state is None
+    assert "поддержк" in message.answers[0]

@@ -10,6 +10,7 @@ handlers/register.py — FSM-регистрация автосервиса.
 """
 
 import logging
+from datetime import datetime, timezone
 
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
@@ -20,6 +21,7 @@ from aiogram.types import Message
 import config
 import keyboards as kb
 import render
+import subscription
 from database import CatalogEntry, db
 from handlers.catalog import DURATION_PROMPT, MAX_CATALOG_ITEMS
 from handlers.common import set_active_service, show_main_menu
@@ -79,22 +81,59 @@ async def _announce(message: Message, svc) -> None:
         logger.exception("Письмо владельцу бота о новом сервисе %s не ушло", svc["idservice"])
 
 
+async def _paid_extra_note(owner_tg_id: int) -> str | None:
+    """
+    Можно ли завести ещё один сервис сверх бесплатного. None — нельзя;
+    строка — можно, это предупреждение перед первым шагом.
+
+    Пока подписка действует, лишний сервис — это ещё одна подписка:
+    пробный период даётся человеку один раз, и новый сервис заработает после
+    оплаты. Упираться в поддержку тут незачем. Держим одно ограничение: не
+    больше одного неоплаченного сервиса за раз, иначе брошенные регистрации
+    копились бы без конца.
+    """
+    now = datetime.now(timezone.utc)
+    unpaid = [
+        svc for svc in await db.get_owned_services(owner_tg_id)
+        if not subscription.is_active(svc["paid_until"], now)
+    ]
+    if unpaid:
+        return None
+    return (
+        "ℹ️ Пробный период уже использован, поэтому новый сервис заработает "
+        f"после оплаты подписки: «{kb.BTN_SUBSCRIPTION}» в его меню.\n\n"
+    )
+
+
 @router.message(Command("register_service"), StateFilter(default_state))
 @router.message(F.text == kb.BTN_REGISTER, StateFilter(default_state))
 async def register_start(message: Message, state: FSMContext) -> None:
+    note = ""
     owned = await db.count_owned_services(message.from_user.id)
     if owned >= config.FREE_PLAN_SERVICE_LIMIT:
-        await message.answer(
-            f"⚠️ На текущем тарифе можно зарегистрировать "
-            f"{config.FREE_PLAN_SERVICE_LIMIT} сервис(а).\n"
-            f"У вас уже: {owned}.\n\n"
-            "Чтобы добавить ещё один, обратитесь к поддержке.",
-        )
-        return
+        if not config.SUBSCRIPTION_ENFORCED:
+            # Платить пока нечем — остаётся только поддержка
+            await message.answer(
+                f"⚠️ На текущем тарифе можно зарегистрировать "
+                f"{config.FREE_PLAN_SERVICE_LIMIT} сервис(а).\n"
+                f"У вас уже: {owned}.\n\n"
+                "Чтобы добавить ещё один, обратитесь к поддержке.",
+            )
+            return
+        note = await _paid_extra_note(message.from_user.id)
+        if note is None:
+            await message.answer(
+                "⚠️ У вас уже есть сервис без оплаченной подписки.\n\n"
+                f"Оплатите его подписку в «{kb.BTN_SUBSCRIPTION}», и можно будет "
+                "зарегистрировать следующий. Если этот сервис больше не нужен, "
+                f"удалите его: «{kb.BTN_DELETE_SERVICE}».",
+            )
+            return
 
     await state.set_state(RegService.name)
     await message.answer(
         "🚗 <b>Регистрация автосервиса</b>\n\n"
+        f"{note}"
         f"<b>Шаг 1/{TOTAL_STEPS}.</b> Введите <b>название</b> автосервиса:",
         reply_markup=kb.kb_cancel(),
     )

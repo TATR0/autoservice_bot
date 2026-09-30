@@ -169,11 +169,11 @@ async def test_same_service_twice_is_refused(registered, text):
 
 async def test_too_many_services_are_refused(registered):
     state = FakeState({"items": [[f"Услуга {i}", None, None, None]
-                                 for i in range(register.MAX_CATALOG_ITEMS)]})
+                                 for i in range(register.catalog.MAX_CATALOG_ITEMS)]})
     message = FakeMessage("Ещё одна")
     await register.reg_items(message, state)
 
-    assert len(state._data["items"]) == register.MAX_CATALOG_ITEMS
+    assert len(state._data["items"]) == register.catalog.MAX_CATALOG_ITEMS
     assert message.answers[-1].startswith("❌")
 
 

@@ -24,7 +24,7 @@ import keyboards as kb
 import render
 import subscription
 from database import CatalogEntry, db
-from handlers.catalog import MAX_CATALOG_ITEMS
+from handlers import catalog
 from handlers.common import set_active_service, show_main_menu
 from notifications import alert_owners
 from validators import (
@@ -51,15 +51,7 @@ class RegService(StatesGroup):
     confirm = State()
 
 
-SERVICES_HINT = (
-    "Пришлите услуги одним сообщением, каждую с новой строки: название, "
-    "цена и время работы через запятую. Цену и время можно не писать. "
-    "Цена — в рублях, время — в часах.\n\n"
-    "<i>Полировка кузова, от 2000р, 2-4 ч\n"
-    "Химчистка салона, 5000р, 3 ч\n"
-    "Дубликат ключа</i>\n\n"
-    "Позже всё можно поправить в «🔧 Услуги»."
-)
+SERVICES_HINT = f"{catalog.SERVICES_HINT}\n\nПозже всё можно поправить в «🔧 Услуги»."
 
 
 async def _announce(message: Message, svc) -> None:
@@ -235,22 +227,6 @@ async def reg_address(message: Message, state: FSMContext) -> None:
     )
 
 
-def _items_text(items: list) -> str:
-    """
-    Список на проверку: цена и время отдельными строками, с пометками.
-    Так сразу видно, если бот понял строку не так, как задумано: цену
-    временем или часть названия ценой.
-    """
-    lines = []
-    for i, (title, price, low, high) in enumerate(items, 1):
-        lines.append(f"{i}. <b>{h(title)}</b>")
-        if price is not None:
-            lines.append(f"     💰 {render.price_label(price)}")
-        if low:
-            lines.append(f"     ⏱ {render.duration_label(low, high)}")
-    return "\n".join(lines)
-
-
 @router.message(RegService.confirm, F.text == kb.BTN_SERVICES_RESET)
 async def reg_items_reset(message: Message, state: FSMContext) -> None:
     await state.update_data(items=[])
@@ -310,36 +286,19 @@ async def reg_items(message: Message, state: FSMContext) -> None:
 
     data = await state.get_data()
     items = list(data.get("items", []))
-    taken = {item[0].strip().lower() for item in items}
-    for title, _, _ in parsed:
-        key = title.strip().lower()
-        if key in taken:
-            await message.answer(
-                f"❌ Услуга «{h(title)}» уже есть в списке. Остальные из этого "
-                "сообщения тоже не добавлены: пришлите их без неё."
-            )
-            return
-        taken.add(key)
-
-    if len(items) + len(parsed) > MAX_CATALOG_ITEMS:
-        await message.answer(
-            f"❌ Больше {MAX_CATALOG_ITEMS} услуг сразу добавить нельзя. "
-            f"В списке уже {len(items)}."
-        )
+    error = catalog.new_items_error([item[0] for item in items], parsed)
+    if error:
+        await message.answer(error)
         return
 
-    # Списки, а не кортежи: данные FSM хранятся в JSON
-    items += [
-        [title, price, *(duration or (None, None))]
-        for title, price, duration in parsed
-    ]
+    items += catalog.as_items(parsed)
     await state.update_data(items=items)
     await state.set_state(RegService.confirm)
     await message.answer(
         f"<b>Шаг 6/{TOTAL_STEPS}.</b> Проверьте <b>услуги</b>:\n\n"
-        f"{_items_text(items)}\n\n"
+        f"{catalog.services_check_text(items)}\n\n"
         f"Всё так — нажмите «{kb.BTN_SERVICES_OK}».\n"
         "Забыли услугу — пришлите её следующим сообщением, она добавится.\n"
         f"Что-то не так — «{kb.BTN_SERVICES_RESET}».",
-        reply_markup=kb.kb_reg_services(),
+        reply_markup=kb.kb_services_check(),
     )

@@ -22,9 +22,9 @@ from handlers.common import require_owner_service, show_main_menu
 from validators import (
     ValidationError,
     h,
+    parse_service_lines,
     validate_duration,
     validate_price,
-    validate_service_title,
     validate_uuid,
 )
 
@@ -35,9 +35,8 @@ MAX_CATALOG_ITEMS = 30
 
 
 class ServiceCatalog(StatesGroup):
-    title = State()
-    price = State()
-    duration = State()
+    lines = State()
+    confirm = State()
 
 
 class ServicePrice(StatesGroup):
@@ -50,7 +49,65 @@ class ServiceDuration(StatesGroup):
     value = State()
 
 
-# Общий с регистрацией: там управляющий отвечает на тот же вопрос
+# Общие с регистрацией: там услуги вводятся и проверяются так же
+SERVICES_HINT = (
+    "Пришлите услуги одним сообщением, каждую с новой строки: название, "
+    "цена и время работы через запятую. Цену и время можно не писать. "
+    "Цена — в рублях, время — в часах.\n\n"
+    "<i>Полировка кузова, от 2000р, 2-4 ч\n"
+    "Химчистка салона, 5000р, 3 ч\n"
+    "Дубликат ключа</i>"
+)
+
+
+def services_check_text(items: list) -> str:
+    """
+    Список на проверку: цена и время отдельными строками, с пометками.
+    Так сразу видно, если бот понял строку не так, как задумано: цену
+    временем или часть названия ценой.
+    """
+    lines = []
+    for i, (title, price, low, high) in enumerate(items, 1):
+        lines.append(f"{i}. <b>{h(title)}</b>")
+        if price is not None:
+            lines.append(f"     💰 {render.price_label(price)}")
+        if low:
+            lines.append(f"     ⏱ {render.duration_label(low, high)}")
+    return "\n".join(lines)
+
+
+def new_items_error(taken: list[str], parsed: list) -> str | None:
+    """
+    Почему новые услуги нельзя добавить к списку taken. None — можно.
+
+    Сообщение не добавляется частично: иначе управляющему пришлось бы
+    выяснять, какие строки прошли, а какие нет.
+    """
+    seen = {title.strip().lower() for title in taken}
+    for title, _, _ in parsed:
+        key = title.strip().lower()
+        if key in seen:
+            return (
+                f"❌ Услуга «{h(title)}» уже есть в списке. Остальные из этого "
+                "сообщения тоже не добавлены: пришлите их без неё."
+            )
+        seen.add(key)
+    if len(taken) + len(parsed) > MAX_CATALOG_ITEMS:
+        return (
+            f"❌ Больше {MAX_CATALOG_ITEMS} услуг быть не может. "
+            f"В списке уже {len(taken)}."
+        )
+    return None
+
+
+def as_items(parsed: list) -> list[list]:
+    """[название, цена, от, до] — списки, а не кортежи: данные FSM хранятся в JSON."""
+    return [
+        [title, price, *(duration or (None, None))]
+        for title, price, duration in parsed
+    ]
+
+
 DURATION_PROMPT = (
     "Сколько часов занимает работа? Например <i>2-4</i> или <i>3</i>.\n"
     "Запись займёт бокс на верхнюю границу, чтобы следующая машина не ждала.\n"
@@ -129,17 +186,14 @@ async def add_start(callback: CallbackQuery, state: FSMContext) -> None:
         )
         return
 
-    await state.set_state(ServiceCatalog.title)
-    await callback.message.answer(
-        "Введите название услуги, например: <i>Полировка кузова</i>",
-        reply_markup=kb.kb_cancel(),
-    )
+    await state.update_data(new_items=[])
+    await state.set_state(ServiceCatalog.lines)
+    await callback.message.answer(SERVICES_HINT, reply_markup=kb.kb_cancel())
     await callback.answer()
 
 
-@router.message(ServiceCatalog.title, F.text == kb.BTN_CANCEL)
-@router.message(ServiceCatalog.price, F.text == kb.BTN_CANCEL)
-@router.message(ServiceCatalog.duration, F.text == kb.BTN_CANCEL)
+@router.message(ServiceCatalog.lines, F.text == kb.BTN_CANCEL)
+@router.message(ServiceCatalog.confirm, F.text == kb.BTN_CANCEL)
 @router.message(ServicePrice.value, F.text == kb.BTN_CANCEL)
 @router.message(ServiceDuration.value, F.text == kb.BTN_CANCEL)
 async def add_cancel(message: Message, state: FSMContext) -> None:
@@ -147,78 +201,81 @@ async def add_cancel(message: Message, state: FSMContext) -> None:
     await show_main_menu(message, state, greeting="Отменено.")
 
 
-@router.message(ServiceCatalog.title)
-async def add_title(message: Message, state: FSMContext) -> None:
-    svc = await require_owner_service(message, state)
-    if svc is None:
-        await state.set_state(None)
-        await show_main_menu(message, state)
-        return
-
-    try:
-        title = validate_service_title(message.text)
-    except ValidationError as exc:
-        await message.answer(f"❌ {exc}\nПопробуйте ещё раз:")
-        return
-
-    await state.update_data(new_title=title)
-    await state.set_state(ServiceCatalog.price)
+@router.message(ServiceCatalog.confirm, F.text == kb.BTN_SERVICES_RESET)
+async def add_reset(message: Message, state: FSMContext) -> None:
+    await state.update_data(new_items=[])
+    await state.set_state(ServiceCatalog.lines)
     await message.answer(
-        f"Услуга: <b>{h(title)}</b>\n\n"
-        "Введите цену в рублях — например <i>3000</i>.\n"
-        "Отправьте <b>-</b>, если цену показывать не нужно.",
-        reply_markup=kb.kb_cancel(),
+        f"Список очищен.\n\n{SERVICES_HINT}", reply_markup=kb.kb_cancel()
     )
 
 
-@router.message(ServiceCatalog.price)
-async def add_price(message: Message, state: FSMContext) -> None:
+@router.message(ServiceCatalog.confirm, F.text == kb.BTN_SERVICES_OK)
+async def add_save(message: Message, state: FSMContext) -> None:
     svc = await require_owner_service(message, state)
     if svc is None:
         await state.set_state(None)
         await show_main_menu(message, state)
-        return
-
-    try:
-        price = validate_price(message.text)
-    except ValidationError as exc:
-        await message.answer(f"❌ {exc}")
-        return
-
-    await state.update_data(new_price=price)
-    await state.set_state(ServiceCatalog.duration)
-    await message.answer(DURATION_PROMPT, reply_markup=kb.kb_cancel())
-
-
-@router.message(ServiceCatalog.duration)
-async def add_duration(message: Message, state: FSMContext) -> None:
-    svc = await require_owner_service(message, state)
-    if svc is None:
-        await state.set_state(None)
-        await show_main_menu(message, state)
-        return
-
-    try:
-        duration = validate_duration(message.text)
-    except ValidationError as exc:
-        await message.answer(f"❌ {exc}")
         return
 
     data = await state.get_data()
-    item = await db.add_catalog_item(
-        str(svc["idservice"]), data["new_title"], data["new_price"], duration
-    )
-    if item is None:
+    added, skipped = [], []
+    for title, price, low, high in data.get("new_items", []):
+        item = await db.add_catalog_item(
+            str(svc["idservice"]), title, price, (low, high) if low else None
+        )
+        (added if item else skipped).append(title)
+
+    # Дубликаты отсеяны ещё при вводе; сюда попадает только то, что успели
+    # завести параллельно, например со второго устройства
+    lines = []
+    if added:
+        lines.append(f"✅ Добавлено услуг: {len(added)}.")
+    if skipped:
+        lines.append(
+            "❌ Уже есть в списке, не добавлены: "
+            + ", ".join(f"«{h(title)}»" for title in skipped) + "."
+        )
+    await state.set_state(None)
+    await show_main_menu(message, state, greeting="\n".join(lines))
+    await _show_catalog(message, svc)
+
+
+@router.message(StateFilter(ServiceCatalog.lines, ServiceCatalog.confirm))
+async def add_lines(message: Message, state: FSMContext) -> None:
+    """Услуги строками. На проверке новые строки дописываются к списку."""
+    svc = await require_owner_service(message, state)
+    if svc is None:
         await state.set_state(None)
-        await show_main_menu(message, state, greeting="❌ Такая услуга уже есть в списке.")
-        await _show_catalog(message, svc)
+        await show_main_menu(message, state)
         return
 
-    await state.set_state(None)
-    await show_main_menu(
-        message, state, greeting=f"✅ Услуга «{h(item['title'])}» добавлена."
+    try:
+        parsed = parse_service_lines(message.text)
+    except ValidationError as exc:
+        await message.answer(f"❌ {exc}\n\n{SERVICES_HINT}")
+        return
+
+    data = await state.get_data()
+    items = list(data.get("new_items", []))
+    catalog = await db.get_catalog(str(svc["idservice"]))
+    taken = [item["title"] for item in catalog] + [item[0] for item in items]
+    error = new_items_error(taken, parsed)
+    if error:
+        await message.answer(error)
+        return
+
+    items += as_items(parsed)
+    await state.update_data(new_items=items)
+    await state.set_state(ServiceCatalog.confirm)
+    await message.answer(
+        "Проверьте <b>новые услуги</b>:\n\n"
+        f"{services_check_text(items)}\n\n"
+        f"Всё так — нажмите «{kb.BTN_SERVICES_OK}».\n"
+        "Забыли услугу — пришлите её следующим сообщением, она добавится.\n"
+        f"Что-то не так — «{kb.BTN_SERVICES_RESET}».",
+        reply_markup=kb.kb_services_check(),
     )
-    await _show_catalog(message, svc)
 
 
 # ── Карточка услуги и цена ───────────────────────────────────────────────────

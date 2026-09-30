@@ -129,8 +129,8 @@ def kb_cancel() -> ReplyKeyboardMarkup:
     )
 
 
-def kb_reg_services() -> ReplyKeyboardMarkup:
-    """Регистрация, проверка услуг: подтвердить список или набрать его заново."""
+def kb_services_check() -> ReplyKeyboardMarkup:
+    """Проверка новых услуг: подтвердить список или набрать его заново."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_SERVICES_OK)],
